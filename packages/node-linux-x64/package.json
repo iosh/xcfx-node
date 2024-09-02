@@ -1,0 +1,16 @@
+{
+  "name": "@xcfx/node-linux-x64",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@xcfx/node-win32-x64",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ]
+}
