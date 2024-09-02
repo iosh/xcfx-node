@@ -1,0 +1,3 @@
+[submodule "conflux-rust"]
+	path = conflux-rust
+	url = https://github.com/Conflux-Chain/conflux-rust.git
