@@ -19,13 +19,13 @@ const ALL_SUPPORT_PLATFORMS: Partial<
 function main() {
   if (!ALL_SUPPORT_PLATFORMS[platform]) {
     return console.warn(
-      `@xcfx/node is not supported the current platform: ${platform} yet. You can submit an issue: https://github.com/iosh/xcfx-node/issues/new`
+      `@xcfx/node is not supported the current platform: ${platform} yet. You can submit an issue: https://github.com/iosh/xcfx-node/issues/new`,
     );
   }
 
   if (!ALL_SUPPORT_PLATFORMS[platform][arch]) {
     return console.warn(
-      `@xcfx/node is not supported the current architecture: ${arch} yet. You can submit an issue: https://github.com/iosh/xcfx-node/issues/new`
+      `@xcfx/node is not supported the current architecture: ${arch} yet. You can submit an issue: https://github.com/iosh/xcfx-node/issues/new`,
     );
   }
 
@@ -35,7 +35,7 @@ function main() {
     require.resolve(BIN_NAME);
   } catch {
     return console.warn(
-      `@xcfx/node postinstall script is failed to resolve the binary conflux rust package: ${BIN_NAME}`
+      `@xcfx/node postinstall script is failed to resolve the binary conflux rust package: ${BIN_NAME}`,
     );
   }
 }

@@ -4,13 +4,7 @@
   "engines": {
     "node": ">=18"
   },
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "x64"
-  ],
-  "libc": [
-    "glibc"
-  ]
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"]
 }
