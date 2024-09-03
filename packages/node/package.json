@@ -1,12 +1,17 @@
 {
   "name": "@xcfx/node",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc --project ./tsconfig.json"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "MIT",
+  "optionalDependencies": {
+    "@xcfx/node-darwin-arm64": "workspaces:*",
+    "@xcfx/node-linux-x64": "workspaces:*",
+    "@xcfx/node-win32-x64": "workspaces:*"
+  }
 }

@@ -1,0 +1,10 @@
+*.local
+.DS_Store
+.attest
+node_modules
+tsconfig*.tsbuildinfo
+.idea
+
+/node_modules
+
+packages/node/**/*.js
