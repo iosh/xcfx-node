@@ -8,3 +8,8 @@ tsconfig*.tsbuildinfo
 /node_modules
 
 packages/node/**/*.js
+
+conflux
+conflux.exe
+pos-genesis-tool
+pos-genesis-tool.exe
