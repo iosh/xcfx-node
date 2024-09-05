@@ -1,6 +1,7 @@
 {
   "name": "@xcfx/node-win32-x64",
   "version": "0.0.0",
+  "private": true,
   "engines": {
     "node": ">=18"
   },

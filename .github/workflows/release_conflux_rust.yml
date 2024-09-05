@@ -13,9 +13,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             code-target: darwin-arm64
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            code-target: win32-x64
+        #   - os: windows-2022
+        #     target: x86_64-pc-windows-msvc
+        #     code-target: win32-x64
 
     name: Package ${{ matrix.code-target }}
     runs-on: ${{ matrix.os }}
@@ -39,12 +39,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang libsqlite3-dev pkg-config libssl-dev cmake
 
-      - name: Install macos dependencies
-        if: matrix.code-target == 'darwin-arm64'
-        run: |
-          brew install cmake
-          brew install pkg-config
-
       - name: Set up Homebrew
         if: matrix.code-target == 'darwin-arm64'
         id: set-up-homebrew
@@ -52,7 +46,9 @@ jobs:
 
       - name: Install macos dependencies
         if: matrix.code-target == 'darwin-arm64'
-        run: brew install llvm openssl pkg-config cmake
+        run: |
+           brew update
+           brew install llvm openssl pkg-config cmake
       
       - name: Install windows dependencies
         if: matrix.code-target == 'win32-x64'
@@ -78,12 +74,12 @@ jobs:
           cp conflux-rust/target/${{ matrix.target }}/release/conflux dist/conflux-${{ matrix.code-target }}
           cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool dist/pos-genesis-tool-${{ matrix.code-target }}
 
-      - name: Copy binaries
-        if: matrix.os == 'windows-2022'
-        run: |
-          mkdir dist
-          cp conflux-rust/target/${{ matrix.target }}/release/conflux.exe dist/conflux-${{ matrix.code-target }}.exe
-          cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool.exe dist/pos-genesis-tool-${{ matrix.code-target }}.exe
+    #   - name: Copy binaries
+    #     if: matrix.os == 'windows-2022'
+    #     run: |
+    #       mkdir dist
+    #       cp conflux-rust/target/${{ matrix.target }}/release/conflux.exe dist/conflux-${{ matrix.code-target }}.exe
+    #       cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool.exe dist/pos-genesis-tool-${{ matrix.code-target }}.exe
       
       - uses: actions/upload-artifact@v4
         with:
