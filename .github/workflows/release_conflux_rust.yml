@@ -63,7 +63,8 @@ jobs:
           cd conflux-rust
           CC=clang CXX=clang++ cargo build --target ${{ matrix.target }} --release
           cd ..
-
+          ls -l ./conflux-rust/target/${{ matrix.target }}/release/
+          
       - name: Copy binaries
         if: matrix.os != 'windows-2022'
         run: |
