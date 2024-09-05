@@ -7,12 +7,12 @@ jobs:
     strategy:
       matrix:
         include:
-        #   - os: ubuntu-24.04
-        #     target: x86_64-unknown-linux-gnu
-        #     code-target: linux-x64
-          - os: macos-14
-            target: aarch64-apple-darwin
-            code-target: darwin-arm64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            code-target: linux-x64
+        #   - os: macos-14
+        #     target: aarch64-apple-darwin
+        #     code-target: darwin-arm64
         #   - os: windows-2022
         #     target: x86_64-pc-windows-msvc
         #     code-target: win32-x64
@@ -33,14 +33,8 @@ jobs:
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install linux dependencies
-        if: matrix.code-target == 'linux-x64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libsqlite3-dev pkg-config libssl-dev cmake
-
       - name: Set up Homebrew
-        if: matrix.code-target == 'darwin-arm64'
+        if: matrix.code-target == 'darwin-arm64' || matrix.code-target == 'linux-x64'
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
@@ -49,6 +43,12 @@ jobs:
         run: |
            brew update
            brew install llvm openssl pkg-config cmake
+
+      - name: Install linux dependencies
+        if: matrix.code-target == 'linux-x64'
+        run: |
+             brew update
+             brew install clang sqlite3 openssl pkg-config cmake llvm
       
       - name: Install windows dependencies
         if: matrix.code-target == 'win32-x64'
@@ -69,7 +69,6 @@ jobs:
           mkdir dist
           cp conflux-rust/target/${{ matrix.target }}/release/conflux dist/conflux-${{ matrix.code-target }}
           cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool dist/pos-genesis-tool-${{ matrix.code-target }}
-          ls -l dist
 
 
     #   - name: Copy binaries
