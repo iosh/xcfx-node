@@ -4,6 +4,7 @@
     "format": "biome format ./packages --write",
     "lint": "biome lint ./packages --write"
   },
+  "conflux-rust":"2.4.0",
   "keywords": [],
   "author": "",
   "license": "MIT",
