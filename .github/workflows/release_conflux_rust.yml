@@ -53,7 +53,15 @@ jobs:
       - name: Install macos dependencies
         if: matrix.code-target == 'darwin-arm64'
         run: brew install llvm openssl pkg-config cmake
-
+      
+      - name: Install windows dependencies
+        if: matrix.code-target == 'win32-x64'
+        run: |
+          choco upgrade llvm
+        
+      - name: Print clang version
+        run: clang --version
+    
       - name: Build binaries
         env:
           CC: clang
