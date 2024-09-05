@@ -59,12 +59,9 @@ jobs:
         run: clang --version
     
       - name: Build binaries
-        env:
-          CC: clang
-          CXX: clang++
         run: |
           cd conflux-rust
-          cargo build --target ${{ matrix.target }} --release
+          CC=clang CXX=clang++ cargo build --target ${{ matrix.target }} --release
           cd ..
 
       - name: Copy binaries
