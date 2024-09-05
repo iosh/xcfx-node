@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -11,8 +11,8 @@
   "author": "",
   "license": "MIT",
   "optionalDependencies": {
-    "@xcfx/node-darwin-arm64": "workspaces:*",
-    "@xcfx/node-linux-x64": "workspaces:*",
-    "@xcfx/node-win32-x64": "workspaces:*"
+    "@xcfx/node-darwin-arm64": "workspace:*",
+    "@xcfx/node-linux-x64": "workspace:*",
+    "@xcfx/node-win32-x64": "workspace:*"
   }
 }
