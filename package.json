@@ -2,9 +2,10 @@
   "private": true,
   "scripts": {
     "format": "biome format ./packages --write",
-    "lint": "biome lint ./packages --write"
+    "lint": "biome lint ./packages --write",
+    "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format"
   },
-  "conflux-rust":"2.4.0",
+  "conflux-rust": "2.4.0",
   "keywords": [],
   "author": "",
   "license": "MIT",
