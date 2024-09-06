@@ -34,7 +34,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Set up Homebrew
-        if: matrix.code-target == 'darwin-arm64' || matrix.code-target == 'linux-x64'
+        if: matrix.code-target == 'darwin-arm64'
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
@@ -47,8 +47,8 @@ jobs:
       - name: Install linux dependencies
         if: matrix.code-target == 'linux-x64'
         run: |
-             brew update
-             brew install sqlite3 openssl pkg-config cmake llvm bzip2
+            sudo apt-get update
+            sudo apt-get install -y clang libsqlite3-dev pkg-config libssl-dev cmake build-essential
       
       - name: Install windows dependencies
         if: matrix.code-target == 'win32-x64'
