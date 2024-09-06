@@ -5,9 +5,6 @@ const { platform, arch } = process;
 const ALL_SUPPORT_PLATFORMS: Partial<
   Record<typeof platform, Partial<Record<typeof arch, string>>>
 > = {
-  // win32: {
-  //   x64: "@xcfx/node-win32-x64",
-  // },
   linux: {
     x64: "@xcfx/node-linux-x64",
   },

@@ -13,9 +13,6 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             code-target: darwin-arm64
-        #   - os: windows-2022
-        #     target: x86_64-pc-windows-msvc
-        #     code-target: win32-x64
 
     name: Package ${{ matrix.code-target }}
     runs-on: ${{ matrix.os }}
@@ -69,14 +66,6 @@ jobs:
           mkdir dist
           cp conflux-rust/target/${{ matrix.target }}/release/conflux dist/conflux-${{ matrix.code-target }}
           cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool dist/pos-genesis-tool-${{ matrix.code-target }}
-
-
-    #   - name: Copy binaries
-    #     if: matrix.os == 'windows-2022'
-    #     run: |
-    #       mkdir dist
-    #       cp conflux-rust/target/${{ matrix.target }}/release/conflux.exe dist/conflux-${{ matrix.code-target }}.exe
-    #       cp conflux-rust/target/${{ matrix.target }}/release/pos-genesis-tool.exe dist/pos-genesis-tool-${{ matrix.code-target }}.exe
       
       - uses: actions/upload-artifact@v4
         with:
