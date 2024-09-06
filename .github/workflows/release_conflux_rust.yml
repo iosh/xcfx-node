@@ -7,7 +7,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             code-target: linux-x64
         #   - os: macos-14
@@ -29,12 +29,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
 
       - name: Set up Homebrew
-        if: matrix.code-target == 'darwin-arm64'
+        if: matrix.code-target == 'darwin-arm64' || matrix.code-target == 'linux-x64'
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
@@ -48,8 +47,9 @@ jobs:
         if: matrix.code-target == 'linux-x64'
         run: |
             sudo apt-get update
-            sudo apt-get install -y clang libsqlite3-dev pkg-config libssl-dev cmake build-essential
-      
+            sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake
+            brew install llvm
+
       - name: Install windows dependencies
         if: matrix.code-target == 'win32-x64'
         run: |
