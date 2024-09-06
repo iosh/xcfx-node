@@ -84,4 +84,5 @@ jobs:
             ./dist/
           retention-days: 1
           overwrite: true
+          name: conflux-${{ matrix.code-target }}
           
