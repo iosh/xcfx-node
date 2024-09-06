@@ -47,7 +47,7 @@ jobs:
         if: matrix.code-target == 'linux-x64'
         run: |
             sudo apt-get update
-            sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libstdc++6
+            sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake gcc g++ build-essential
             brew install llvm
 
       - name: Install windows dependencies
