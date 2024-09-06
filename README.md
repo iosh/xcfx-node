@@ -2,6 +2,10 @@
 
 Run the Conflux-Rust node in Node.js. This is used for developing on the Conflux network, such as testing RPC dApps or contracts.
 
+# Branch
+
+The default branch is `dev`, which is the development branch. The release branch is `master`.
+
 # Supported platforms
 
 By now xcfx-node supports the following platforms:
