@@ -61,7 +61,7 @@ jobs:
       - name: Build binaries
         run: |
           cd conflux-rust
-          CC=clang CXX=clang++ CXXFLAGS="-std=c++11 cargo build --target ${{ matrix.target }} --release
+          CC=clang CXX=clang++ CXXFLAGS="-std=c++11" cargo build --target ${{ matrix.target }} --release
           cd ..
       - name: Copy binaries
         if: matrix.os != 'windows-2022'
