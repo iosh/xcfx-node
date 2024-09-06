@@ -31,7 +31,8 @@ jobs:
           node-version: 22
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
-
+      - name: print ls -l  /usr/lib/libstdc++.so.6
+        run: ls -l  /usr/lib/libstdc++.so.6
       - name: Set up Homebrew
         if: matrix.code-target == 'darwin-arm64' || matrix.code-target == 'linux-x64'
         id: set-up-homebrew
