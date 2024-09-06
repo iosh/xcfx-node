@@ -30,7 +30,9 @@ jobs:
         with:
           node-version: 22
       - name: Install Rust toolchain
-        run: rustup target add ${{ matrix.target }}
+        run: |
+          rustup install 1.77.2 
+          rustup target add ${{ matrix.target }}
 
       - name: Set up Homebrew
         if: matrix.code-target == 'darwin-arm64' || matrix.code-target == 'linux-x64'
@@ -47,8 +49,7 @@ jobs:
         if: matrix.code-target == 'linux-x64'
         run: |
             sudo apt-get update
-            sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake gcc g++ build-essential
-            brew install llvm
+            brew install llvm openssl pkg-config cmake sqlite 
 
       - name: Install windows dependencies
         if: matrix.code-target == 'win32-x64'
