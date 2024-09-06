@@ -48,7 +48,6 @@ jobs:
       - name: Install linux dependencies
         if: matrix.code-target == 'linux-x64'
         run: |
-            sudo apt-get update
             brew install llvm openssl pkg-config cmake sqlite 
 
       - name: Install windows dependencies
@@ -62,7 +61,7 @@ jobs:
       - name: Build binaries
         run: |
           cd conflux-rust
-          CC=clang CXX=clang++ cargo build --target ${{ matrix.target }} --release
+          CC=clang CXX=clang++ CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" cargo build --target ${{ matrix.target }} --release
           cd ..
       - name: Copy binaries
         if: matrix.os != 'windows-2022'
