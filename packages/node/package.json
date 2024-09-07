@@ -2,6 +2,7 @@
   "name": "@xcfx/node",
   "version": "0.0.1",
   "description": "",
+  "private":true,
   "main": "index.js",
   "scripts": {
     "postinstall": "node scripts/postinstall.js",

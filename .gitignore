@@ -8,6 +8,7 @@ tsconfig*.tsbuildinfo
 /node_modules
 
 packages/node/**/*.js
+!packages/node/scripts/postinstall.js
 
 conflux
 conflux.exe
