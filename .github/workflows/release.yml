@@ -1,10 +1,6 @@
-name: Release Conflux Rust
+name: Release
 
 on: workflow_dispatch
-
-permissions:
-  id-token: write
-  attestations: write
 
 jobs:
   build:
@@ -71,6 +67,10 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -81,10 +81,14 @@ jobs:
           pattern: conflux-*
           merge-multiple: true
 
-      - name: Compress binaries
+      - name: Copy binaries
         run: |
           cp ./conflux-linux-x64 ./packages/node-linux-x64/conflux
           cp ./conflux-darwin-arm64 ./packages/node-darwin-arm64/conflux
+      - name: chmod binaries
+        run: |
+          chmod 755 ./packages/node-linux-x64/conflux
+          chmod 755 ./packages/node-darwin-arm64/conflux
 
       - name: Install Node.js
         uses: actions/setup-node@v4
