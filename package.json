@@ -3,7 +3,11 @@
   "scripts": {
     "format": "biome format ./packages --write",
     "lint": "biome lint ./packages --write",
-    "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format"
+    "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",
+    "changeset:prepublish": "pnpm build",
+    "changeset:publish": "pnpm changeset:prepublish && changeset publish",
+    "clean": "pnpm run -r clean",
+    "build": "pnpm run -r build"
   },
   "conflux-rust": "2.4.0",
   "keywords": [],

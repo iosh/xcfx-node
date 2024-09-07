@@ -5,8 +5,7 @@
   "private":true,
   "main": "index.js",
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
-    "build": "tsc --project ./tsconfig.json"
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [],
   "author": "",
