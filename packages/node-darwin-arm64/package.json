@@ -3,6 +3,8 @@
   "version": "0.0.1",
   "author": "",
   "license": "MIT",
+  "repository": "iosh/xcfx-node",
+  "homepage": "https://github.com/iosh/xcfx-node",
   "engines": {
     "node": ">=18"
   },
