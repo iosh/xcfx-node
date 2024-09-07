@@ -12,7 +12,6 @@
   "license": "MIT",
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "workspace:*",
-    "@xcfx/node-linux-x64": "workspace:*",
-    "@xcfx/node-win32-x64": "workspace:*"
+    "@xcfx/node-linux-x64": "workspace:*"
   }
 }
