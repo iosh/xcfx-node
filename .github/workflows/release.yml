@@ -55,7 +55,7 @@ jobs:
           cd conflux-rust
           CC=clang CXX=clang++ CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" cargo build --target ${{ matrix.target }} --release
           cd ..
-    
+
       - name: Copy binaries
         if: matrix.os != 'windows-2022'
         run: |
@@ -85,7 +85,7 @@ jobs:
         run: |
           cp ./conflux-linux-x64 ./packages/node-linux-x64/conflux
           cp ./conflux-darwin-arm64 ./packages/node-darwin-arm64/conflux
-      
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
@@ -96,7 +96,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: ls all file
-        run:
-          ls -l ./packages/node-linux-x64
-          ls -l ./packages/node-darwin-arm64
+      - name: Publish to NPM
+        uses: changesets/action@v1
+        with:
+          createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
+          publish: pnpm changeset:publish
+          version: pnpm changeset:version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
