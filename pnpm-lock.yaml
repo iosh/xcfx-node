@@ -22,15 +22,20 @@ importers:
         specifier: ^5.5.4
         version: 5.5.4
 
-  packages/node: {}
+  packages/node:
+    optionalDependencies:
+      '@xcfx/node-darwin-arm64':
+        specifier: workspace:*
+        version: link:../node-darwin-arm64
+      '@xcfx/node-linux-x64':
+        specifier: workspace:*
+        version: link:../node-linux-x64
 
   packages/node-darwin-arm64: {}
 
   packages/node-jsonrpc: {}
 
   packages/node-linux-x64: {}
-
-  packages/node-win32-x64: {}
 
 packages:
 
