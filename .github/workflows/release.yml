@@ -36,17 +36,12 @@ jobs:
         if: matrix.code-target == 'darwin-arm64'
         run: |
           brew update
-          brew install llvm openssl pkg-config cmake
+          brew install llvm openssl
 
       - name: Install linux dependencies
         if: matrix.code-target == 'linux-x64'
         run: |
           brew install llvm openssl pkg-config cmake sqlite
-
-      - name: Install windows dependencies
-        if: matrix.code-target == 'win32-x64'
-        run: |
-          choco upgrade llvm
 
       - name: Print clang version
         run: clang --version
@@ -56,6 +51,7 @@ jobs:
           cd conflux-rust
           CC=clang CXX=clang++ CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" cargo build --target ${{ matrix.target }} --release
           cd ..
+    
       - name: Copy binaries
         if: matrix.os != 'windows-2022'
         run: |
@@ -73,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@4
+      - uses: actions/checkout@v4
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -95,6 +91,7 @@ jobs:
           version: 9
       - name: Install dependencies
         run: pnpm install
+
       - name: ls all file
         run:
           ls -l ./packages/node-linux-x64
