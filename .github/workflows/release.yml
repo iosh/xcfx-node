@@ -85,11 +85,9 @@ jobs:
         run: |
           cp ./conflux-linux-x64 ./packages/node-linux-x64/conflux
           cp ./conflux-darwin-arm64 ./packages/node-darwin-arm64/conflux
-      - name: chmod binaries
-        run: |
-          chmod 755 ./packages/node-linux-x64/conflux
-          chmod 755 ./packages/node-darwin-arm64/conflux
-
+      - name: Make Linux binaries executable
+        run: chmod +x ./packages/*/conflux
+          
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
