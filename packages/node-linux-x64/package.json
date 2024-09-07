@@ -4,7 +4,17 @@
   "engines": {
     "node": ">=18"
   },
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "libc": ["glibc"]
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }
