@@ -6,11 +6,11 @@ tsconfig*.tsbuildinfo
 .idea
 
 /node_modules
+dist
 
 packages/node/**/*.js
 !packages/node/scripts/postinstall.js
-packages/node/data/*
-!packages/node/data/.gitkeep
+packages/node/data/config.toml
 
 conflux
 conflux.exe
