@@ -17,4 +17,4 @@ If you want to run a mainnet or testnet node, please refer to the [Conflux docum
 
 # How to use
 
-read the document in [@xcfx/node package](https://github.com/iosh/xcfx-node/tree/main/packages/node)
+Read the document in [@xcfx/node package](https://github.com/iosh/xcfx-node/tree/main/packages/node)
