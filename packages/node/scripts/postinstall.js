@@ -24,12 +24,9 @@ function main() {
     );
   }
 
-  const BIN_NAME = ALL_SUPPORT_PLATFORMS[platform][arch];
+  const BIN_NAME = `${ALL_SUPPORT_PLATFORMS[platform][arch]}/conflux`;
   try {
-    require.resolve(BIN_NAME, {
-      paths: [process.cwd()],
-    });
-  
+    require.resolve(BIN_NAME);
   } catch (e) {
     return console.warn(
       `@xcfx/node postinstall script is failed to resolve the binary conflux rust package: ${BIN_NAME}`
