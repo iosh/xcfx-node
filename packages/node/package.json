@@ -2,15 +2,27 @@
   "name": "@xcfx/node",
   "version": "0.0.2",
   "description": "",
-  "private": true,
-  "main": "index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "build": "tsc --project ./tsconfig.json"
+    "build": "tsc --project ./tsconfig.build.json",
+    "clean": "rm -rf dist"
   },
-  "keywords": [],
+  "keywords": ["conflux", "conflux rust"],
+  "files": [
+    "dist",
+    "data",
+    "scripts",
+    "src",
+    "LICENSE",
+    "README.md",
+    "!**/*.tsbuildinfo"
+  ],
   "author": "",
   "license": "MIT",
+  "repository": "iosh/xcfx-node",
+  "homepage": "https://github.com/iosh/xcfx-node",
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "0.0.3",
     "@xcfx/node-linux-x64": "0.0.3"

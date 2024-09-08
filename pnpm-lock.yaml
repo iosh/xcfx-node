@@ -23,17 +23,13 @@ importers:
         version: 5.5.4
 
   packages/node:
-    dependencies:
-      smol-toml:
-        specifier: 1.3.0
-        version: 1.3.0
     optionalDependencies:
       '@xcfx/node-darwin-arm64':
         specifier: 0.0.3
-        version: 0.0.3
+        version: link:../node-darwin-arm64
       '@xcfx/node-linux-x64':
         specifier: 0.0.3
-        version: 0.0.3
+        version: link:../node-linux-x64
 
   packages/node-darwin-arm64: {}
 
@@ -181,18 +177,6 @@ packages:
 
   '@types/semver@7.5.8':
     resolution: {integrity: sha512-I8EUhyrgfLrcTkzV3TSsGyl1tSuPrEDzr0yd5m90UgNxQkyDXULk3b6MlQqTCpZpNtWe1K0hzclnZkTcLBe2UQ==}
-
-  '@xcfx/node-darwin-arm64@0.0.3':
-    resolution: {integrity: sha512-08xsSKV21cCHhja3deoACFWj9nphR/7YEOhiwykDyGJBshkiAZqnWAgyLd/osz3/VhKBl5CgmUgchTm5tL1uEg==}
-    engines: {node: '>=18'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@xcfx/node-linux-x64@0.0.3':
-    resolution: {integrity: sha512-DsxkT5SvGAlLjdEizlwn1OmVseEvfNXR0OHC6hwVQT/iaq1ngfEGdyV6T6pI7kMfhFlTurIFNrGn26pmbPXP/g==}
-    engines: {node: '>=18'}
-    cpu: [x64]
-    os: [linux]
 
   ansi-colors@4.1.3:
     resolution: {integrity: sha512-/6w/C21Pm1A7aZitlI5Ni/2J6FFQN8i1Cvz3kHABAAbw93v/NlvKdVOqz7CCWz/3iv/JplRSEEZ83XION15ovw==}
@@ -448,10 +432,6 @@ packages:
   slash@3.0.0:
     resolution: {integrity: sha512-g9Q1haeby36OSStwb4ntCGGGaKsaVSjQ68fBxoQcutl5fS1vuY18H3wSt3jFyFtrkx+Kz0V1G85A4MyAdDMi2Q==}
     engines: {node: '>=8'}
-
-  smol-toml@1.3.0:
-    resolution: {integrity: sha512-tWpi2TsODPScmi48b/OQZGi2lgUmBCHy6SZrhi/FdnnHiU1GwebbCfuQuxsC3nHaLwtYeJGPrDZDIeodDOc4pA==}
-    engines: {node: '>= 18'}
 
   spawndamnit@2.0.0:
     resolution: {integrity: sha512-j4JKEcncSjFlqIwU5L/rp2N5SIPsdxaRsIv678+TZxZ0SRDJTm8JrxJMjE/XuiEZNEir3S8l0Fa3Ke339WI4qA==}
@@ -719,12 +699,6 @@ snapshots:
 
   '@types/semver@7.5.8': {}
 
-  '@xcfx/node-darwin-arm64@0.0.3':
-    optional: true
-
-  '@xcfx/node-linux-x64@0.0.3':
-    optional: true
-
   ansi-colors@4.1.3: {}
 
   ansi-regex@5.0.1: {}
@@ -943,8 +917,6 @@ snapshots:
   signal-exit@3.0.7: {}
 
   slash@3.0.0: {}
-
-  smol-toml@1.3.0: {}
 
   spawndamnit@2.0.0:
     dependencies:
