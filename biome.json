@@ -6,7 +6,8 @@
       "node_modules",
       "*.js",
       "tsconfig.json",
-      "tsconfig.*.json"
+      "tsconfig.*.json",
+      "conflux-rust"
     ]
   },
   "organizeImports": {

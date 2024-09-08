@@ -2,7 +2,7 @@
   "private": true,
   "scripts": {
     "format": "biome format ./packages --write",
-    "lint": "biome lint ./packages --write",
+    "lint": "biome check --fix",
     "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",
     "changeset:prepublish": "pnpm build",
     "changeset:publish": "pnpm changeset:prepublish && changeset publish",
