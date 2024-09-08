@@ -5,13 +5,14 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "build": "tsc --project ./tsconfig.json"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "optionalDependencies": {
-    "@xcfx/node-darwin-arm64": "workspace:*",
-    "@xcfx/node-linux-x64": "workspace:*"
+    "@xcfx/node-darwin-arm64": "0.0.3",
+    "@xcfx/node-linux-x64": "0.0.3"
   }
 }

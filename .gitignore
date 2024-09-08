@@ -9,6 +9,8 @@ tsconfig*.tsbuildinfo
 
 packages/node/**/*.js
 !packages/node/scripts/postinstall.js
+packages/node/data/*
+!packages/node/data/.gitkeep
 
 conflux
 conflux.exe
