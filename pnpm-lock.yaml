@@ -25,10 +25,10 @@ importers:
   packages/node:
     optionalDependencies:
       '@xcfx/node-darwin-arm64':
-        specifier: 0.0.3
+        specifier: workspace:*
         version: link:../node-darwin-arm64
       '@xcfx/node-linux-x64':
-        specifier: 0.0.3
+        specifier: workspace:*
         version: link:../node-linux-x64
 
   packages/node-darwin-arm64: {}
