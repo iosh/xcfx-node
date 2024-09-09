@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node-darwin-arm64",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "license": "MIT",
   "repository": "iosh/xcfx-node",
   "homepage": "https://github.com/iosh/xcfx-node",
