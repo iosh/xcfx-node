@@ -12,6 +12,7 @@ export async function createConfigFile({
     genesis_secrets?: string;
   } = {
     ...config,
+    mode: config.mode || "dev",
     node_type: config.node_type || "full",
     jsonrpc_ws_port: config.jsonrpc_ws_port || 12535,
     jsonrpc_http_port: config.jsonrpc_http_port || 12537,
