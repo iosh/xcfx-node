@@ -76,4 +76,6 @@ export async function createConfigFile({
     path.join(__dirname, `../data/${CONFIG_FILE_NAME}`),
     configStr,
   );
+
+  return newConfig;
 }

@@ -5,7 +5,6 @@ import { CONFIG_FILE_NAME, createConfigFile } from "./createConfigFile";
 import type { ConfluxConfig, ServerConfig } from "./types";
 
 import { cleanup } from "./cleanup";
-
 async function createServer({
   waitUntilReady = true,
   silent = true,
@@ -26,9 +25,24 @@ async function createServer({
   await createConfigFile(config);
 
   let conflux: ChildProcessWithoutNullStreams | null = null;
+
+  function stop() {
+    if (!conflux) return;
+    if (conflux) {
+      conflux.stdout.destroy();
+      conflux.kill("SIGINT");
+      conflux = null;
+    }
+    if (!persistNodeData) {
+      cleanup(workDir);
+    }
+  }
+
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
   return {
     start: async () => {
-      return new Promise<void>((resolve) => {
+      return new Promise<void>((resolve, reject) => {
         conflux = spawn(
           checkResult.binPath,
           [
@@ -44,6 +58,8 @@ async function createServer({
 
         conflux.stderr.on("data", (msg) => {
           console.log(`Conflux node error: ${msg.toString()}`);
+          stop();
+          reject(msg.toString());
         });
 
         if (!silent) {
@@ -64,18 +80,7 @@ async function createServer({
         }
       });
     },
-    stop: async () => {
-      if (conflux) {
-        conflux.stdin.end();
-        conflux.stdout.destroy();
-        conflux.stdin.destroy();
-        conflux.kill("SIGINT");
-
-        if (!persistNodeData) {
-          cleanup(workDir);
-        }
-      }
-    },
+    stop: async () => stop(),
   };
 }
 
