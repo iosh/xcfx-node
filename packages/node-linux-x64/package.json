@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node-linux-x64",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "repository": "iosh/xcfx-node",
   "homepage": "https://github.com/iosh/xcfx-node",
   "engines": {
