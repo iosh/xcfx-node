@@ -86,8 +86,11 @@ jobs:
           cp ./conflux-linux-x64 ./packages/node-linux-x64/conflux
           cp ./conflux-darwin-arm64 ./packages/node-darwin-arm64/conflux
       - name: Make Linux binaries executable
-        run: chmod +x ./packages/*/conflux
-          
+        run: |
+          ls -l ./packages/*/conflux
+          chmod +x ./packages/*/conflux
+           ls -l ./packages/*/conflux
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
@@ -107,3 +110,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Print conflux permisions
+        run: |
+          ls -l ./packages/*/conflux
