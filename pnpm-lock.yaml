@@ -22,14 +22,7 @@ importers:
         specifier: ^5.5.4
         version: 5.5.4
 
-  packages/node:
-    optionalDependencies:
-      '@xcfx/node-darwin-arm64':
-        specifier: 0.0.3
-        version: link:../node-darwin-arm64
-      '@xcfx/node-linux-x64':
-        specifier: 0.0.3
-        version: link:../node-linux-x64
+  packages/node: {}
 
   packages/node-darwin-arm64: {}
 

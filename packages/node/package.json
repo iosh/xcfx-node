@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,7 +28,7 @@
   "repository": "iosh/xcfx-node",
   "homepage": "https://github.com/iosh/xcfx-node",
   "optionalDependencies": {
-    "@xcfx/node-darwin-arm64": "0.0.3",
-    "@xcfx/node-linux-x64": "0.0.3"
+    "@xcfx/node-darwin-arm64": "0.0.4",
+    "@xcfx/node-linux-x64": "0.0.4"
   }
 }
