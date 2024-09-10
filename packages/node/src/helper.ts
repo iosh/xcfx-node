@@ -1,16 +1,5 @@
-const { platform, arch } = process;
-
-// Currently only limited platforms are supported.
-const ALL_SUPPORT_PLATFORMS: Partial<
-  Record<typeof platform, Partial<Record<typeof arch, string>>>
-> = {
-  linux: {
-    x64: "@xcfx/node-linux-x64",
-  },
-  darwin: {
-    arm64: "@xcfx/node-darwin-arm64",
-  },
-};
+import fs from "node:fs";
+import path from "node:path";
 
 type CheckEnvironmentReturnType =
   | {
@@ -26,7 +15,21 @@ type CheckEnvironmentReturnType =
  * Check the current platform and architecture is supported
  * @returns { CheckEnvironmentReturnType }
  */
-function checkEnvironment(): CheckEnvironmentReturnType {
+export function checkEnvironment(): CheckEnvironmentReturnType {
+  const { platform, arch } = process;
+
+  // Currently only limited platforms are supported.
+  const ALL_SUPPORT_PLATFORMS: Partial<
+    Record<typeof platform, Partial<Record<typeof arch, string>>>
+  > = {
+    linux: {
+      x64: "@xcfx/node-linux-x64",
+    },
+    darwin: {
+      arm64: "@xcfx/node-darwin-arm64",
+    },
+  };
+
   if (!ALL_SUPPORT_PLATFORMS[platform]) {
     return {
       supportPlatform: false,
@@ -49,4 +52,18 @@ function checkEnvironment(): CheckEnvironmentReturnType {
   };
 }
 
-export default checkEnvironment;
+const rmsyncOptions = {
+  force: true,
+  recursive: true,
+};
+
+export function cleanup(workDir: string) {
+  // remove conflux data
+  fs.rmSync(path.join(workDir, "blockchain_data"), rmsyncOptions);
+  // remove conflux db
+  fs.rmSync(path.join(workDir, "db"), rmsyncOptions);
+  // remove conflux log
+  fs.rmSync(path.join(workDir, "log"), rmsyncOptions);
+  // remove conflux pos_db
+  fs.rmSync(path.join(workDir, "pos_db"), rmsyncOptions);
+}

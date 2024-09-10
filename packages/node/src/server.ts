@@ -1,16 +1,21 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import path from "node:path";
-import checkEnvironment from "./checkEnvironment";
+
 import { CONFIG_FILE_NAME, createConfigFile } from "./createConfigFile";
 import type { ConfluxConfig, ServerConfig } from "./types";
+import { checkEnvironment, cleanup } from "./helper";
 
-import { cleanup } from "./cleanup";
+export type createServerReturnType = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+};
+
 async function createServer({
   waitUntilReady = true,
   silent = true,
   persistNodeData = false,
   ...config
-}: ConfluxConfig & ServerConfig = {}) {
+}: ConfluxConfig & ServerConfig = {}): Promise<createServerReturnType> {
   const checkResult = checkEnvironment();
 
   if (!checkResult.supportPlatform) {
