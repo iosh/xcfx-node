@@ -15,7 +15,7 @@ export type createServerReturnType = {
 };
 
 async function createServer(
-  config: ConfluxConfig & ServerConfig = {}
+  config: ConfluxConfig & ServerConfig = {},
 ): Promise<createServerReturnType> {
   const configWithDefault = {
     ...config,
@@ -40,12 +40,12 @@ async function createServer(
       })
     ) {
       throw new Error(
-        `The Conflux node is already running on the port ${configWithDefault.jsonrpc_http_port}.`
+        `The Conflux node is already running on the port ${configWithDefault.jsonrpc_http_port}.`,
       );
     }
 
     throw new Error(
-      `The jsonrpc_http_port port ${configWithDefault.jsonrpc_http_port} is already in use.`
+      `The jsonrpc_http_port port ${configWithDefault.jsonrpc_http_port} is already in use.`,
     );
   }
 
@@ -57,12 +57,12 @@ async function createServer(
       })
     ) {
       throw new Error(
-        `The Conflux node is already running on the port ${configWithDefault.jsonrpc_ws_port}.`
+        `The Conflux node is already running on the port ${configWithDefault.jsonrpc_ws_port}.`,
       );
     }
 
     throw new Error(
-      `The jsonrpc_ws_port port ${configWithDefault.jsonrpc_ws_port} is already in use.`
+      `The jsonrpc_ws_port port ${configWithDefault.jsonrpc_ws_port} is already in use.`,
     );
   }
 

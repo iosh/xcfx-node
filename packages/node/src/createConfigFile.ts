@@ -92,12 +92,12 @@ export async function createConfigFile({
   const configStr = Object.entries(newConfig)
     .map(
       ([key, value]) =>
-        `${key} = ${typeof value === "string" ? `"${value}"` : value}`
+        `${key} = ${typeof value === "string" ? `"${value}"` : value}`,
     )
     .join("\n");
   await fs.writeFile(
     path.join(__dirname, `../data/${CONFIG_FILE_NAME}`),
-    configStr
+    configStr,
   );
 
   return newConfig;

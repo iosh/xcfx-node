@@ -1,5 +1,15 @@
 # @xcfx/node
 
+## 0.1.0
+
+### Minor Changes
+
+- f4cf061: Enhance check node is ready
+
+### Patch Changes
+
+- fce4f61: Added port check
+
 ## 0.0.8
 
 ### Patch Changes

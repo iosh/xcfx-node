@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node",
-  "version": "0.0.8",
+  "version": "0.1.0",
   "description": "",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,10 +9,7 @@
     "build": "tsc --project ./tsconfig.build.json",
     "clean": "rm -rf dist"
   },
-  "keywords": [
-    "conflux",
-    "conflux rust"
-  ],
+  "keywords": ["conflux", "conflux rust"],
   "files": [
     "dist",
     "data",

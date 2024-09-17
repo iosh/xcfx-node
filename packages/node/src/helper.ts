@@ -125,7 +125,7 @@ export type checkIsConfluxNodeRunningParamsType = {
 );
 
 export async function checkIsConfluxNodeRunning(
-  args: checkIsConfluxNodeRunningParamsType
+  args: checkIsConfluxNodeRunningParamsType,
 ) {
   const chain = createChain({
     chainId: args.chainId,
@@ -174,7 +174,7 @@ export async function waitConfluxNodeReady({
     chain,
     transport: http(),
   });
- 
+
   await client.request(
     {
       method: "cfx_getStatus",
@@ -182,6 +182,6 @@ export async function waitConfluxNodeReady({
     {
       retryCount: 50,
       retryDelay: 500,
-    }
+    },
   );
 }
