@@ -1,92 +1,94 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import path from "node:path";
+import path from "path";
+import { onExit } from "signal-exit";
+import { cleanup, getBinPath } from "./helper";
+import { ConfluxConfig, ServerConfig } from "./types";
+import { ChildProcessWithoutNullStreams, spawn } from "child_process";
+import { CONFIG_FILE_NAME } from "./createConfigFile";
 
-import { CONFIG_FILE_NAME, createConfigFile } from "./createConfigFile";
-import type { ConfluxConfig, ServerConfig } from "./types";
-import { checkEnvironment, cleanup } from "./helper";
+export class ConfluxServer {
+  config: ConfluxConfig & ServerConfig;
+  conflux: ChildProcessWithoutNullStreams | null = null;
+  workDir: string;
 
-export type createServerReturnType = {
-  start: () => Promise<void>;
-  stop: () => Promise<void>;
-};
+  constructor(config: ConfluxConfig & ServerConfig = {}) {
+    this.config = {
+      ...config,
+      waitUntilReady: config.waitUntilReady || true,
+      silent: config.silent || true,
+      persistNodeData: config.persistNodeData || false,
+    };
 
-async function createServer({
-  waitUntilReady = true,
-  silent = true,
-  persistNodeData = false,
-  ...config
-}: ConfluxConfig & ServerConfig = {}): Promise<createServerReturnType> {
-  const checkResult = checkEnvironment();
+    this.workDir = path.join(__dirname, "../data");
 
-  if (!checkResult.supportPlatform) {
-    throw new Error(checkResult.message);
-  }
-  const workDir = path.join(__dirname, "../data");
-  // try to cleanup the data dir
-  if (!persistNodeData) {
-    cleanup(workDir);
+    onExit(this.syncStop.bind(this));
   }
 
-  await createConfigFile(config);
+  /**
+   * Start the conflux node
+   * @returns {Promise<void>}
+   */
+  async start() {
+    const binPathResult = getBinPath();
 
-  let conflux: ChildProcessWithoutNullStreams | null = null;
-
-  function stop() {
-    if (!conflux) return;
-    if (conflux) {
-      conflux.stdout.destroy();
-      conflux.kill("SIGINT");
-      conflux = null;
+    if ("errorMessage" in binPathResult) {
+      throw new Error(binPathResult.errorMessage);
     }
-    if (!persistNodeData) {
-      cleanup(workDir);
-    }
-  }
 
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
-  return {
-    start: async () => {
-      return new Promise<void>((resolve, reject) => {
-        conflux = spawn(
-          checkResult.binPath,
-          [
-            "--config",
-            path.join(workDir, CONFIG_FILE_NAME),
-            "--block-db-dir",
-            path.join(workDir, "db"),
-          ],
-          {
-            cwd: workDir,
-          },
-        );
-
-        conflux.stderr.on("data", (msg) => {
-          console.log(`Conflux node error: ${msg.toString()}`);
-          stop();
-          reject(msg.toString());
-        });
-
-        if (!silent) {
-          conflux.stdout.on("data", (msg) => {
-            console.log(msg.toString());
-          });
+    return new Promise<void>((resolve, reject) => {
+      this.conflux = spawn(
+        binPathResult.binPath,
+        [
+          "--config",
+          path.join(this.workDir, CONFIG_FILE_NAME),
+          "--block-db-dir",
+          path.join(this.workDir, "db"),
+        ],
+        {
+          cwd: this.workDir,
         }
+      );
 
-        if (waitUntilReady) {
-          conflux.stdout.on("data", (msg) => {
-            const msgStr = msg.toString();
-            if (msgStr.includes("Conflux client started")) {
-              resolve();
-            }
-          });
-        } else {
-          resolve();
-        }
+      this.conflux.stderr.on("data", (msg) => {
+        console.log(`Conflux node error: ${msg.toString()}`);
+        this.syncStop()
+        reject(msg.toString());
       });
-    },
-    stop: async () => stop(),
-  };
-}
 
-export default createServer;
+      if (!this.config.silent) {
+        this.conflux.stdout.on("data", (msg) => {
+          console.log(msg.toString());
+        });
+      }
+
+      if (this.config.waitUntilReady) {
+        this.conflux.stdout.on("data", (msg) => {
+          const msgStr = msg.toString();
+          if (msgStr.includes("Conflux client started")) {
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+
+  syncStop () {
+    if (!this.conflux) return;
+    if (this.conflux) {
+      this.conflux.stdout.destroy();
+      this.conflux = null;
+    }
+    if (!this.config.persistNodeData) {
+      console.log("cleaning up conflux node data...");
+      cleanup(this.workDir);
+    }
+  }
+
+  /**
+   * Stop the conflux server
+   */
+  async stop() {
+    this.syncStop()
+  }
+}
