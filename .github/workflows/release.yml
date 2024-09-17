@@ -49,7 +49,7 @@ jobs:
       - name: Build binaries
         run: |
           cd conflux-rust
-          CC=clang CXX=clang++ CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" cargo build --target ${{ matrix.target }} --release
+          CC=clang CXX=clang++ CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" cargo build --bin conflux --target ${{ matrix.target }} --release
           cd ..
 
       - name: Copy binaries
