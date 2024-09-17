@@ -77,9 +77,9 @@ async function createServer(
     cleanup(workDir);
   }
 
-  await createConfigFile(configWithDefault);
+  const finalConfig = await createConfigFile(configWithDefault);
 
-  const server = new ConfluxServer(configWithDefault);
+  const server = new ConfluxServer(finalConfig);
 
   return server;
 }

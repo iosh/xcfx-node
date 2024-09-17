@@ -4,13 +4,36 @@ import type { ConfluxConfig } from "./types";
 
 export const CONFIG_FILE_NAME = "config.toml";
 
+export type FinalConfigs = Required<
+  Omit<
+    ConfluxConfig,
+    | "genesis_secrets"
+    | "dev_block_interval_ms"
+    | "mining_author"
+    | "stratum_listen_address"
+    | "stratum_port"
+    | "log_conf"
+    | "log_file"
+    | "log_level"
+    | "poll_lifetime_in_seconds"
+  >
+> & {
+  genesis_secrets?: string;
+  dev_block_interval_ms?: number;
+  mining_author?: string;
+  stratum_listen_address?: string;
+  stratum_port?: number;
+  log_conf?: string;
+  log_file?: string;
+  log_level?: string;
+  poll_lifetime_in_seconds?: number;
+};
+
 export async function createConfigFile({
   genesis_secrets,
   ...config
 }: ConfluxConfig) {
-  const newConfig: Omit<ConfluxConfig, "genesis_secrets"> & {
-    genesis_secrets?: string;
-  } = {
+  const newConfig: FinalConfigs = {
     ...config,
     mode: config.mode || "dev",
     node_type: config.node_type || "full",
@@ -69,12 +92,12 @@ export async function createConfigFile({
   const configStr = Object.entries(newConfig)
     .map(
       ([key, value]) =>
-        `${key} = ${typeof value === "string" ? `"${value}"` : value}`,
+        `${key} = ${typeof value === "string" ? `"${value}"` : value}`
     )
     .join("\n");
   await fs.writeFile(
     path.join(__dirname, `../data/${CONFIG_FILE_NAME}`),
-    configStr,
+    configStr
   );
 
   return newConfig;

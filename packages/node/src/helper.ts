@@ -156,3 +156,32 @@ export async function checkIsConfluxNodeRunning(
     return false;
   }
 }
+
+type WaitConfluxNodeReadyParamsType = {
+  chainId: number;
+  httpPort: number;
+};
+
+export async function waitConfluxNodeReady({
+  chainId,
+  httpPort,
+}: WaitConfluxNodeReadyParamsType) {
+  const chain = createChain({
+    chainId,
+    url: `http://127.0.0.1:${httpPort}`,
+  });
+  const client = createPublicClient({
+    chain,
+    transport: http(),
+  });
+ 
+  await client.request(
+    {
+      method: "cfx_getStatus",
+    },
+    {
+      retryCount: 50,
+      retryDelay: 500,
+    }
+  );
+}

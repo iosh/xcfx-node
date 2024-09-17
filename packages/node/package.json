@@ -31,8 +31,8 @@
   "repository": "iosh/xcfx-node",
   "homepage": "https://github.com/iosh/xcfx-node",
   "optionalDependencies": {
-    "@xcfx/node-darwin-arm64": "0.0.7",
-    "@xcfx/node-linux-x64": "0.0.7"
+    "@xcfx/node-darwin-arm64": "workspace:*",
+    "@xcfx/node-linux-x64": "workspace:*"
   },
   "dependencies": {
     "cive": "^0.4.0",
