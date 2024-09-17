@@ -39,7 +39,7 @@ export class ConfluxServer {
       ],
       {
         cwd: this.workDir,
-      }
+      },
     );
 
     this.conflux.stderr.on("data", this.onListenError);
