@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import detectPort from "detect-port";
 import {
-  Chain,
-  createPublicClient,
   http,
-  PublicClient,
-  Transport,
+  type Chain,
+  type PublicClient,
+  type Transport,
+  createPublicClient,
   webSocket,
 } from "cive";
 import { defineChain } from "cive/utils";
+import detectPort from "detect-port";
 
 type CheckEnvironmentReturnType =
   | {

@@ -1,9 +1,9 @@
-import path from "path";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import path from "node:path";
 import { onExit } from "signal-exit";
+import { CONFIG_FILE_NAME, type FinalConfigs } from "./createConfigFile";
 import { cleanup, getBinPath, waitConfluxNodeReady } from "./helper";
-import { ServerConfig } from "./types";
-import { ChildProcessWithoutNullStreams, spawn } from "child_process";
-import { CONFIG_FILE_NAME, FinalConfigs } from "./createConfigFile";
+import type { ServerConfig } from "./types";
 
 export class ConfluxServer {
   config: FinalConfigs & ServerConfig;

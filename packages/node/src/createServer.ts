@@ -1,13 +1,13 @@
 import path from "node:path";
 import { createConfigFile } from "./createConfigFile";
-import type { ConfluxConfig, ServerConfig } from "./types";
 import {
-  getBinPath,
-  cleanup,
-  checkPort,
   checkIsConfluxNodeRunning,
+  checkPort,
+  cleanup,
+  getBinPath,
 } from "./helper";
 import { ConfluxServer } from "./server";
+import type { ConfluxConfig, ServerConfig } from "./types";
 
 export type createServerReturnType = {
   start: () => Promise<void>;
