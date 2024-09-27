@@ -1,0 +1,28 @@
+{
+  "name": "@xcfx/node-darwin-arm64",
+  "version": "0.0.7",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "@xcfx/node.darwin-arm64.node",
+  "files": [
+    "@xcfx/node.darwin-arm64.node"
+  ],
+  "description": "",
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "https://github.com/iosh/xcfx-node",
+  "os": [
+    "darwin"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@xcfx/node-win32-arm64-msvc",
+  "version": "0.0.7",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "@xcfx/node.win32-arm64-msvc.node",
+  "files": [
+    "@xcfx/node.win32-arm64-msvc.node"
+  ],
+  "description": "",
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "https://github.com/iosh/xcfx-node",
+  "os": [
+    "win32"
+  ]
+}
