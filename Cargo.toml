@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 cfxcore = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
 napi = "2"
 napi-derive = "2"
-client = { git = "https://github.com/Conflux-Chain/conflux-rust.git", package = "client" }
+client = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
 chrono = "0.4.38"
 parking_lot = "0.11"
 log = "0.4"
