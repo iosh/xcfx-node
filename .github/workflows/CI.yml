@@ -95,14 +95,9 @@ jobs:
       - name: Install windows dependencies
         if: ${{matrix.settings.host == 'windows-latest'}}
         run: |
-          choco install -y llvm visualstudio2017buildtools
+          choco install llvm visualstudio-installer visualstudio2017-workload-vctools visualstudio2017buildtools-y
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
           vcpkg install openssl:x64-windows-static
-      - name: Add msbuild to PATH
-        if: ${{matrix.settings.host == 'windows-latest'}}
-        uses: microsoft/setup-msbuild@v2
-        with:
-          vs-version: '15.9'
       - name: Install dependencies
         run: pnpm install
       - name: Build
