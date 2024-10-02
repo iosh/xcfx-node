@@ -1,0 +1,13 @@
+{
+  "build": { "dockerfile": "Dockerfile" },
+  "customizations": {
+    "vscode": {
+      "settings": {},
+      "extensions": [
+        "biomejs.biome",
+        "rust-lang.rust-analyzer",
+        "vitest.explorer"
+      ]
+    }
+  }
+}
