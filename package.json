@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "",
   "main": "index.js",
   "types": "index.d.ts",
@@ -14,7 +14,8 @@
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",
-      "x86_64-unknown-linux-gnu"
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
     ]
   },
   "engines": {

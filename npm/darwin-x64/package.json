@@ -1,9 +1,9 @@
 {
   "name": "@xcfx/node-darwin-x64",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "cpu": ["x64"],
-  "main": "@xcfx/node.darwin-x64.node",
-  "files": ["@xcfx/node.darwin-x64.node"],
+  "main": "node.darwin-x64.node",
+  "files": ["node.darwin-x64.node"],
   "description": "",
   "keywords": ["conflux", "conflux-client"],
   "license": "MIT",

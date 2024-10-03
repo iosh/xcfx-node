@@ -1,9 +1,9 @@
 {
   "name": "@xcfx/node-linux-x64-gnu",
-  "version": "0.0.7",
+  "version": "0.1.0",
   "cpu": ["x64"],
-  "main": "@xcfx/node.linux-x64-gnu.node",
-  "files": ["@xcfx/node.linux-x64-gnu.node"],
+  "main": "node.linux-x64-gnu.node",
+  "files": ["node.linux-x64-gnu.node"],
   "description": "",
   "keywords": ["conflux", "conflux-client"],
   "license": "MIT",
