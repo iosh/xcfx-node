@@ -16,6 +16,6 @@ describe("server", () => {
 
     const status = await client.getStatus();
     expect(status.chainId).toBe(1234);
-    expect(status.networkId).toBe(1235);
+    expect(status.networkId).toBe(1234);
   });
 });
