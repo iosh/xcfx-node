@@ -1,5 +1,5 @@
 import path from "node:path";
-import { runNode, stopNode, type ConfluxConfig } from "./conflux";
+import { type ConfluxConfig, runNode, stopNode } from "./conflux";
 
 export type { ConfluxConfig };
 

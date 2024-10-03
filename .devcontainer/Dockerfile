@@ -8,12 +8,12 @@ RUN  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && 
      rustup target add x86_64-unknown-linux-gnu
 
 RUN curl -fsSL https://fnm.vercel.app/install | bash && \
-. ~/.bashrc && \
-fnm use --install-if-missing 20 && \
-npm install pnpm -g 
-     
-     
-     
+     . ~/.bashrc && \
+     fnm use --install-if-missing 20 && \
+     npm install pnpm -g 
+
+
+
 
 
 ENV PATH="/root/.cargo/bin:${PATH}"

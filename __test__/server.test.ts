@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeAll } from "vitest";
+import { http, createPublicClient } from "cive";
+import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { createPublicClient, http } from "cive";
 import { localChain } from "./help";
 
 describe("server", () => {

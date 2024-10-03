@@ -5,9 +5,11 @@
       "coverage",
       "node_modules",
       "*.js",
+      "*.d.ts",
       "tsconfig.json",
       "tsconfig.*.json",
-      "conflux-rust"
+      "conflux-rust",
+      "target"
     ]
   },
   "organizeImports": {

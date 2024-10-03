@@ -1,20 +1,14 @@
 {
   "name": "@xcfx/node",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "",
   "main": "index.js",
   "types": "index.d.ts",
   "browser": "browser.js",
   "repository": "https://github.com/iosh/xcfx-node",
   "license": "MIT",
-  "keywords": [
-    "conflux",
-    "conflux-client"
-  ],
-  "files": [
-    "index.d.ts",
-    "index.js"
-  ],
+  "keywords": ["conflux", "conflux-client"],
+  "files": ["index.d.ts", "index.js"],
   "napi": {
     "binaryName": "node",
     "targets": [
@@ -32,13 +26,19 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
+    "build:ts": "tsc",
     "build": "napi build --dts conflux.d.ts --js conflux.js --platform --release",
     "build:debug": "napi build --dts conflux.d.ts --js conflux.js --platform ",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "prepublishOnly": "napi prepublish -t npm",
     "version": "napi version",
-    "test": "vitest run"
+    "test": "vitest run",
+    "format": "biome format --write",
+    "lint": "biome check --fix",
+    "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",
+    "changeset:prepublish": "pnpm build:ts",
+    "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
   "dependencies": {
     "cive": "^0.4.1"

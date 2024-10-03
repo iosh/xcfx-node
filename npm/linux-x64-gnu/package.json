@@ -1,18 +1,11 @@
 {
   "name": "@xcfx/node-linux-x64-gnu",
   "version": "0.0.7",
-  "cpu": [
-    "x64"
-  ],
+  "cpu": ["x64"],
   "main": "@xcfx/node.linux-x64-gnu.node",
-  "files": [
-    "@xcfx/node.linux-x64-gnu.node"
-  ],
+  "files": ["@xcfx/node.linux-x64-gnu.node"],
   "description": "",
-  "keywords": [
-    "conflux",
-    "conflux-client"
-  ],
+  "keywords": ["conflux", "conflux-client"],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
@@ -22,10 +15,6 @@
     "access": "public"
   },
   "repository": "https://github.com/iosh/xcfx-node",
-  "os": [
-    "linux"
-  ],
-  "libc": [
-    "glibc"
-  ]
+  "os": ["linux"],
+  "libc": ["glibc"]
 }
