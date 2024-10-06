@@ -20,7 +20,7 @@ RUN curl -fsSL https://fnm.vercel.app/install | bash && \
 
 
 ENV PATH="/root/.cargo/bin:${PATH}"
-ENV CC=clang
-ENV CXX=clang++
+ENV CC=clang-18
+ENV CXX=clang++-18
 ENV CXXFLAGS="-std=c++11 -stdlib=libc++"
 ENV LDFLAGS="-stdlib=libc++"
