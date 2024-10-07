@@ -1,5 +1,12 @@
 {
-  "build": { "dockerfile": "Dockerfile" },
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "USERNAME": "${localEnv:USER}",
+      "USER_UID": "${localEnv:REMOTE_UID:1000}",
+      "USER_GID": "${localEnv:REMOTE_GID:1000}"
+    }
+  },
   "customizations": {
     "vscode": {
       "settings": {},
@@ -9,5 +16,6 @@
         "vitest.explorer"
       ]
     }
-  }
+  },
+  "remoteUser": "${localEnv:USER}"
 }
