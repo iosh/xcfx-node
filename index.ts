@@ -1,5 +1,5 @@
 import path from "node:path";
-import { type ConfluxConfig, runNode, stopNode } from "./conflux";
+import { type ConfluxConfig, ConfluxNode } from "./conflux";
 
 export type { ConfluxConfig };
 
@@ -13,12 +13,14 @@ export async function createServer(userConfig: ConfluxConfig = {}) {
     posPrivateKeyPath: path.join(__dirname, "./pos_config/pos_key"),
     ...userConfig,
   };
+
+  const node = new ConfluxNode()
   return {
     async start() {
-      runNode(config);
+      node.startNode(config);
     },
     async stop() {
-      stopNode();
+      node.stopNode();
     },
   };
 }

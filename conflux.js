@@ -361,5 +361,4 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-module.exports.runNode = nativeBinding.runNode
-module.exports.stopNode = nativeBinding.stopNode
+module.exports.ConfluxNode = nativeBinding.ConfluxNode
