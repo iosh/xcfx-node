@@ -43,7 +43,6 @@ impl ConfluxNode {
       let temp_dir = tempdir()?;
       let temp_dir_path = temp_dir.path();
       let conf = convert_config(config, &temp_dir_path);
-
       let temp_dir = tempdir().unwrap();
       env::set_current_dir(temp_dir.path()).unwrap();
 
@@ -53,6 +52,7 @@ impl ConfluxNode {
         NodeType::Archive => {
           println!("Starting archive client...");
           ArchiveClient::start(conf, exit_sign.clone()).map_err(|e| {
+            eprintln!("failed to start archive client: {}", e);
             Error::new(
               napi::Status::Unknown,
               format!("failed to start archive client: {}", e),
@@ -61,7 +61,9 @@ impl ConfluxNode {
         }
         NodeType::Full => {
           println!("Starting full client...");
+
           FullClient::start(conf, exit_sign.clone()).map_err(|e| {
+            eprintln!("failed to start full client: {}", e);
             Error::new(
               napi::Status::Unknown,
               format!("failed to start full client: {}", e),

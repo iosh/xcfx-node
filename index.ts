@@ -3,7 +3,15 @@ import { type ConfluxConfig, ConfluxNode } from "./conflux";
 
 export type { ConfluxConfig };
 
+
+let isServiceCreated = false;
 export async function createServer(userConfig: ConfluxConfig = {}) {
+
+  if (isServiceCreated) {
+    throw new Error("The server has already been created");
+  }
+  isServiceCreated = true;
+
   const config: ConfluxConfig = {
     posConfigPath: path.join(__dirname, "./pos_config/pos_config.yaml"),
     posInitialNodesPath: path.join(
