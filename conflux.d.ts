@@ -77,10 +77,12 @@ export interface ConfluxConfig {
   genesisSecrets?: Array<string>
   /**  @default: false */
   devPackTxImmediately?: boolean
-  /** @default:0 */
+  /** @default:1 */
   posReferenceEnableHeight?: number
-  /** @default: 1 */
+  /** @default:2 */
   defaultTransitionTime?: number
+  /** @default:3 */
+  cip1559TransitionHeight?: number
   /** @default: temp dir */
   confluxDataDir?: string
   /** pos config path */
