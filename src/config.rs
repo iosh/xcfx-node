@@ -56,10 +56,12 @@ pub struct ConfluxConfig {
   pub genesis_secrets: Option<Vec<String>>,
   ///  @default: false
   pub dev_pack_tx_immediately: Option<bool>,
-  /// @default:0
+  /// @default:1
   pub pos_reference_enable_height: Option<i64>,
-  /// @default: 1
+  /// @default:2
   pub default_transition_time: Option<i64>,
+  /// @default:3
+  pub cip1559_transition_height: Option<i64>,
   /// @default: temp dir
   pub conflux_data_dir: Option<String>,
   /// pos config path
@@ -127,10 +129,13 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   conf.raw_conf.dev_pack_tx_immediately = js_config.dev_pack_tx_immediately;
 
   conf.raw_conf.pos_reference_enable_height =
-    js_config.pos_reference_enable_height.unwrap_or(0) as u64;
+    js_config.pos_reference_enable_height.unwrap_or(1) as u64;
 
   conf.raw_conf.default_transition_time =
-    Some(js_config.default_transition_time.unwrap_or(1) as u64);
+    Some(js_config.default_transition_time.unwrap_or(2) as u64);
+
+  conf.raw_conf.cip1559_transition_height =
+    Some(js_config.cip1559_transition_height.unwrap_or(3) as u64);
 
   // confix data dir, default to temp dir
   conf.raw_conf.conflux_data_dir = js_config
@@ -151,6 +156,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   // set the block db to sqlite
   conf.raw_conf.block_db_type = js_config.block_db_type.unwrap_or("sqlite".to_string());
+  conf.raw_conf.log_conf = js_config.log_conf;
 
   conf
 }
