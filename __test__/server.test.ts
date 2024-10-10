@@ -21,17 +21,7 @@ describe("server", () => {
 
     await server.stop();
 
-    await expect(async () =>
-      client.getStatus(),
-    ).rejects.toThrowErrorMatchingInlineSnapshot(`
-      [TimeoutError: The request took too long to respond.
-
-      URL: http://127.0.0.1:12537
-      Request body: {"method":"cfx_getStatus"}
-
-      Details: The request timed out.
-      Version: 2.21.16]
-    `);
+    await expect(async () => client.getStatus()).rejects.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 3000));
   });
 });

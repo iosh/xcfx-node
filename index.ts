@@ -3,10 +3,8 @@ import { type ConfluxConfig, ConfluxNode } from "./conflux";
 
 export type { ConfluxConfig };
 
-
 let isServiceCreated = false;
 export async function createServer(userConfig: ConfluxConfig = {}) {
-
   if (isServiceCreated) {
     throw new Error("The server has already been created");
   }
@@ -23,7 +21,7 @@ export async function createServer(userConfig: ConfluxConfig = {}) {
     ...userConfig,
   };
 
-  const node = new ConfluxNode()
+  const node = new ConfluxNode();
   return {
     async start() {
       node.startNode(config);
