@@ -14,7 +14,7 @@ export async function createServer(userConfig: ConfluxConfig = {}) {
     posConfigPath: path.join(__dirname, "./configs/pos_config/pos_config.yaml"),
     posInitialNodesPath: path.join(
       __dirname,
-      "../configs/pos_config/initial_nodes.json",
+      "./configs/pos_config/initial_nodes.json",
     ),
     posPrivateKeyPath: path.join(__dirname, "../configs/pos_config/pos_key"),
     logConf: path.join(__dirname, "./configs/log.yaml"),
