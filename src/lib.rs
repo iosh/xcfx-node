@@ -18,6 +18,12 @@ use std::{env, sync::Arc};
 use tempfile::tempdir;
 mod config;
 
+use log4rs::{
+  append::{console::ConsoleAppender, file::FileAppender},
+  config::{Appender, Config as LogConfig, Logger, Root},
+  encode::pattern::PatternEncoder,
+};
+
 #[napi]
 pub struct ConfluxNode {
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
@@ -45,6 +51,17 @@ impl ConfluxNode {
       let conf = convert_config(config, &temp_dir_path);
       let temp_dir = tempdir().unwrap();
       env::set_current_dir(temp_dir.path()).unwrap();
+
+      if let Some(ref log_conf) = conf.raw_conf.log_conf {
+        log4rs::init_file(log_conf, Default::default()).map_err(|e| {
+          format!(
+              "failed to initialize log with log config file: {:?}",
+              e
+          )
+      });
+      }
+
+
 
       println!("current dir thread 1 {:?}", env::current_dir());
       let client_handle: Box<dyn ClientTrait>;
