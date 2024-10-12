@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "cive/accounts";
 import { hexAddressToBase32 } from "cive/utils";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { localChain } from "./help";
+import { getPortFree, localChain } from "./help";
 
 const TEST_MINING_ADDRESS = "0x1b13CC31fC4Ceca3b72e3cc6048E7fabaefB3AC3";
 const TEST_MINING_ADDRESS_PK =
@@ -22,7 +22,9 @@ const TEST_PK = [
   "e9cfd4d1d29f7a67c970c1d5c145e958061cd54d05a83e29c7e39b7be894c9c6",
 ];
 
+
 beforeAll(async () => {
+  const tcpAndUdpPort = await getPortFree()
   const server = await createServer({
     nodeType: "full",
     devBlockIntervalMs: 200,
@@ -35,6 +37,8 @@ beforeAll(async () => {
     // devPackTxImmediately: true,
     posReferenceEnableHeight: 1,
     defaultTransitionTime: 2,
+    tcpPort: tcpAndUdpPort,
+    udpPort: tcpAndUdpPort,
   });
 
   await server.start();

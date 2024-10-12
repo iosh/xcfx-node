@@ -34,7 +34,7 @@
     "format:rs": "cargo fmt",
     "prepublishOnly": "napi prepublish -t npm",
     "version": "napi version",
-    "test": "vitest run",
+    "test": "NODE_OPTIONS=--max-old-space-size=32768 vitest run",
     "format": "biome format --write",
     "lint": "biome check --fix",
     "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",

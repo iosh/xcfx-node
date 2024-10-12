@@ -1,11 +1,15 @@
 import { http, createPublicClient } from "cive";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { localChain } from "./help";
+import { getPortFree, localChain } from "./help";
 
 describe("server", () => {
   test("default", async () => {
-    const server = await createServer();
+    const tcpAndUdpPort = await getPortFree();
+    const server = await createServer({
+      tcpPort: tcpAndUdpPort,
+      udpPort: tcpAndUdpPort,
+    });
     await server.start();
     // TODO update this
     await new Promise((resolve) => setTimeout(resolve, 15000));
@@ -22,6 +26,5 @@ describe("server", () => {
     await server.stop();
 
     await expect(async () => client.getStatus()).rejects.toThrow();
-    await new Promise((resolve) => setTimeout(resolve, 3000));
   });
 });
