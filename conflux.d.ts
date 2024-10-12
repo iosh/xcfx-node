@@ -53,6 +53,16 @@ export interface ConfluxConfig {
    */
   jsonrpcHttpPort?: number
   /**
+   * `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
+   * @default 32323
+   */
+  tcpPort?: number
+  /**
+   * `udp_port` is the UDP port used for node discovery.
+   * @default 32323
+   */
+  udpPort?: number
+  /**
    * Possible Core space names are: all, safe, cfx, pos, debug, pubsub, test, trace, txpool.
    * `safe` only includes `cfx` and `pubsub`, `txpool`.
    *  @default "all"

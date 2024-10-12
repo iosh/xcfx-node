@@ -1,5 +1,6 @@
 import { defineChain } from "cive/utils";
 
+import net from "node:net";
 export const localChain = defineChain({
   name: "local",
   id: 1234,
@@ -15,3 +16,19 @@ export const localChain = defineChain({
     },
   },
 });
+
+export async function getPortFree(): Promise<number> {
+  return new Promise((res, rej) => {
+    const srv = net.createServer();
+    srv.listen(0, () => {
+      const AddressInfo = srv.address();
+
+      if (typeof AddressInfo === "object") {
+        if (typeof AddressInfo?.port === "number") {
+          return srv.close((err) => res(AddressInfo?.port));
+        }
+      }
+      srv.close((err) => rej("get port error"));
+    });
+  });
+}

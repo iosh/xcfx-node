@@ -39,6 +39,14 @@ pub struct ConfluxConfig {
   /// The port of the HTTP JSON-RPC server.
   /// @default 12537
   pub jsonrpc_http_port: Option<u16>,
+
+  /// `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
+  /// @default 32323
+  pub tcp_port: Option<u16>,
+  /// `udp_port` is the UDP port used for node discovery.
+  /// @default 32323
+  pub udp_port: Option<u16>,
+
   /// Possible Core space names are: all, safe, cfx, pos, debug, pubsub, test, trace, txpool.
   /// `safe` only includes `cfx` and `pubsub`, `txpool`.
   ///  @default "all"
@@ -84,8 +92,15 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     Some("light") => NodeType::Light,
     _ => NodeType::Full,
   };
+  // node_type
   conf.raw_conf.node_type = Some(node_type);
 
+  // chain
+  conf.raw_conf.chain_id = Some(js_config.chain_id.unwrap_or(1234));
+
+  conf.raw_conf.evm_chain_id = Some(js_config.evm_chain_id.unwrap_or(1235));
+
+  // mode
   conf.raw_conf.mode = Some("dev".to_string());
 
   conf.raw_conf.dev_block_interval_ms = match js_config.dev_block_interval_ms {
@@ -95,30 +110,11 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.mining_author = js_config.mining_author;
 
-  conf.raw_conf.stratum_listen_address = js_config
-    .stratum_listen_address
-    .unwrap_or("127.0.0.1".to_string());
-
-  conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
-
-  conf.raw_conf.jsonrpc_ws_port = match js_config.jsonrpc_ws_port {
-    Some(n) => Some(n),
-    _ => Some(12535),
-  };
-
-  conf.raw_conf.jsonrpc_http_port = match js_config.jsonrpc_http_port {
-    Some(n) => Some(n),
-    _ => Some(12537),
-  };
-
   conf.raw_conf.public_rpc_apis = match js_config.public_rpc_apis {
     Some(s) => ApiSet::from_str(&s).unwrap_or(ApiSet::All),
     _ => ApiSet::All,
   };
 
-  conf.raw_conf.chain_id = Some(js_config.chain_id.unwrap_or(1234));
-
-  conf.raw_conf.evm_chain_id = Some(js_config.evm_chain_id.unwrap_or(1235));
 
   conf.raw_conf.dev_pos_private_key_encryption_password = Some(
     js_config
@@ -157,5 +153,28 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   // set the block db to sqlite
   conf.raw_conf.block_db_type = js_config.block_db_type.unwrap_or("sqlite".to_string());
   conf.raw_conf.log_conf = js_config.log_conf;
+
+  // network
+
+  conf.raw_conf.stratum_listen_address = js_config
+    .stratum_listen_address
+    .unwrap_or("127.0.0.1".to_string());
+
+  conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
+
+  conf.raw_conf.jsonrpc_ws_port = match js_config.jsonrpc_ws_port {
+    Some(n) => Some(n),
+    _ => Some(12535),
+  };
+
+  conf.raw_conf.jsonrpc_http_port = match js_config.jsonrpc_http_port {
+    Some(n) => Some(n),
+    _ => Some(12537),
+  };
+
+  conf.raw_conf.tcp_port = js_config.tcp_port.unwrap_or(32323);
+
+  conf.raw_conf.udp_port = js_config.udp_port.or(Some(32324));
+
   conf
 }
