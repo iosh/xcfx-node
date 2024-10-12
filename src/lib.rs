@@ -1,6 +1,7 @@
 #![deny(clippy::all)]
 
 use config::convert_config;
+use log::{error, info};
 use napi::Error;
 use napi_derive::napi;
 
@@ -18,11 +19,7 @@ use std::{env, sync::Arc};
 use tempfile::tempdir;
 mod config;
 
-use log4rs::{
-  append::{console::ConsoleAppender, file::FileAppender},
-  config::{Appender, Config as LogConfig, Logger, Root},
-  encode::pattern::PatternEncoder,
-};
+use log4rs;
 
 #[napi]
 pub struct ConfluxNode {
@@ -53,23 +50,20 @@ impl ConfluxNode {
       env::set_current_dir(temp_dir.path()).unwrap();
 
       if let Some(ref log_conf) = conf.raw_conf.log_conf {
-        log4rs::init_file(log_conf, Default::default()).map_err(|e| {
-          format!(
-              "failed to initialize log with log config file: {:?}",
-              e
-          )
-      });
+        log4rs::init_file(log_conf, Default::default())
+          .map_err(|e| {
+            error!("failed to initialize log with log config file: {:?}", e);
+            format!("failed to initialize log with log config file: {:?}", e)
+          })
+          .unwrap();
       }
 
-
-
-      println!("current dir thread 1 {:?}", env::current_dir());
       let client_handle: Box<dyn ClientTrait>;
       client_handle = match conf.node_type() {
         NodeType::Archive => {
           println!("Starting archive client...");
           ArchiveClient::start(conf, exit_sign.clone()).map_err(|e| {
-            eprintln!("failed to start archive client: {}", e);
+            error!("failed to start archive client: {}", e);
             Error::new(
               napi::Status::Unknown,
               format!("failed to start archive client: {}", e),
@@ -80,7 +74,7 @@ impl ConfluxNode {
           println!("Starting full client...");
 
           FullClient::start(conf, exit_sign.clone()).map_err(|e| {
-            eprintln!("failed to start full client: {}", e);
+            error!("failed to start full client: {}", e);
             Error::new(
               napi::Status::Unknown,
               format!("failed to start full client: {}", e),
@@ -90,6 +84,7 @@ impl ConfluxNode {
         NodeType::Light => {
           println!("Starting light client...");
           LightClient::start(conf, exit_sign.clone()).map_err(|e| {
+            error!("failed to start light client: {}", e);
             Error::new(
               napi::Status::Unknown,
               format!("failed to start light client: {}", e),
@@ -98,7 +93,7 @@ impl ConfluxNode {
         }
         NodeType::Unknown => return Err(Error::new(napi::Status::InvalidArg, "Unknown node type")),
       };
-      println!("Conflux client started");
+      info!("Conflux client started");
       shutdown_handler::run(client_handle, exit_sign.clone());
       Ok(())
     });
