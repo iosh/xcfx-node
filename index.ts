@@ -26,7 +26,7 @@ export async function createServer(config: Config = {}) {
     ),
     posPrivateKeyPath: path.join(__dirname, "../configs/pos_config/pos_key"),
 
-    logConf: log ? path.join(__dirname, "./configs/log4rs.yaml") : undefined,
+    logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
     
     ...userConfig,
   };
