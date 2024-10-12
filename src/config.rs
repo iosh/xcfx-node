@@ -157,6 +157,5 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   // set the block db to sqlite
   conf.raw_conf.block_db_type = js_config.block_db_type.unwrap_or("sqlite".to_string());
   conf.raw_conf.log_conf = js_config.log_conf;
-  println!("{:?}", conf.raw_conf);
   conf
 }
