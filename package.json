@@ -7,8 +7,14 @@
   "browser": "browser.js",
   "repository": "https://github.com/iosh/xcfx-node",
   "license": "MIT",
-  "keywords": ["conflux", "conflux-client"],
-  "files": ["index.d.ts", "index.js"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
+  "files": [
+    "index.d.ts",
+    "index.js"
+  ],
   "napi": {
     "binaryName": "node",
     "targets": [
@@ -34,7 +40,7 @@
     "format:rs": "cargo fmt",
     "prepublishOnly": "napi prepublish -t npm",
     "version": "napi version",
-    "test": "NODE_OPTIONS=--max-old-space-size=32768 vitest run",
+    "test": "cross-env NODE_OPTIONS=--max-old-space-size=32768 vitest run",
     "format": "biome format --write",
     "lint": "biome check --fix",
     "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",
@@ -49,6 +55,7 @@
     "@changesets/cli": "^2.27.8",
     "@napi-rs/cli": "3.0.0-alpha.62",
     "@types/node": "^22.5.2",
+    "cross-env": "^7.0.3",
     "typescript": "^5.5.3",
     "vitest": "^2.1.1"
   },
