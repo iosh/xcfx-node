@@ -1,6 +1,6 @@
 import { http, createPublicClient, webSocket } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
-import { hexAddressToBase32 } from "cive/utils";
+import { parseCFX } from "cive/utils";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
 import { getPortFree, localChain } from "./help";
@@ -22,9 +22,8 @@ const TEST_PK = [
   "e9cfd4d1d29f7a67c970c1d5c145e958061cd54d05a83e29c7e39b7be894c9c6",
 ];
 
-
 beforeAll(async () => {
-  const tcpAndUdpPort = await getPortFree()
+  const tcpAndUdpPort = await getPortFree();
   const server = await createServer({
     nodeType: "full",
     devBlockIntervalMs: 200,
@@ -35,15 +34,13 @@ beforeAll(async () => {
     evmChainId: 2222,
     genesisSecrets: TEST_PK,
     // devPackTxImmediately: true,
-    posReferenceEnableHeight: 1,
-    defaultTransitionTime: 2,
     tcpPort: tcpAndUdpPort,
     udpPort: tcpAndUdpPort,
   });
 
   await server.start();
 
-  await new Promise((resolve) => setTimeout(resolve, 15000));
+  await new Promise((resolve) => setTimeout(resolve, 25000));
 
   return () => server.stop();
 });
@@ -77,6 +74,33 @@ describe("customConfig", () => {
       await client.getBalance({
         address: miningAccount.address,
       }),
-    ).toMatchInlineSnapshot("0n");
+    ).toBeGreaterThan(0n);
+  });
+
+  test("auto mining", async () => {
+    const client = createPublicClient({
+      chain: localChain,
+      transport: http("http://127.0.0.1:12555"),
+    });
+    const block = await client.getBlock();
+    expect(block.blockNumber).toBeGreaterThan(0);
+    expect(block.baseFeePerGas).toBeDefined();
+  });
+
+  test("test genesis", async () => {
+    const client = createPublicClient({
+      chain: localChain,
+      transport: http("http://127.0.0.1:12555"),
+    });
+
+    for (const pk of TEST_PK) {
+      const account = privateKeyToAccount(`0x${pk}`, {
+        networkId: TEST_NETWORK_ID,
+      });
+      const balance = await client.getBalance({
+        address: account.address,
+      });
+      expect(balance).toBe(parseCFX("10000"));
+    }
   });
 });
