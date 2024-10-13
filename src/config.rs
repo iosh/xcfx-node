@@ -1,8 +1,12 @@
-use std::{path::Path, str::FromStr};
-
 use cfxcore::NodeType;
 use client::{common::Configuration, rpc::rpc_apis::ApiSet};
 use napi_derive::napi;
+use std::{
+  fs::File,
+  io::{BufWriter, Write},
+  path::Path,
+  str::FromStr,
+};
 
 #[napi(object)]
 #[derive(Debug)]
@@ -100,6 +104,24 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.evm_chain_id = Some(js_config.evm_chain_id.unwrap_or(1235));
 
+  if let Some(pk) = js_config.genesis_secrets {
+    let f = File::create(temp_dir_path.join("genesis_secrets.txt")).unwrap();
+    let mut w = BufWriter::new(f);
+
+    for p in pk {
+      writeln!(w, "{}", p).unwrap();
+    }
+    w.flush().unwrap();
+
+    conf.raw_conf.genesis_secrets = Some(
+      temp_dir_path
+        .join("genesis_secrets.txt")
+        .into_os_string()
+        .into_string()
+        .unwrap(),
+    );
+  }
+
   // mode
   conf.raw_conf.mode = Some("dev".to_string());
 
@@ -114,7 +136,6 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     Some(s) => ApiSet::from_str(&s).unwrap_or(ApiSet::All),
     _ => ApiSet::All,
   };
-
 
   conf.raw_conf.dev_pos_private_key_encryption_password = Some(
     js_config
@@ -174,7 +195,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.tcp_port = js_config.tcp_port.unwrap_or(32323);
 
-  conf.raw_conf.udp_port = js_config.udp_port.or(Some(32324));
+  conf.raw_conf.udp_port = js_config.udp_port.or(Some(32323));
 
   conf
 }
