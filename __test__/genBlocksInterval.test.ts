@@ -1,12 +1,15 @@
+import { http, createPublicClient } from "cive";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { createPublicClient, http } from "cive";
-import { localChain, wait } from "./help";
+import { jsonrpcHttpPort, localChain, udpAndTcpPort, wait } from "./help";
 
 beforeAll(async () => {
   // blocks are automatically generated every ``dev_block_interval_ms'' ms.
   const server = await createServer({
     devBlockIntervalMs: 100,
+    tcpPort: udpAndTcpPort,
+    udpPort: udpAndTcpPort,
+    jsonrpcHttpPort: jsonrpcHttpPort,
   });
 
   await server.start();

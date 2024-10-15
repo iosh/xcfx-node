@@ -1,14 +1,14 @@
 import { http, createPublicClient } from "cive";
-import { beforeAll, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { getPortFree, localChain } from "./help";
+import { jsonrpcHttpPort, localChain, udpAndTcpPort } from "./help";
 
 describe("server", () => {
   test("default", async () => {
-    const tcpAndUdpPort = await getPortFree();
     const server = await createServer({
-      tcpPort: tcpAndUdpPort,
-      udpPort: tcpAndUdpPort,
+      tcpPort: udpAndTcpPort,
+      udpPort: udpAndTcpPort,
+      jsonrpcHttpPort: jsonrpcHttpPort,
     });
     await server.start();
     // TODO update this
