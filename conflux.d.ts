@@ -42,15 +42,9 @@ export interface ConfluxConfig {
    * "error" | "warn" | "info" | "debug" | "trace" | "off"
    */
   logLevel?: string
-  /**
-   * The port of the websocket JSON-RPC server.
-   *  @default 12535
-   */
+  /** The port of the websocket JSON-RPC server. */
   jsonrpcWsPort?: number
-  /**
-   * The port of the HTTP JSON-RPC server.
-   * @default 12537
-   */
+  /** The port of the HTTP JSON-RPC server. */
   jsonrpcHttpPort?: number
   /**
    * `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.

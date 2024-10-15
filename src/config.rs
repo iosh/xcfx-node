@@ -38,10 +38,8 @@ pub struct ConfluxConfig {
   /// "error" | "warn" | "info" | "debug" | "trace" | "off"
   pub log_level: Option<String>,
   /// The port of the websocket JSON-RPC server.
-  ///  @default 12535
   pub jsonrpc_ws_port: Option<u16>,
   /// The port of the HTTP JSON-RPC server.
-  /// @default 12537
   pub jsonrpc_http_port: Option<u16>,
 
   /// `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
@@ -183,15 +181,9 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
 
-  conf.raw_conf.jsonrpc_ws_port = match js_config.jsonrpc_ws_port {
-    Some(n) => Some(n),
-    _ => Some(12535),
-  };
+  conf.raw_conf.jsonrpc_ws_port = js_config.jsonrpc_ws_port;
 
-  conf.raw_conf.jsonrpc_http_port = match js_config.jsonrpc_http_port {
-    Some(n) => Some(n),
-    _ => Some(12537),
-  };
+  conf.raw_conf.jsonrpc_http_port = js_config.jsonrpc_http_port;
 
   conf.raw_conf.tcp_port = js_config.tcp_port.unwrap_or(32323);
 
