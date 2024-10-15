@@ -32,3 +32,6 @@ export async function getPortFree(): Promise<number> {
     });
   });
 }
+
+export const wait = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));

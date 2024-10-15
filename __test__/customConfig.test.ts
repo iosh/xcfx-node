@@ -40,7 +40,7 @@ beforeAll(async () => {
 
   await server.start();
 
-  await new Promise((resolve) => setTimeout(resolve, 25000));
+  await new Promise((resolve) => setTimeout(resolve, 15000));
 
   return () => server.stop();
 });
