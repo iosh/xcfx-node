@@ -9,8 +9,14 @@ export type Config = {
   log?:boolean
 } & ConfluxConfig;
 
+export type CreateServerReturnType = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+}
+
+
 let isServiceCreated = false;
-export async function createServer(config: Config = {}) {
+export async function createServer(config: Config = {}): Promise<CreateServerReturnType> {
   if (isServiceCreated) {
     throw new Error("The server has already been created");
   }
