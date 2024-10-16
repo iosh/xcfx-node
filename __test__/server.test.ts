@@ -1,10 +1,11 @@
 import { http, createPublicClient } from "cive";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { jsonrpcHttpPort, localChain, udpAndTcpPort } from "./help";
+import { getFreePorts, localChain } from "./help";
 
 describe("server", () => {
   test("default", async () => {
+    const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
     const server = await createServer({
       tcpPort: udpAndTcpPort,
       udpPort: udpAndTcpPort,
@@ -15,7 +16,7 @@ describe("server", () => {
     await new Promise((resolve) => setTimeout(resolve, 15000));
     const client = createPublicClient({
       chain: localChain,
-      transport: http(),
+      transport: http(`http://127.0.0.1:${jsonrpcHttpPort}`),
     });
 
     const status = await client.getStatus();

@@ -8,14 +8,16 @@ import {
   TEST_MINING_ADDRESS,
   TEST_NETWORK_ID,
   TEST_PK,
-  jsonrpcHttpPort,
-  jsonrpcWsPort,
+  getFreePorts,
   localChain,
-  udpAndTcpPort,
   wait,
 } from "./help";
-
+let HTTP_PORT: number;
+let WS_PORT: number;
 beforeAll(async () => {
+  const [jsonrpcHttpPort, jsonrpcWsPort, udpAndTcpPort] = await getFreePorts();
+  HTTP_PORT = jsonrpcHttpPort;
+  WS_PORT = jsonrpcWsPort;
   const server = await createServer({
     nodeType: "full",
     devBlockIntervalMs: 100,
@@ -41,7 +43,7 @@ describe("customConfig", () => {
   test("test http port", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(),
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
     expect((await client.getStatus()).chainId).toBe(1111);
@@ -50,7 +52,7 @@ describe("customConfig", () => {
   test("test ws port", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: webSocket(),
+      transport: webSocket(`ws://127.0.0.1:${WS_PORT}`),
     });
 
     expect((await client.getStatus()).chainId).toBe(1111);
@@ -59,7 +61,7 @@ describe("customConfig", () => {
   test("test mining address", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(),
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
     expect(
@@ -72,7 +74,7 @@ describe("customConfig", () => {
   test("auto mining", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(),
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
     const block = await client.getBlock();
     expect(block.blockNumber).toBeGreaterThan(0);
@@ -82,7 +84,7 @@ describe("customConfig", () => {
   test("test genesis", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(),
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
     for (const pk of TEST_PK) {

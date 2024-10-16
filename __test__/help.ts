@@ -1,12 +1,30 @@
 import { privateKeyToAccount } from "cive/accounts";
 import { defineChain } from "cive/utils";
+import net from "node:net";
 
-export const poolId = Number(process.env.VITEST_POOL_ID ?? 1);
+export async function getPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, () => {
+      const AddressInfo = srv.address();
 
-export const jsonrpcHttpPort = 12500 + poolId;
-export const jsonrpcWsPort = 12700 + poolId;
+      if (typeof AddressInfo === "object") {
+        if (typeof AddressInfo?.port === "number") {
+          return srv.close((err) => resolve(AddressInfo?.port));
+        }
+      }
+      srv.close((err) => reject("get port error"));
+    });
+  });
+}
 
-export const udpAndTcpPort = 12900 + poolId;
+/**
+ * Get three free ports
+ * @returns Promise<[number, number, number]>
+ */
+export async function getFreePorts() {
+  return Promise.all(Array.from({ length: 3 }).map(() => getPort()));
+}
 
 export const localChain = defineChain({
   name: "local",
@@ -18,8 +36,8 @@ export const localChain = defineChain({
   },
   rpcUrls: {
     default: {
-      http: [`http://127.0.0.1:${jsonrpcHttpPort}`],
-      webSocket: [`ws://127.0.0.1:${jsonrpcWsPort}`],
+      http: ["http://127.0.0.1:12537"],
+      webSocket: ["ws://127.0.0.1:12535"],
     },
   },
 });
