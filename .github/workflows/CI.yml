@@ -92,7 +92,7 @@ jobs:
         if: ${{matrix.settings.host == 'macos-latest'}}
         run: |
           brew update
-          brew install llvm openssl pkg-config cmake
+          brew install llvm openssl pkg-config cmake bzip2
       - name: Install windows dependencies
         if: ${{matrix.settings.host == 'windows-latest'}}
         run: |
