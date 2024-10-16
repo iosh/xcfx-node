@@ -31,13 +31,13 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-13
+          - host: macos-15-large
             target: x86_64-apple-darwin
             build: pnpm build --target x86_64-apple-darwin
           - host: windows-latest
             build: pnpm build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
-          - host: ubuntu-latest
+          - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             build: pnpm build --target x86_64-unknown-linux-gnu --use-cross
           - host: macos-15
