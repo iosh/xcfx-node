@@ -82,19 +82,19 @@ jobs:
         shell: bash
 
       - name: Install Linux dependencies
-        if: ${{matrix.settings.host == 'ubuntu-latest'}}
+        if: ${{contains(matrix.settings.host, 'ubuntu')}}
         run: |
           sudo apt-get update
           sudo apt-get install curl lsb-release wget software-properties-common gnupg -y
           wget https://apt.llvm.org/llvm.sh && chmod u+x llvm.sh && ./llvm.sh 18
           sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
       - name: Install macos dependencies
-        if: ${{matrix.settings.host == 'macos-latest'}}
+        if: ${{contains(matrix.settings.host, 'macos')}}
         run: |
           brew update
           brew install llvm openssl pkg-config cmake bzip2
       - name: Install windows dependencies
-        if: ${{matrix.settings.host == 'windows-latest'}}
+        if: ${{contains(matrix.settings.host, 'windows')}}
         run: |
           choco install llvm visualstudio-installer visualstudio2017-workload-vctools visualstudio2017buildtools-y
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
