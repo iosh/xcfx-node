@@ -86,7 +86,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install curl lsb-release wget software-properties-common gnupg -y
-          wget https://apt.llvm.org/llvm.sh && chmod u+x llvm.sh && sudo./llvm.sh 18
+          wget https://apt.llvm.org/llvm.sh && chmod u+x llvm.sh &&sudo ./llvm.sh 18
           sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
       - name: Install macos dependencies
         if: ${{contains(matrix.settings.host, 'macos')}}
