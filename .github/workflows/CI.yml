@@ -39,7 +39,7 @@ jobs:
             target: x86_64-pc-windows-msvc
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            build: pnpm build --target x86_64-unknown-linux-gnu --use-cross
+            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target x86_64-unknown-linux-gnu
           - host: macos-15
             target: aarch64-apple-darwin
             build: pnpm build --target aarch64-apple-darwin
@@ -80,14 +80,14 @@ jobs:
         run: ${{ matrix.settings.setup }}
         if: ${{ matrix.settings.setup }}
         shell: bash
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Install Linux dependencies
         if: ${{matrix.settings.host == 'ubuntu-latest'}}
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libsqlite3-dev pkg-config libssl-dev cmake
+          sudo apt-get install curl lsb-release wget software-properties-common gnupg -y
+          wget https://apt.llvm.org/llvm.sh && chmod u+x llvm.sh && ./llvm.sh 18
+          sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
       - name: Install macos dependencies
         if: ${{matrix.settings.host == 'macos-latest'}}
         run: |
