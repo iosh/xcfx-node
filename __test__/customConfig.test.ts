@@ -34,8 +34,6 @@ beforeAll(async () => {
 
   await server.start();
 
-  await wait(15000);
-
   return () => server.stop();
 });
 
