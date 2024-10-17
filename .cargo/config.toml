@@ -4,5 +4,5 @@
 
 # [target.i686-pc-windows-msvc]
 # rustflags = ["-C", "target-feature=+crt-static"]
-[term]     # whether cargo output is quiet
-verbose = true
+# [term]     # whether cargo output is quiet
+# verbose = true

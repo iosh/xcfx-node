@@ -4,7 +4,7 @@ use config::convert_config;
 use log::{error, info};
 use napi::{
   bindgen_prelude::*,
-  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
+  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 use napi_derive::napi;
 
@@ -19,10 +19,32 @@ use parking_lot::{Condvar, Mutex};
 use primitives::block_header::CIP112_TRANSITION_HEIGHT;
 use std::thread;
 use std::{env, sync::Arc};
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
 mod config;
 
 use log4rs;
+
+fn setup_env(
+  config: config::ConfluxConfig,
+  temp_dir: &TempDir,
+) -> Result<client::common::Configuration> {
+  // we need set the work dir to temp dir
+  let temp_dir_path = temp_dir.path();
+  let conf = convert_config(config, &temp_dir_path);
+  info!("node work dir: {:?}", temp_dir_path);
+  env::set_current_dir(temp_dir_path).unwrap();
+
+  if let Some(ref log_conf) = conf.raw_conf.log_conf {
+    log4rs::init_file(log_conf, Default::default())
+      .map_err(|e| {
+        error!("failed to initialize log with log config file: {:?}", e);
+        format!("failed to initialize log with log config file: {:?}", e)
+      })
+      .unwrap();
+  };
+
+  Ok(conf)
+}
 
 #[napi]
 pub struct ConfluxNode {
@@ -49,21 +71,8 @@ impl ConfluxNode {
     let exit_sign = self.exit_sign.clone();
 
     thread::spawn(move || {
-      // we need set the work dir to temp dir
       let temp_dir = tempdir()?;
-      let temp_dir_path = temp_dir.path();
-      let conf = convert_config(config, &temp_dir_path);
-      let temp_dir = tempdir().unwrap();
-      env::set_current_dir(temp_dir.path()).unwrap();
-
-      if let Some(ref log_conf) = conf.raw_conf.log_conf {
-        log4rs::init_file(log_conf, Default::default())
-          .map_err(|e| {
-            error!("failed to initialize log with log config file: {:?}", e);
-            format!("failed to initialize log with log config file: {:?}", e)
-          })
-          .unwrap();
-      }
+      let conf = setup_env(config, &temp_dir)?;
 
       let client_handle: Box<dyn ClientTrait>;
       client_handle = match conf.node_type() {
