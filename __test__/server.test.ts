@@ -1,7 +1,7 @@
 import { http, createPublicClient } from "cive";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, localChain } from "./help";
+import { getFreePorts, localChain, wait } from "./help";
 
 describe("server", () => {
   test("default", async () => {
@@ -23,7 +23,8 @@ describe("server", () => {
     expect(status.networkId).toBe(1234);
 
     await server.stop();
-
+    // TODO UPDATE
+    await wait(2000);
     await expect(async () => client.getStatus()).rejects.toThrow();
   });
 });

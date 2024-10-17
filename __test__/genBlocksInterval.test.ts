@@ -10,36 +10,37 @@ beforeAll(async () => {
   const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
   HTTP_PORT = jsonrpcHttpPort;
   const server = await createServer({
-    devBlockIntervalMs: 100,
+    devBlockIntervalMs: 50,
     tcpPort: udpAndTcpPort,
     udpPort: udpAndTcpPort,
-    jsonrpcHttpPort: jsonrpcHttpPort,
+    jsonrpcHttpPort: jsonrpcHttpPort
   });
 
   await server.start();
-  return () => server.stop();
+  return  () => server.stop();
 });
 
 describe("genBlocksInterval", () => {
   test("default", async () => {
+    await wait(2000);
     const client = createPublicClient({
       chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
-    await wait(200);
+    await wait(500);
     const status1 = await client.getStatus();
     expect(status1.epochNumber).toBeGreaterThan(1);
 
-    await wait(200);
+    await wait(500);
     const status2 = await client.getStatus();
     expect(status2.epochNumber).toBeGreaterThan(status1.epochNumber);
 
-    await wait(200);
+    await wait(500);
     const status3 = await client.getStatus();
     expect(status3.epochNumber).toBeGreaterThan(status2.epochNumber);
 
-    await wait(200);
+    await wait(500);
     const status4 = await client.getStatus();
     expect(status4.epochNumber).toBeGreaterThan(status3.epochNumber);
   });

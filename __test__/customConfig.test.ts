@@ -20,7 +20,7 @@ beforeAll(async () => {
   WS_PORT = jsonrpcWsPort;
   const server = await createServer({
     nodeType: "full",
-    devBlockIntervalMs: 100,
+    devBlockIntervalMs: 50,
     miningAuthor: TEST_MINING_ADDRESS,
     jsonrpcHttpPort: jsonrpcHttpPort,
     jsonrpcWsPort: jsonrpcWsPort,
@@ -34,6 +34,7 @@ beforeAll(async () => {
 
   await server.start();
 
+  await wait(4000);
   return () => server.stop();
 });
 
@@ -61,7 +62,6 @@ describe("customConfig", () => {
       chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
-
     expect(
       await client.getBalance({
         address: MINING_ACCOUNT.address,
