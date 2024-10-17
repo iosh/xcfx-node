@@ -40,6 +40,7 @@ jobs:
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             build: pnpm build --target x86_64-unknown-linux-gnu --use-cross
+            setup: cargo install cross --git https://github.com/cross-rs/cross
           - host: macos-15
             target: aarch64-apple-darwin
             build: LDFLAGS="-L/opt/homebrew/opt/bzip2/lib" CPPFLAGS="-I/opt/homebrew/opt/bzip2/include" pnpm build --target aarch64-apple-darwin
@@ -86,8 +87,8 @@ jobs:
         run: |
           brew update
           brew install llvm openssl pkg-config cmake bzip2
-          echo 'export PATH="/opt/homebrew/opt/llvm/bin:$PATH"' >> /Users/runner/.bash_profile
-          echo 'export PATH="/opt/homebrew/opt/bzip2/bin:$PATH"' >> /Users/runner/.bash_profile
+          which bzip2
+          /usr/bin/bzip2 --version
       - name: Install windows dependencies
         if: ${{contains(matrix.settings.host, 'windows')}}
         run: |
