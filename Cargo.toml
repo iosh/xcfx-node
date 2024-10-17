@@ -10,11 +10,13 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-cfxcore = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
-primitives = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
 napi = "3.0.0-alpha.13"
 napi-derive = "3.0.0-alpha.13"
-client = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
+
+cfxcore = { git = "https://github.com/Conflux-Chain/conflux-rust.git", rev = "2d82c4bde7f6253395bb99a19cf8bc3bc2488534" }
+primitives = { git = "https://github.com/Conflux-Chain/conflux-rust.git", rev = "2d82c4bde7f6253395bb99a19cf8bc3bc2488534" }
+client = { git = "https://github.com/Conflux-Chain/conflux-rust.git", rev = "2d82c4bde7f6253395bb99a19cf8bc3bc2488534" }
+
 chrono = "0.4.38"
 parking_lot = "0.11"
 log = "0.4"
