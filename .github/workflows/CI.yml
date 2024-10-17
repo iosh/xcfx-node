@@ -39,10 +39,10 @@ jobs:
             target: x86_64-pc-windows-msvc
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target x86_64-unknown-linux-gnu
+            build: pnpm build --target x86_64-unknown-linux-gnu --use-cross
           - host: macos-15
             target: aarch64-apple-darwin
-            build: RUST_BACKTRACE=1 pnpm build --target aarch64-apple-darwin
+            build: LDFLAGS="-L/opt/homebrew/opt/bzip2/lib" CPPFLAGS="-I/opt/homebrew/opt/bzip2/include" pnpm build --target aarch64-apple-darwin
           # - host: ubuntu-latest
           #   target: aarch64-unknown-linux-gnu
           #   build: pnpm build --target aarch64-unknown-linux-gnu --use-cross
@@ -81,18 +81,13 @@ jobs:
         if: ${{ matrix.settings.setup }}
         shell: bash
 
-      - name: Install Linux dependencies
-        if: ${{contains(matrix.settings.host, 'ubuntu')}}
-        run: |
-          sudo apt-get update
-          sudo apt-get install curl lsb-release wget software-properties-common gnupg -y
-          wget https://apt.llvm.org/llvm.sh && chmod u+x llvm.sh &&sudo ./llvm.sh 18
-          sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
       - name: Install macos dependencies
         if: ${{contains(matrix.settings.host, 'macos')}}
         run: |
           brew update
           brew install llvm openssl pkg-config cmake bzip2
+          echo 'export PATH="/opt/homebrew/opt/llvm/bin:$PATH"' >> /Users/runner/.bash_profile
+          echo 'export PATH="/opt/homebrew/opt/bzip2/bin:$PATH"' >> /Users/runner/.bash_profile
       - name: Install windows dependencies
         if: ${{contains(matrix.settings.host, 'windows')}}
         run: |
