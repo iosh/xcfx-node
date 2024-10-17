@@ -2,7 +2,10 @@
 
 use config::convert_config;
 use log::{error, info};
-use napi::Error;
+use napi::{
+  bindgen_prelude::*,
+  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
+};
 use napi_derive::napi;
 
 use cfxcore::NodeType;
@@ -34,7 +37,11 @@ impl ConfluxNode {
     }
   }
   #[napi]
-  pub fn start_node(&self, config: config::ConfluxConfig) -> Result<(), napi::Error> {
+  pub fn start_node(
+    &self,
+    config: config::ConfluxConfig,
+    js_callback: ThreadsafeFunction<Null>,
+  ) -> Result<()> {
     if CIP112_TRANSITION_HEIGHT.get().is_none() {
       CIP112_TRANSITION_HEIGHT.set(u64::MAX).expect("called once");
     }
@@ -60,40 +67,59 @@ impl ConfluxNode {
 
       let client_handle: Box<dyn ClientTrait>;
       client_handle = match conf.node_type() {
-        NodeType::Archive => {
-          println!("Starting archive client...");
-          ArchiveClient::start(conf, exit_sign.clone()).map_err(|e| {
-            error!("failed to start archive client: {}", e);
+        NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
+          .inspect(|_| {
+            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+          })
+          .map_err(|e| {
+            js_callback.call(
+              Err(napi::Error::new(
+                napi::Status::GenericFailure,
+                format!("failed to start archive client: {}", e),
+              )),
+              ThreadsafeFunctionCallMode::NonBlocking,
+            );
             Error::new(
-              napi::Status::Unknown,
+              napi::Status::GenericFailure,
               format!("failed to start archive client: {}", e),
             )
-          })?
-        }
-        NodeType::Full => {
-          println!("Starting full client...");
-
-          FullClient::start(conf, exit_sign.clone()).map_err(|e| {
-            error!("failed to start full client: {}", e);
+          })?,
+        NodeType::Full => FullClient::start(conf, exit_sign.clone())
+          .inspect(|_| {
+            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+          })
+          .map_err(|e| {
+            js_callback.call(
+              Err(Error::new(
+                napi::Status::GenericFailure,
+                format!("failed to start full client: {}", e),
+              )),
+              ThreadsafeFunctionCallMode::NonBlocking,
+            );
             Error::new(
-              napi::Status::Unknown,
+              napi::Status::GenericFailure,
               format!("failed to start full client: {}", e),
             )
-          })?
-        }
-        NodeType::Light => {
-          println!("Starting light client...");
-          LightClient::start(conf, exit_sign.clone()).map_err(|e| {
-            error!("failed to start light client: {}", e);
+          })?,
+        NodeType::Light => LightClient::start(conf, exit_sign.clone())
+          .inspect(|_| {
+            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+          })
+          .map_err(|e| {
+            js_callback.call(
+              Err(Error::new(
+                napi::Status::GenericFailure,
+                format!("failed to start light client: {}", e),
+              )),
+              ThreadsafeFunctionCallMode::NonBlocking,
+            );
             Error::new(
-              napi::Status::Unknown,
+              napi::Status::GenericFailure,
               format!("failed to start light client: {}", e),
             )
-          })?
-        }
+          })?,
         NodeType::Unknown => return Err(Error::new(napi::Status::InvalidArg, "Unknown node type")),
       };
-      info!("Conflux client started");
       shutdown_handler::run(client_handle, exit_sign.clone());
       Ok(())
     });

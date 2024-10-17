@@ -41,7 +41,15 @@ export async function createServer(
   const node = new ConfluxNode();
   return {
     async start() {
-      node.startNode(filledConfig);
+      return new Promise((resolve, reject) => {
+        node.startNode(filledConfig, (err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
     },
     async stop() {
       node.stopNode();

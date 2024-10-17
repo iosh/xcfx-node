@@ -12,8 +12,6 @@ describe("server", () => {
       jsonrpcHttpPort: jsonrpcHttpPort,
     });
     await server.start();
-    // TODO update this
-    await new Promise((resolve) => setTimeout(resolve, 15000));
     const client = createPublicClient({
       chain: localChain,
       transport: http(`http://127.0.0.1:${jsonrpcHttpPort}`),

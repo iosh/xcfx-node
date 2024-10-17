@@ -10,8 +10,8 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = "3.0.0-alpha.13"
-napi-derive = "3.0.0-alpha.13"
+napi = {version= "3.0.0-alpha.15", features = ['napi8', 'async']}
+napi-derive = "3.0.0-alpha.14"
 
 cfxcore = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
 primitives = { git = "https://github.com/Conflux-Chain/conflux-rust.git" }
