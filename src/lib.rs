@@ -11,7 +11,7 @@ use napi_derive::napi;
 use cfxcore::NodeType;
 use client::{
   archive::ArchiveClient,
-  common::{shutdown_handler, ClientTrait},
+  common::{shutdown_handler::shutdown, ClientTrait},
   full::FullClient,
   light::LightClient,
 };
@@ -63,6 +63,7 @@ fn map_client_error(e: &str, js_callback: ThreadsafeFunction<Null>) -> Error {
 #[napi]
 pub struct ConfluxNode {
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
+  thread_handle: Option<thread::JoinHandle<Result<(), Status>>>,
 }
 #[napi]
 impl ConfluxNode {
@@ -70,17 +71,22 @@ impl ConfluxNode {
   pub fn new() -> Self {
     ConfluxNode {
       exit_sign: Arc::new((Mutex::new(false), Condvar::new())),
+      thread_handle: None,
     }
   }
   #[napi]
-  pub fn start_node(&self, config: config::ConfluxConfig, js_callback: ThreadsafeFunction<Null>) {
+  pub fn start_node(
+    &mut self,
+    config: config::ConfluxConfig,
+    js_callback: ThreadsafeFunction<Null>,
+  ) {
     if CIP112_TRANSITION_HEIGHT.get().is_none() {
       CIP112_TRANSITION_HEIGHT.set(u64::MAX).expect("called once");
     }
 
     let exit_sign = self.exit_sign.clone();
 
-    thread::spawn(move || {
+    let thread_handle = thread::spawn(move || {
       let temp_dir = tempdir()?;
       let conf = setup_env(config, &temp_dir)?;
 
@@ -103,14 +109,33 @@ impl ConfluxNode {
           .map_err(|e| map_client_error(&e, js_callback))?,
         NodeType::Unknown => return Err(Error::new(napi::Status::InvalidArg, "Unknown node type")),
       };
-      shutdown_handler::run(client_handle, exit_sign.clone());
+
+      let mut lock = exit_sign.0.lock();
+      if !*lock {
+        exit_sign.1.wait(&mut lock);
+      }
+
+      shutdown(client_handle);
+      // shutdown_handler::run(client_handle, exit_sign.clone());
       Ok(())
     });
+    self.thread_handle = Some(thread_handle);
   }
 
   #[napi]
-  pub fn stop_node(&self) {
+  pub fn stop_node(&mut self, js_callback: ThreadsafeFunction<Null>) {
     *self.exit_sign.0.lock() = true;
     self.exit_sign.1.notify_all();
+
+    let thread_handle = self.thread_handle.take().unwrap();
+
+    match thread_handle.join().unwrap() {
+      Ok(_) => {
+        js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+      }
+      Err(e) => {
+        js_callback.call(Err(e), ThreadsafeFunctionCallMode::NonBlocking);
+      }
+    }
   }
 }

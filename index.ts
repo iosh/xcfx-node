@@ -52,7 +52,15 @@ export async function createServer(
       });
     },
     async stop() {
-      node.stopNode();
+      return new Promise((resolve, reject) => {
+        node.stopNode((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
     },
   };
 }
