@@ -13,11 +13,11 @@ beforeAll(async () => {
     devBlockIntervalMs: 100,
     tcpPort: udpAndTcpPort,
     udpPort: udpAndTcpPort,
-    jsonrpcHttpPort: jsonrpcHttpPort
+    jsonrpcHttpPort: jsonrpcHttpPort,
   });
 
   await server.start();
-  return  () => server.stop();
+  return () => server.stop();
 });
 
 describe("genBlocksInterval", () => {

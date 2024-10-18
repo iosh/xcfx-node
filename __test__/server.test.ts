@@ -23,8 +23,6 @@ describe("server", () => {
     expect(status.networkId).toBe(1234);
 
     await server.stop();
-    // TODO UPDATE
-    await wait(2000);
     await expect(async () => client.getStatus()).rejects.toThrow();
   });
 });
