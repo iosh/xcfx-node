@@ -20,7 +20,7 @@ beforeAll(async () => {
   WS_PORT = jsonrpcWsPort;
   const server = await createServer({
     nodeType: "full",
-    devBlockIntervalMs: 50,
+    devBlockIntervalMs: 100,
     miningAuthor: TEST_MINING_ADDRESS,
     jsonrpcHttpPort: jsonrpcHttpPort,
     jsonrpcWsPort: jsonrpcWsPort,
@@ -34,7 +34,7 @@ beforeAll(async () => {
 
   await server.start();
 
-  await wait(4000);
+  await wait(10000);
   return () => server.stop();
 });
 
