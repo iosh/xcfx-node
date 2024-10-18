@@ -46,6 +46,20 @@ fn setup_env(
   Ok(conf)
 }
 
+fn map_client_error(e: &str, js_callback: ThreadsafeFunction<Null>) -> Error {
+  js_callback.call(
+    Err(napi::Error::new(
+      napi::Status::GenericFailure,
+      format!("failed to start client: {}", e),
+    )),
+    ThreadsafeFunctionCallMode::NonBlocking,
+  );
+  Error::new(
+    napi::Status::GenericFailure,
+    format!("failed to start client: {}", e),
+  )
+}
+
 #[napi]
 pub struct ConfluxNode {
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
@@ -59,11 +73,7 @@ impl ConfluxNode {
     }
   }
   #[napi]
-  pub fn start_node(
-    &self,
-    config: config::ConfluxConfig,
-    js_callback: ThreadsafeFunction<Null>,
-  ) -> Result<()> {
+  pub fn start_node(&self, config: config::ConfluxConfig, js_callback: ThreadsafeFunction<Null>) {
     if CIP112_TRANSITION_HEIGHT.get().is_none() {
       CIP112_TRANSITION_HEIGHT.set(u64::MAX).expect("called once");
     }
@@ -80,59 +90,22 @@ impl ConfluxNode {
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
           })
-          .map_err(|e| {
-            js_callback.call(
-              Err(napi::Error::new(
-                napi::Status::GenericFailure,
-                format!("failed to start archive client: {}", e),
-              )),
-              ThreadsafeFunctionCallMode::NonBlocking,
-            );
-            Error::new(
-              napi::Status::GenericFailure,
-              format!("failed to start archive client: {}", e),
-            )
-          })?,
+          .map_err(|e| map_client_error(&e, js_callback))?,
         NodeType::Full => FullClient::start(conf, exit_sign.clone())
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
           })
-          .map_err(|e| {
-            js_callback.call(
-              Err(Error::new(
-                napi::Status::GenericFailure,
-                format!("failed to start full client: {}", e),
-              )),
-              ThreadsafeFunctionCallMode::NonBlocking,
-            );
-            Error::new(
-              napi::Status::GenericFailure,
-              format!("failed to start full client: {}", e),
-            )
-          })?,
+          .map_err(|e| map_client_error(&e, js_callback))?,
         NodeType::Light => LightClient::start(conf, exit_sign.clone())
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
           })
-          .map_err(|e| {
-            js_callback.call(
-              Err(Error::new(
-                napi::Status::GenericFailure,
-                format!("failed to start light client: {}", e),
-              )),
-              ThreadsafeFunctionCallMode::NonBlocking,
-            );
-            Error::new(
-              napi::Status::GenericFailure,
-              format!("failed to start light client: {}", e),
-            )
-          })?,
+          .map_err(|e| map_client_error(&e, js_callback))?,
         NodeType::Unknown => return Err(Error::new(napi::Status::InvalidArg, "Unknown node type")),
       };
       shutdown_handler::run(client_handle, exit_sign.clone());
       Ok(())
     });
-    Ok(())
   }
 
   #[napi]
