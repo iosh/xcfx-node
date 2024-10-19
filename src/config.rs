@@ -37,10 +37,10 @@ pub struct ConfluxConfig {
   /// log_level` is the printed log level.
   /// "error" | "warn" | "info" | "debug" | "trace" | "off"
   pub log_level: Option<String>,
-  /// The port of the websocket JSON-RPC server.
+  /// The port of the websocket JSON-RPC server(public_rpc_apis is user defined).
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
   pub jsonrpc_ws_port: Option<u16>,
-  /// The port of the HTTP JSON-RPC server.
-  pub jsonrpc_http_port: Option<u16>,
 
   /// `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
   /// @default 32323
@@ -53,6 +53,9 @@ pub struct ConfluxConfig {
   /// `safe` only includes `cfx` and `pubsub`, `txpool`.
   ///  @default "all"
   pub public_rpc_apis: Option<String>,
+  /// Possible eSpace names are: eth, ethpubsub, ethdebug.
+  ///  @default 'evm'
+  pub public_evm_rpc_apis: Option<String>,
   /// The chain ID of the network.(core space)
   /// @default 1234
   pub chain_id: Option<u32>,
@@ -84,6 +87,51 @@ pub struct ConfluxConfig {
   /// Supported: rocksdb, sqlite.
   /// @default sqlite
   pub block_db_type: Option<String>,
+
+  /// bootnodes is a list of nodes that a conflux node trusts, and will be used to sync the blockchain when a node starts.
+  pub bootnodes: Option<String>,
+
+  /// Window size for PoW manager
+  pub pow_problem_window_size: Option<u32>,
+  /// # Secret key for stratum. The value is 64-digit hex string. If not set, the RPC subscription will not check the authorization.
+  pub stratum_secret: Option<String>,
+  /// `public_address` is the address of this node used
+  pub public_address: Option<String>,
+  /// `jsonrpc_http_keep_alive` is used to control whether to set KeepAlive for rpc HTTP connections.
+  /// @default false
+  pub jsonrpc_http_keep_alive: Option<bool>,
+  /// `print_memory_usage_period_s` is the period for printing memory usage.
+  pub print_memory_usage_period_s: Option<u32>,
+  /// The port of the http JSON-RPC server.public_rpc_apis is user defined).
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_http_port: Option<u16>,
+
+  /// The port of the tcp JSON-RPC server. public_rpc_apis is user defined).
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_tcp_port: Option<u16>,
+
+  /// The port of the http JSON-RPC server public_rpc_apis is user defined).
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_http_eth_port: Option<u16>,
+  /// The port of the websocket JSON-RPC serverpublic_rpc_apis is user defined).
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_ws_eth_port: Option<u16>,
+  /// The port of the tcp JSON-RPC server(public_rpc_apis is "all").
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_local_tcp_port: Option<u16>,
+  /// The port of the http JSON-RPC server(public_rpc_apis is "all").
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_local_http_port: Option<u16>,
+  /// The port of the websocket JSON-RPC server(public_rpc_apis is "all").
+  /// if not set, the JSON-RPC server will not be started.
+  /// @default null
+  pub jsonrpc_local_ws_port: Option<u16>,
 }
 
 pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configuration {
@@ -135,6 +183,11 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     _ => ApiSet::All,
   };
 
+  conf.raw_conf.public_evm_rpc_apis = match js_config.public_evm_rpc_apis {
+    Some(s) => ApiSet::from_str(&s).unwrap_or(ApiSet::Evm),
+    _ => ApiSet::Evm,
+  };
+
   conf.raw_conf.dev_pos_private_key_encryption_password = Some(
     js_config
       .dev_pos_private_key_encryption_password
@@ -179,15 +232,34 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     .stratum_listen_address
     .unwrap_or("127.0.0.1".to_string());
 
-  conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
-
   conf.raw_conf.jsonrpc_ws_port = js_config.jsonrpc_ws_port;
-
   conf.raw_conf.jsonrpc_http_port = js_config.jsonrpc_http_port;
+
+  conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
 
   conf.raw_conf.tcp_port = js_config.tcp_port.unwrap_or(32323);
 
   conf.raw_conf.udp_port = js_config.udp_port.or(Some(32323));
+
+  // unnecessary config
+  conf.raw_conf.bootnodes = js_config.bootnodes;
+
+  conf.raw_conf.pow_problem_window_size = js_config.pow_problem_window_size.unwrap_or(1) as usize;
+
+  conf.raw_conf.stratum_secret = js_config.stratum_secret;
+
+  conf.raw_conf.jsonrpc_http_keep_alive = js_config.jsonrpc_http_keep_alive.unwrap_or(false);
+
+  conf.raw_conf.jsonrpc_tcp_port = js_config.jsonrpc_tcp_port;
+  conf.raw_conf.jsonrpc_http_eth_port = js_config.jsonrpc_http_eth_port;
+  conf.raw_conf.jsonrpc_ws_eth_port = js_config.jsonrpc_ws_eth_port;
+
+  conf.raw_conf.jsonrpc_local_tcp_port = js_config.jsonrpc_local_tcp_port;
+  conf.raw_conf.jsonrpc_local_http_port = js_config.jsonrpc_local_http_port;
+  conf.raw_conf.jsonrpc_local_ws_port = js_config.jsonrpc_local_ws_port;
+
+  conf.raw_conf.print_memory_usage_period_s =
+    js_config.print_memory_usage_period_s.map(|x| x as u64);
 
   conf
 }

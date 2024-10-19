@@ -21,7 +21,7 @@ describe("server", () => {
 
     expect(status.chainId).toBe(1234);
     expect(status.networkId).toBe(1234);
-
+    
     await server.stop();
     await expect(async () => client.getStatus()).rejects.toThrow();
   });
