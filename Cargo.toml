@@ -28,3 +28,10 @@ napi-build = "2"
 [profile.release]
 lto = true
 codegen-units = 1
+opt-level = "z"
+
+[profile.release.package]
+snappy-sys = { opt-level = 3 }
+libtitan_sys = { opt-level = 3 }
+rocksdb = { opt-level = 3 }
+librocksdb_sys = { opt-level = 3 }
