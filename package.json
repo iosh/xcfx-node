@@ -48,7 +48,7 @@
     "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
   "dependencies": {
-    "cive": "^0.5.0"
+    "cive": "^0.6.0"
   },
   "devDependencies": {
     "@biomejs/biome": "1.8.3",
