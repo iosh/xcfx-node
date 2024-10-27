@@ -65,9 +65,11 @@ pub struct ConfluxConfig {
   /// The password used to encrypt the private key of the pos_private_key.
   ///  @default "123456"
   pub dev_pos_private_key_encryption_password: Option<String>,
-  ///  The private key of the genesis, every account will be receive 1000 CFX
+  ///  The private key of the genesis, every account will be receive 10000 CFX
   pub genesis_secrets: Option<Vec<String>>,
-  ///  @default: false
+  /// If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
+  /// receiving a new tx through RPC calling to pack and execute this
+  /// transaction
   pub dev_pack_tx_immediately: Option<bool>,
   /// @default:1
   pub pos_reference_enable_height: Option<i64>,

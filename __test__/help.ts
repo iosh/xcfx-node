@@ -26,22 +26,6 @@ export async function getFreePorts() {
   return Promise.all(Array.from({ length: 3 }).map(() => getPort()));
 }
 
-export const localChain = defineChain({
-  name: "local",
-  id: 1234,
-  nativeCurrency: {
-    decimals: 18,
-    name: "CFX",
-    symbol: "CFX",
-  },
-  rpcUrls: {
-    default: {
-      http: ["http://127.0.0.1:12537"],
-      webSocket: ["ws://127.0.0.1:12535"],
-    },
-  },
-});
-
 export const wait = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -61,3 +45,19 @@ export const TEST_PK = [
   "8d108e2aff19b1134c7cc29fbe4a721e599ef21d7d183f64dcd5e78e3a12e5e7",
   "e9cfd4d1d29f7a67c970c1d5c145e958061cd54d05a83e29c7e39b7be894c9c6",
 ];
+
+export const localChain = defineChain({
+  name: "local",
+  id: TEST_NETWORK_ID,
+  nativeCurrency: {
+    decimals: 18,
+    name: "CFX",
+    symbol: "CFX",
+  },
+  rpcUrls: {
+    default: {
+      http: ["http://127.0.0.1:12537"],
+      webSocket: ["ws://127.0.0.1:12535"],
+    },
+  },
+});
