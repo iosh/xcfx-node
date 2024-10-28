@@ -11,7 +11,7 @@ use napi_derive::napi;
 use cfxcore::NodeType;
 use client::{
   archive::ArchiveClient,
-  common::{shutdown_handler::shutdown, ClientTrait},
+  common::{client_methods::shutdown, ClientTrait},
   full::FullClient,
   light::LightClient,
 };
