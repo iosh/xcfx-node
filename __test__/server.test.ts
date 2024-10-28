@@ -22,6 +22,10 @@ describe("server", () => {
     expect(status.chainId).toBe(1234);
     expect(status.networkId).toBe(1234);
     
+
+    expect(await client.getClientVersion()).toMatchInlineSnapshot(`"conflux-rust/v2.4.0-43cafb9-20241028/x86_64-linux-gnu/rustc1.81.0"`);
+
+    
     await server.stop();
     await expect(async () => client.getStatus()).rejects.toThrow();
   });

@@ -91,7 +91,7 @@ describe("manual block generation", async () => {
     const status = await client.getStatus();
 
     await client.request<any>({
-      method: "test_generateEmptyBlocks",
+      method: "generate_empty_blocks",
       params: [10],
     });
 
