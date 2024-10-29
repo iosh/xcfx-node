@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node-darwin-arm64",
-  "version": "0.24.0",
+  "version": "0.1.0",
   "cpu": ["arm64"],
   "main": "node.darwin-arm64.node",
   "files": ["node.darwin-arm64.node"],
