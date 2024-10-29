@@ -84,9 +84,13 @@ export interface ConfluxConfig {
    *  @default "123456"
    */
   devPosPrivateKeyEncryptionPassword?: string
-  /**  The private key of the genesis, every account will be receive 1000 CFX */
+  /**  The private key of the genesis, every account will be receive 10000 CFX */
   genesisSecrets?: Array<string>
-  /**  @default: false */
+  /**
+   * If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
+   * receiving a new tx through RPC calling to pack and execute this
+   * transaction
+   */
   devPackTxImmediately?: boolean
   /** @default:1 */
   posReferenceEnableHeight?: number
