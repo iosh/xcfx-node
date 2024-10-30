@@ -10,8 +10,16 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": ["conflux", "conflux-client"],
-  "files": ["index.d.ts", "index.js"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
+  "files": [
+    "index.d.ts",
+    "index.js",
+    "conflux.js",
+    "conflux.d.ts"
+  ],
   "napi": {
     "binaryName": "node",
     "targets": [
@@ -36,6 +44,7 @@
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "version": "napi version",
+    "prepublishOnly": "napi prepublish -t npm",
     "test": "cross-env NODE_OPTIONS=--max-old-space-size=32768 vitest run",
     "format": "biome format --write",
     "lint": "biome check --fix",
