@@ -21,9 +21,6 @@ importers:
       '@xcfx/node-linux-x64-gnu':
         specifier: workspace:*
         version: link:npm/linux-x64-gnu
-      '@xcfx/node-win32-arm64-msvc':
-        specifier: workspace:*
-        version: link:npm/win32-arm64-msvc
       '@xcfx/node-win32-x64-msvc':
         specifier: workspace:*
         version: link:npm/win32-x64-msvc
