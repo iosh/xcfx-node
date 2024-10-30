@@ -1,20 +1,14 @@
 {
   "name": "@xcfx/node",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "",
   "main": "index.js",
   "types": "index.d.ts",
   "browser": "browser.js",
   "repository": "https://github.com/iosh/xcfx-node",
   "license": "MIT",
-  "keywords": [
-    "conflux",
-    "conflux-client"
-  ],
-  "files": [
-    "index.d.ts",
-    "index.js"
-  ],
+  "keywords": ["conflux", "conflux-client"],
+  "files": ["index.d.ts", "index.js"],
   "napi": {
     "binaryName": "node",
     "targets": [
