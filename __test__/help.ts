@@ -1,6 +1,6 @@
+import net from "node:net";
 import { privateKeyToAccount } from "cive/accounts";
 import { defineChain } from "cive/utils";
-import net from "node:net";
 
 export async function getPort(): Promise<number> {
   return new Promise((resolve, reject) => {

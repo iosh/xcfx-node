@@ -1,4 +1,4 @@
-import { http, createPublicClient, webSocket, createWalletClient } from "cive";
+import { http, createPublicClient, createWalletClient, webSocket } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
 import { parseCFX } from "cive/utils";
 import { beforeAll, describe, expect, test } from "vitest";
