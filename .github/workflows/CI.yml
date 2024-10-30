@@ -140,9 +140,7 @@ jobs:
         with:
           name: bindings-${{ matrix.settings.target }}
           path: .
-      - name: List packages
-        run: ls -R .
-        shell: bash
+
       - name: Test bindings
         run: pnpm test
   test-linux-binding:
@@ -235,12 +233,12 @@ jobs:
       - name: List packages
         run: ls -R ./npm
         shell: bash
-      # - name: Publish to NPM
-      #   uses: changesets/action@v1
-      #   with:
-      #     createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
-      #     publish: pnpm changeset:publish
-      #     version: pnpm changeset:version
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #     NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to NPM
+        uses: changesets/action@v1
+        with:
+          createGithubReleases: ${{ github.ref == 'refs/heads/main' }}
+          publish: pnpm changeset:publish
+          version: pnpm changeset:version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
