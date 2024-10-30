@@ -58,9 +58,7 @@
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "workspace:*",
     "@xcfx/node-darwin-x64": "workspace:*",
-    "@xcfx/node-linux-arm64-gnu": "workspace:*",
     "@xcfx/node-linux-x64-gnu": "workspace:*",
-    "@xcfx/node-win32-arm64-msvc": "workspace:*",
     "@xcfx/node-win32-x64-msvc": "workspace:*"
   },
   "packageManager": "pnpm@9.11.0"
