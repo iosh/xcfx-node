@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node-darwin-x64",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "cpu": ["x64"],
   "main": "node.darwin-x64.node",
   "files": ["node.darwin-x64.node"],
