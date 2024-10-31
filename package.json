@@ -10,16 +10,8 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": [
-    "conflux",
-    "conflux-client"
-  ],
-  "files": [
-    "index.d.ts",
-    "index.js",
-    "conflux.js",
-    "conflux.d.ts"
-  ],
+  "keywords": ["conflux", "conflux-client"],
+  "files": ["index.d.ts", "index.js", "conflux.js", "conflux.d.ts"],
   "napi": {
     "binaryName": "node",
     "targets": [

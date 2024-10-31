@@ -14,7 +14,10 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "repository": "https://github.com/iosh/xcfx-node",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iosh/xcfx-node.git"
+  },
   "os": ["linux"],
   "libc": ["glibc"]
 }
