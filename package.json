@@ -35,8 +35,6 @@
     "build:debug": "napi build --dts conflux.d.ts --js conflux.js --platform ",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
-    "version": "napi version",
-    "prepublishOnly": "napi prepublish -t npm",
     "test": "cross-env NODE_OPTIONS=--max-old-space-size=32768 vitest run",
     "format": "biome format --write",
     "lint": "biome check --fix",
