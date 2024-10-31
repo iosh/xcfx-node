@@ -1,5 +1,11 @@
 # @xcfx/node
 
+## 0.3.0
+
+### Minor Changes
+
+- 34f5028: Update version Number(no changes)
+
 ## 0.2.0
 
 ### Minor Changes
