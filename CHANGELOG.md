@@ -1,5 +1,11 @@
 # @xcfx/node
 
+## 0.3.2
+
+### Patch Changes
+
+- 8b0f478: Added pollLifetimeInSeconds and getLogsFilterMaxLimit to config
+
 ## 0.3.1
 
 ### Patch Changes
