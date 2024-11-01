@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- e18c3e2: Added config files update cive version"
+- e18c3e2: Added config files update cive version
 
 ## 0.3.0
 
