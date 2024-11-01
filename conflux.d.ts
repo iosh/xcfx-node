@@ -169,5 +169,14 @@ export interface ConfluxConfig {
    * @default null
    */
   jsonrpcLocalWsPort?: number
+  /**
+   * `poll_lifetime_in_seconds` is the lifetime of the poll in seconds.
+   * If set, the following RPC methods will be enabled:
+   * - `cfx_newFilter` `cfx_newBlockFilter` `cfx_newPendingTransactionFilter` `cfx_getFilterChanges` `cfx_getFilterLogs` `cfx_uninstallFilter`.
+   * - `eth_newFilter` `eth_newBlockFilter` `eth_newPendingTransactionFilter` eth_getFilterChanges eth_getFilterLogs eth_uninstallFilter
+   */
+  pollLifetimeInSeconds?: number
+  /** if `get_logs_filter_max_limit` is configured but the query would return more logs */
+  getLogsFilterMaxLimit?: number
 }
 

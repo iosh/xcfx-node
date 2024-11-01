@@ -30,6 +30,7 @@ beforeAll(async () => {
     // devPackTxImmediately: true,
     tcpPort: udpAndTcpPort,
     udpPort: udpAndTcpPort,
+    pollLifetimeInSeconds: 180,
   });
 
   await server.start();
@@ -41,7 +42,6 @@ beforeAll(async () => {
 describe("customConfig", () => {
   test("test http port", async () => {
     const client = createPublicClient({
-      chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
@@ -50,7 +50,6 @@ describe("customConfig", () => {
 
   test("test ws port", async () => {
     const client = createPublicClient({
-      chain: localChain,
       transport: webSocket(`ws://127.0.0.1:${WS_PORT}`),
     });
 
@@ -59,7 +58,6 @@ describe("customConfig", () => {
 
   test("test mining address", async () => {
     const client = createPublicClient({
-      chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
     expect(
@@ -71,7 +69,6 @@ describe("customConfig", () => {
 
   test("auto mining", async () => {
     const client = createPublicClient({
-      chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
     const block = await client.getBlock();
@@ -81,7 +78,6 @@ describe("customConfig", () => {
 
   test("test genesis", async () => {
     const client = createPublicClient({
-      chain: localChain,
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
@@ -94,5 +90,15 @@ describe("customConfig", () => {
       });
       expect(balance).toBe(parseCFX("10000"));
     }
+  });
+
+  test("pollLifetimeInSeconds enable filter rpc", async () => {
+    const client = createPublicClient({
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+    });
+
+    const id = await client.createBlockFilter();
+
+    expect(id).toBeDefined();
   });
 });

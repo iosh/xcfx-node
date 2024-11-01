@@ -134,6 +134,13 @@ pub struct ConfluxConfig {
   /// if not set, the JSON-RPC server will not be started.
   /// @default null
   pub jsonrpc_local_ws_port: Option<u16>,
+  /// `poll_lifetime_in_seconds` is the lifetime of the poll in seconds.
+  /// If set, the following RPC methods will be enabled:
+  /// - `cfx_newFilter` `cfx_newBlockFilter` `cfx_newPendingTransactionFilter` `cfx_getFilterChanges` `cfx_getFilterLogs` `cfx_uninstallFilter`.
+  /// - `eth_newFilter` `eth_newBlockFilter` `eth_newPendingTransactionFilter` eth_getFilterChanges eth_getFilterLogs eth_uninstallFilter
+  pub poll_lifetime_in_seconds: Option<u32>,
+  /// if `get_logs_filter_max_limit` is configured but the query would return more logs
+  pub get_logs_filter_max_limit: Option<u32>,
 }
 
 pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configuration {
@@ -206,6 +213,10 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.cip1559_transition_height =
     Some(js_config.cip1559_transition_height.unwrap_or(2) as u64);
+
+  conf.raw_conf.poll_lifetime_in_seconds = js_config.poll_lifetime_in_seconds;
+
+  conf.raw_conf.get_logs_filter_max_limit = js_config.get_logs_filter_max_limit.map(|n| n as usize);
 
   // confix data dir, default to temp dir
   conf.raw_conf.conflux_data_dir = js_config
