@@ -1,5 +1,11 @@
 # @xcfx/node
 
+## 0.3.1
+
+### Patch Changes
+
+- e18c3e2: Added config files update cive version
+
 ## 0.3.0
 
 ### Minor Changes
