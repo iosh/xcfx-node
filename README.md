@@ -28,20 +28,20 @@ npm install @xcfx/node
 
 ```ts
 import { createServer } from "@xcfx/node";
+import { http, createPublicClient } from "cive";
 
 async function main() {
-  const server = await createServer();
+  const server = await createServer({
+    jsonrpcHttpPort: 12537,
+  });
 
   await server.start();
 
-  const options = {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: '{"jsonrpc":"2.0","method":"cfx_getStatus","id":1}',
-  };
+  const client = createPublicClient({
+    transport: http(`http://127.0.0.1:12537`),
+  });
 
-  const response = await fetch("http://localhost:12537", options);
-  const data = await response.json();
+  const status = await client.getStatus();
 
   // safe to stop the server
   await server.stop();
@@ -55,7 +55,7 @@ await main();
 import { createServer } from "@xcfx/node";
 
 async function main() {
-  const server = await createServer({ ...serverConfig, ...ConfluxConfig });
+  const server = await createServer({ ...ConfluxConfig });
 }
 ```
 
@@ -99,21 +99,32 @@ export interface ConfluxConfig {
    */
   logLevel?: string;
   /**
-   * The port of the websocket JSON-RPC server.
-   *  @default 12535
+   * The port of the websocket JSON-RPC server(public_rpc_apis is user defined).
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
    */
   jsonrpcWsPort?: number;
   /**
-   * The port of the HTTP JSON-RPC server.
-   * @default 12537
+   * `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
+   * @default 32323
    */
-  jsonrpcHttpPort?: number;
+  tcpPort?: number;
+  /**
+   * `udp_port` is the UDP port used for node discovery.
+   * @default 32323
+   */
+  udpPort?: number;
   /**
    * Possible Core space names are: all, safe, cfx, pos, debug, pubsub, test, trace, txpool.
    * `safe` only includes `cfx` and `pubsub`, `txpool`.
    *  @default "all"
    */
   publicRpcApis?: string;
+  /**
+   * Possible eSpace names are: eth, ethpubsub, ethdebug.
+   *  @default 'evm'
+   */
+  publicEvmRpcApis?: string;
   /**
    * The chain ID of the network.(core space)
    * @default 1234
@@ -129,14 +140,20 @@ export interface ConfluxConfig {
    *  @default "123456"
    */
   devPosPrivateKeyEncryptionPassword?: string;
-  /**  The private key of the genesis, every account will be receive 1000 CFX */
+  /**  The private key of the genesis, every account will be receive 10000 CFX */
   genesisSecrets?: Array<string>;
-  /**  @default: false */
+  /**
+   * If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
+   * receiving a new tx through RPC calling to pack and execute this
+   * transaction
+   */
   devPackTxImmediately?: boolean;
-  /** @default:0 */
+  /** @default:1 */
   posReferenceEnableHeight?: number;
-  /** @default: 1 */
+  /** @default:2 */
   defaultTransitionTime?: number;
+  /** @default:3 */
+  cip1559TransitionHeight?: number;
   /** @default: temp dir */
   confluxDataDir?: string;
   /** pos config path */
@@ -151,5 +168,62 @@ export interface ConfluxConfig {
    * @default sqlite
    */
   blockDbType?: string;
+  /** bootnodes is a list of nodes that a conflux node trusts, and will be used to sync the blockchain when a node starts. */
+  bootnodes?: string;
+  /** Window size for PoW manager */
+  powProblemWindowSize?: number;
+  /** # Secret key for stratum. The value is 64-digit hex string. If not set, the RPC subscription will not check the authorization. */
+  stratumSecret?: string;
+  /** `public_address` is the address of this node used */
+  publicAddress?: string;
+  /**
+   * `jsonrpc_http_keep_alive` is used to control whether to set KeepAlive for rpc HTTP connections.
+   * @default false
+   */
+  jsonrpcHttpKeepAlive?: boolean;
+  /** `print_memory_usage_period_s` is the period for printing memory usage. */
+  printMemoryUsagePeriodS?: number;
+  /**
+   * The port of the http JSON-RPC server.public_rpc_apis is user defined).
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcHttpPort?: number;
+  /**
+   * The port of the tcp JSON-RPC server. public_rpc_apis is user defined).
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcTcpPort?: number;
+  /**
+   * The port of the http JSON-RPC server public_rpc_apis is user defined).
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcHttpEthPort?: number;
+  /**
+   * The port of the websocket JSON-RPC serverpublic_rpc_apis is user defined).
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcWsEthPort?: number;
+  /**
+   * The port of the tcp JSON-RPC server(public_rpc_apis is "all").
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcLocalTcpPort?: number;
+  /**
+   * The port of the http JSON-RPC server(public_rpc_apis is "all").
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcLocalHttpPort?: number;
+  /**
+   * The port of the websocket JSON-RPC server(public_rpc_apis is "all").
+   * if not set, the JSON-RPC server will not be started.
+   * @default null
+   */
+  jsonrpcLocalWsPort?: number;
 }
 ```

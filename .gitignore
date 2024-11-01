@@ -191,6 +191,8 @@ Temporary Items
 # iCloud generated files
 *.icloud
 *.js
+index.d.ts
+index.d.ts.map
 !conflux.js
 !conflux.d.ts
 ## pnpm ##

@@ -13,7 +13,6 @@ describe("server", () => {
     });
     await server.start();
     const client = createPublicClient({
-      chain: localChain,
       transport: http(`http://127.0.0.1:${jsonrpcHttpPort}`),
     });
 

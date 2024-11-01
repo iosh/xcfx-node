@@ -1,4 +1,10 @@
-import { http, createPublicClient, createWalletClient, webSocket } from "cive";
+import {
+  http,
+  createPublicClient,
+  createTestClient,
+  createWalletClient,
+  webSocket,
+} from "cive";
 import { privateKeyToAccount } from "cive/accounts";
 import { parseCFX } from "cive/utils";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -88,12 +94,14 @@ describe("manual block generation", async () => {
       transport: http(`http://127.0.0.1:${HTTP_PORT}`),
     });
 
+    const testClient = createTestClient({
+      chain: localChain,
+      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+    });
+
     const status = await client.getStatus();
 
-    await client.request<any>({
-      method: "generate_empty_blocks",
-      params: [10],
-    });
+    await testClient.mine({ blocks: 10 });
 
     const status1 = await client.getStatus();
     expect(status1.blockNumber).toBe(status.blockNumber + 10n);
