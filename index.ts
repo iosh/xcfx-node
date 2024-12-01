@@ -55,7 +55,7 @@ export async function createServer(
           }
         });
       });
-
+      console.log("node start", new Date());
       if (filledConfig.jsonrpcHttpPort || filledConfig.jsonrpcWsPort) {
         await retryGetCurrentSyncPhase({
           httpPort: filledConfig.jsonrpcHttpPort,
@@ -113,7 +113,7 @@ async function retryGetCurrentSyncPhase({
       await new Promise((resolve) => setTimeout(resolve, retryInterval));
     }
   } catch (error) {
-    if (!controller.signal.aborted) {
+    if (controller.signal.aborted) {
       throw new Error("Get node sync phase timeout");
     }
     throw error;
