@@ -140,8 +140,10 @@ export interface ConfluxConfig {
    *  @default "123456"
    */
   devPosPrivateKeyEncryptionPassword?: string;
-  /**  The private key of the genesis, every account will be receive 10000 CFX */
+  /**  The private key of the genesis (core space), every account will be receive 10000 CFX */
   genesisSecrets?: Array<string>;
+  /**  The private key of the genesis (eSpace), every account will be receive 10000 CFX */
+  genesisEvmSecrets?: Array<string>;
   /**
    * If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
    * receiving a new tx through RPC calling to pack and execute this
@@ -225,5 +227,18 @@ export interface ConfluxConfig {
    * @default null
    */
   jsonrpcLocalWsPort?: number;
+  /**
+   * `poll_lifetime_in_seconds` is the lifetime of the poll in seconds.
+   * If set, the following RPC methods will be enabled:
+   * - `cfx_newFilter` `cfx_newBlockFilter` `cfx_newPendingTransactionFilter` `cfx_getFilterChanges` `cfx_getFilterLogs` `cfx_uninstallFilter`.
+   * - `eth_newFilter` `eth_newBlockFilter` `eth_newPendingTransactionFilter` eth_getFilterChanges eth_getFilterLogs eth_uninstallFilter
+   */
+  pollLifetimeInSeconds?: number;
+  /** if `get_logs_filter_max_limit` is configured but the query would return more logs */
+  getLogsFilterMaxLimit?: number;
 }
 ```
+
+### Example
+
+The more example, please see `__test__` files.
