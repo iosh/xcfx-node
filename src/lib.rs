@@ -11,7 +11,7 @@ use napi_derive::napi;
 use cfxcore::NodeType;
 use client::{
   archive::ArchiveClient,
-  common::{shutdown_handler, ClientTrait},
+  common::{shutdown_handler::shutdown, ClientTrait},
   full::FullClient,
   light::LightClient,
 };
@@ -115,7 +115,7 @@ impl ConfluxNode {
         exit_sign.1.wait(&mut lock);
       }
 
-      shutdown_handler::run(client_handle, exit_sign.clone());
+      shutdown(client_handle);
       Ok(())
     });
     self.thread_handle = Some(thread_handle);
