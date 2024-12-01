@@ -1,5 +1,11 @@
 # @xcfx/node-linux-x64-gnu
 
+## 0.4.0
+
+### Minor Changes
+
+- c38cd1a: Updated conflux-rust 2.4.1
+
 ## 0.3.1
 
 ### Patch Changes
