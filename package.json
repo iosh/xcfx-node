@@ -10,8 +10,17 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": ["conflux", "conflux-client"],
-  "files": ["index.d.ts", "index.js", "conflux.js", "conflux.d.ts", "configs"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
+  "files": [
+    "index.d.ts",
+    "index.js",
+    "conflux.js",
+    "conflux.d.ts",
+    "configs"
+  ],
   "napi": {
     "binaryName": "node",
     "targets": [
@@ -43,7 +52,7 @@
     "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
   "dependencies": {
-    "cive": "0.7.0"
+    "cive": "0.8.0"
   },
   "devDependencies": {
     "@biomejs/biome": "1.8.3",
@@ -52,7 +61,7 @@
     "@types/node": "^22.5.2",
     "cross-env": "^7.0.3",
     "typescript": "^5.5.3",
-    "vitest": "^2.1.1"
+    "vitest": "^2.1.6"
   },
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "workspace:*",
