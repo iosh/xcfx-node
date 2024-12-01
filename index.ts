@@ -55,7 +55,6 @@ export async function createServer(
           }
         });
       });
-      console.log("node start", new Date());
       if (filledConfig.jsonrpcHttpPort || filledConfig.jsonrpcWsPort) {
         await retryGetCurrentSyncPhase({
           httpPort: filledConfig.jsonrpcHttpPort,
