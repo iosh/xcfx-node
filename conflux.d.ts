@@ -84,8 +84,10 @@ export interface ConfluxConfig {
    *  @default "123456"
    */
   devPosPrivateKeyEncryptionPassword?: string
-  /**  The private key of the genesis, every account will be receive 10000 CFX */
+  /**  The private key of the genesis (core space), every account will be receive 10000 CFX */
   genesisSecrets?: Array<string>
+  /**  The private key of the genesis (eSpace), every account will be receive 10000 CFX */
+  genesisEvmSecrets?: Array<string>
   /**
    * If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
    * receiving a new tx through RPC calling to pack and execute this

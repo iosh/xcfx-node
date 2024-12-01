@@ -65,8 +65,10 @@ pub struct ConfluxConfig {
   /// The password used to encrypt the private key of the pos_private_key.
   ///  @default "123456"
   pub dev_pos_private_key_encryption_password: Option<String>,
-  ///  The private key of the genesis, every account will be receive 10000 CFX
+  ///  The private key of the genesis (core space), every account will be receive 10000 CFX
   pub genesis_secrets: Option<Vec<String>>,
+  ///  The private key of the genesis (eSpace), every account will be receive 10000 CFX
+  pub genesis_evm_secrets: Option<Vec<String>>,
   /// If it's `true`, `DEFERRED_STATE_EPOCH_COUNT` blocks are generated after
   /// receiving a new tx through RPC calling to pack and execute this
   /// transaction
@@ -160,21 +162,11 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   conf.raw_conf.evm_chain_id = Some(js_config.evm_chain_id.unwrap_or(1235));
 
   if let Some(pk) = js_config.genesis_secrets {
-    let f = File::create(temp_dir_path.join("genesis_secrets.txt")).unwrap();
-    let mut w = BufWriter::new(f);
-
-    for p in pk {
-      writeln!(w, "{}", p).unwrap();
-    }
-    w.flush().unwrap();
-
-    conf.raw_conf.genesis_secrets = Some(
-      temp_dir_path
-        .join("genesis_secrets.txt")
-        .into_os_string()
-        .into_string()
-        .unwrap(),
-    );
+    conf.raw_conf.genesis_secrets = write_secrets_to_file(pk, "genesis_secrets.txt", temp_dir_path);
+  }
+  if let Some(pk) = js_config.genesis_evm_secrets {
+    conf.raw_conf.genesis_evm_secrets =
+      write_secrets_to_file(pk, "genesis_evm_secrets.txt", temp_dir_path);
   }
 
   // mode
@@ -275,4 +267,31 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     js_config.print_memory_usage_period_s.map(|x| x as u64);
 
   conf
+}
+
+fn write_secrets_to_file(
+  secrets: Vec<String>,
+  filename: &str,
+  temp_dir_path: &Path,
+) -> Option<std::string::String> {
+  let f = File::create(temp_dir_path.join(filename)).unwrap();
+  let mut w = BufWriter::new(f);
+
+  for secret in secrets {
+    let pk = if secret.starts_with("0x") {
+      &secret[2..]
+    } else {
+      &secret
+    };
+    writeln!(w, "{}", pk).unwrap();
+  }
+  w.flush().unwrap();
+
+  return Some(
+    temp_dir_path
+      .join(filename)
+      .into_os_string()
+      .into_string()
+      .unwrap(),
+  );
 }
