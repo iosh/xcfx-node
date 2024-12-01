@@ -2,7 +2,7 @@
 
 Run the Conflux-Rust node in Node.js. This is used for developing on the Conflux network, such as testing RPC dApps or contracts.
 
-# Supported platforms
+## Supported platforms
 
 By now xcfx-node supports the following platforms:
 
@@ -12,19 +12,19 @@ By now xcfx-node supports the following platforms:
 
 If you want to run other platform or architecture, you can open an [issue](https://github.com/iosh/xcfx-node/issues/new) on GitHub
 
-# Mainnet and testnet
+## Mainnet and testnet
 
 If you want to run a mainnet or testnet node, please refer to the [Conflux documentation](https://www.confluxdocs.com/docs/category/run-a-node)
 
-# Quick start
+## Quick start
 
-## Install
+### Install
 
 ```bash
 npm install @xcfx/node
 ```
 
-## Usage
+### Usage
 
 ```ts
 import { createServer } from "@xcfx/node";
@@ -49,7 +49,7 @@ async function main() {
 await main();
 ```
 
-## Configuration
+### Configuration
 
 ```ts
 import { createServer } from "@xcfx/node";
@@ -59,7 +59,7 @@ async function main() {
 }
 ```
 
-### confluxConfig
+#### confluxConfig
 
 ```ts
 export interface ConfluxConfig {
