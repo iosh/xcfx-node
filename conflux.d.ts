@@ -26,9 +26,11 @@ export interface ConfluxConfig {
    */
   stratumListenAddress?: string
   /**
-   * Port for stratum.
-   * @default 32525
+   * `mining_type` is the type of mining.
+   * stratum | cpu | disable
    */
+  miningType?: string
+  /** Port for stratum. */
   stratumPort?: number
   /** log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`. */
   logConf?: string
@@ -100,6 +102,16 @@ export interface ConfluxConfig {
   defaultTransitionTime?: number
   /** @default:3 */
   cip1559TransitionHeight?: number
+  /**
+   * Enable CIP43A, CIP64, CIP71, CIP78A, CIP92 after hydra_transition_number
+   * @default:1
+   */
+  hydraTransitionNumber?: number
+  /**
+   * Enable cip76, cip86 after hydra_transition_height
+   * @default:1
+   */
+  hydraTransitionHeight?: number
   /** @default: temp dir */
   confluxDataDir?: string
   /** pos config path */

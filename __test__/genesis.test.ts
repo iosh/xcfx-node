@@ -1,9 +1,9 @@
 import { http, createPublicClient, parseCFX } from "cive";
-import { describe, expect, test } from "vitest";
-import { createServer } from "../index";
-import { getFreePorts, TEST_NETWORK_ID, TEST_PK } from "./help";
 import { privateKeyToAccount } from "cive/accounts";
 import { base32AddressToHex } from "cive/utils";
+import { describe, expect, test } from "vitest";
+import { createServer } from "../index";
+import { TEST_NETWORK_ID, TEST_PK, getFreePorts } from "./help";
 
 describe("genesis", () => {
   test("default", async () => {

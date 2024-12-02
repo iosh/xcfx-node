@@ -26,8 +26,10 @@ pub struct ConfluxConfig {
   /// Listen address for stratum
   /// @default "127.0.0.1"
   pub stratum_listen_address: Option<String>,
+  /// `mining_type` is the type of mining.
+  /// stratum | cpu | disable
+  pub mining_type: Option<String>,
   /// Port for stratum.
-  /// @default 32525
   pub stratum_port: Option<u16>,
   /// log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`.
   pub log_conf: Option<String>,
@@ -79,6 +81,12 @@ pub struct ConfluxConfig {
   pub default_transition_time: Option<i64>,
   /// @default:3
   pub cip1559_transition_height: Option<i64>,
+  /// Enable CIP43A, CIP64, CIP71, CIP78A, CIP92 after hydra_transition_number
+  /// @default:1
+  pub hydra_transition_number: Option<i64>,
+  /// Enable cip76, cip86 after hydra_transition_height
+  /// @default:1
+  pub hydra_transition_height: Option<i64>,
   /// @default: temp dir
   pub conflux_data_dir: Option<String>,
   /// pos config path
@@ -205,6 +213,9 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.cip1559_transition_height =
     Some(js_config.cip1559_transition_height.unwrap_or(2) as u64);
+  conf.raw_conf.hydra_transition_number =
+    Some(js_config.hydra_transition_number.unwrap_or(1) as u64);
+  conf.raw_conf.hydra_transition_height = Some(js_config.hydra_transition_height.unwrap_or(1) as u64);
 
   conf.raw_conf.poll_lifetime_in_seconds = js_config.poll_lifetime_in_seconds;
 
@@ -238,6 +249,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     .unwrap_or("127.0.0.1".to_string());
 
   conf.raw_conf.jsonrpc_ws_port = js_config.jsonrpc_ws_port;
+  conf.raw_conf.mining_type = js_config.mining_type;
   conf.raw_conf.jsonrpc_http_port = js_config.jsonrpc_http_port;
 
   conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
