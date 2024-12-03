@@ -60,7 +60,6 @@ async function main() {
 ```
 
 #### confluxConfig
-
 ```ts
 export interface ConfluxConfig {
   /**
