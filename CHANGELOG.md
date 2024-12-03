@@ -1,5 +1,11 @@
 # @xcfx/node
 
+## 0.4.0
+
+### Minor Changes
+
+- 5424c0a: Updated conflux-rust 2.4.1
+
 ## 0.3.2
 
 ### Patch Changes
