@@ -1,0 +1,8 @@
+{
+    "rust-analyzer.server.extraEnv": {
+        "CC": "clang-18",
+        "CXX": "clang++-18",
+        "CXXFLAGS": "-std=c++11 -stdlib=libc++",
+        "LDFLAGS": "-stdlib=libc++"
+    }
+}
