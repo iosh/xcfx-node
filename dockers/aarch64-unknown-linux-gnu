@@ -1,30 +1,17 @@
-FROM --platform=linux/arm64 ubuntu:22.04
-
-ARG RUST_TARGET=aarch64-unknown-linux-gnu
+FROM --platform=linux/arm64  ubuntu:22.04
 
 RUN apt-get update && \
-     apt-get install -y \
-     curl \
-     lsb-release \
-     wget \
-     software-properties-common \
-     gnupg \
-     libsqlite3-dev \
-     pkg-config \
-     libssl-dev \
-     cmake \
-     libc++-18-dev \
-     git \
-     unzip && \
-     wget https://apt.llvm.org/llvm.sh && \
-     chmod u+x llvm.sh && \
-     ./llvm.sh 18 && \
-     rm -rf /var/lib/apt/lists/* && \
-     rm llvm.sh
+     apt-get install curl lsb-release wget software-properties-common gnupg -y
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-host ${RUST_TARGET} -y && \ 
-     . ~/.bashrc && \
-     rustup target add ${RUST_TARGET}
+RUN wget https://apt.llvm.org/llvm.sh && \
+     chmod u+x llvm.sh && \
+     ./llvm.sh 18
+
+RUN apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev git curl unzip
+
+RUN  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-host aarch64-unknown-linux-gnu -y && \ 
+     . ~/.bashrc  && \
+     rustup target add aarch64-unknown-linux-gnu
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 ENV CC=clang-18
