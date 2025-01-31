@@ -21,6 +21,8 @@ use std::thread;
 use std::{env, sync::Arc};
 use tempfile::{tempdir, TempDir};
 mod config;
+mod error;
+use error::{NodeError, Result};
 
 use log4rs;
 
@@ -28,42 +30,26 @@ fn setup_env(
   config: config::ConfluxConfig,
   temp_dir: &TempDir,
 ) -> Result<client::common::Configuration> {
-  // we need set the work dir to temp dir
   let temp_dir_path = temp_dir.path();
   let conf = convert_config(config, &temp_dir_path);
-  info!("node work dir: {:?}", temp_dir_path);
-  env::set_current_dir(temp_dir_path).unwrap();
+  info!("Node working directory: {:?}", temp_dir_path);
+
+  env::set_current_dir(temp_dir_path).map_err(|e| {
+    NodeError::InitializationError(format!("Failed to set working directory: {}", e))
+  })?;
 
   if let Some(ref log_conf) = conf.raw_conf.log_conf {
     log4rs::init_file(log_conf, Default::default())
-      .map_err(|e| {
-        error!("failed to initialize log with log config file: {:?}", e);
-        format!("failed to initialize log with log config file: {:?}", e)
-      })
-      .unwrap();
+      .map_err(|e| NodeError::ConfigurationError(format!("Failed to initialize logging: {}", e)))?;
   };
 
   Ok(conf)
 }
 
-fn map_client_error(e: &str, js_callback: ThreadsafeFunction<Null>) -> Error {
-  js_callback.call(
-    Err(napi::Error::new(
-      napi::Status::GenericFailure,
-      format!("failed to start client: {}", e),
-    )),
-    ThreadsafeFunctionCallMode::NonBlocking,
-  );
-  Error::new(
-    napi::Status::GenericFailure,
-    format!("failed to start client: {}", e),
-  )
-}
-
 #[napi]
 pub struct ConfluxNode {
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
-  thread_handle: Option<thread::JoinHandle<Result<(), Status>>>,
+  thread_handle: Option<thread::JoinHandle<std::result::Result<(), Error>>>,
 }
 #[napi]
 impl ConfluxNode {
@@ -87,27 +73,31 @@ impl ConfluxNode {
     let exit_sign = self.exit_sign.clone();
 
     let thread_handle = thread::spawn(move || {
-      let temp_dir = tempdir()?;
+      let temp_dir = tempdir().map_err(|e| {
+        NodeError::InitializationError(format!("Failed to create temporary directory: {}", e))
+      })?;
+
       let conf = setup_env(config, &temp_dir)?;
 
-      let client_handle: Box<dyn ClientTrait>;
-      client_handle = match conf.node_type() {
+      let client_handle: Box<dyn ClientTrait> = match conf.node_type() {
         NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
+          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Archive node: {}", e)))
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })
-          .map_err(|e| map_client_error(&e, js_callback))?,
+          })?,
         NodeType::Full => FullClient::start(conf, exit_sign.clone())
+          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Full node: {}", e)))
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })
-          .map_err(|e| map_client_error(&e, js_callback))?,
+          })?,
         NodeType::Light => LightClient::start(conf, exit_sign.clone())
+          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Light node: {}", e)))
           .inspect(|_| {
             js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })
-          .map_err(|e| map_client_error(&e, js_callback))?,
-        NodeType::Unknown => return Err(Error::new(napi::Status::InvalidArg, "Unknown node type")),
+          })?,
+        NodeType::Unknown => {
+          return Err(NodeError::ConfigurationError("Unknown node type".to_string()).into());
+        }
       };
 
       let mut lock = exit_sign.0.lock();
@@ -118,6 +108,7 @@ impl ConfluxNode {
       shutdown(client_handle);
       Ok(())
     });
+
     self.thread_handle = Some(thread_handle);
   }
 
@@ -126,14 +117,25 @@ impl ConfluxNode {
     *self.exit_sign.0.lock() = true;
     self.exit_sign.1.notify_all();
 
-    let thread_handle = self.thread_handle.take().unwrap();
-
-    match thread_handle.join().unwrap() {
-      Ok(_) => {
-        js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-      }
-      Err(e) => {
-        js_callback.call(Err(e), ThreadsafeFunctionCallMode::NonBlocking);
+    if let Some(thread_handle) = self.thread_handle.take() {
+      match thread_handle.join() {
+        Ok(result) => match result {
+          Ok(_) => {
+            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+          }
+          Err(e) => {
+            js_callback.call(
+              Err(NodeError::ShutdownError(format!("Failed to shutdown node: {:?}", e)).into()),
+              ThreadsafeFunctionCallMode::NonBlocking,
+            );
+          }
+        },
+        Err(e) => {
+          js_callback.call(
+            Err(NodeError::ShutdownError("Thread terminated abnormally".to_string()).into()),
+            ThreadsafeFunctionCallMode::NonBlocking,
+          );
+        }
       }
     }
   }
