@@ -2,3 +2,6 @@
 dockerfile = "./dockers/x86_64-unknown-linux-gnu"
 [target.aarch64-unknown-linux-gnu]
 dockerfile = "./dockers/aarch64-unknown-linux-gnu"
+
+[build.env]
+CROSS_NO_WARNINGS = 0
