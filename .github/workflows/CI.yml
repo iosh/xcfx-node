@@ -39,13 +39,10 @@ jobs:
             target: x86_64-pc-windows-msvc
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            build: pnpm build --target x86_64-unknown-linux-gnu --use-cross
-            setup: cargo install cross --git https://github.com/cross-rs/cross
-          - host: ubuntu-22.04-arm
+            build: pnpm build --target x86_64-unknown-linux-gnu
+          - host: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
-            build: pnpm build --target aarch64-unknown-linux-gnu --use-cross
-            setup: cargo install cross --git https://github.com/cross-rs/cross
-
+            build: pnpm build --target aarch64-unknown-linux-gnu
           - host: macos-15
             target: aarch64-apple-darwin
             build: RUSTFLAGS="-L $(brew --prefix bzip2)/lib -l bz2" pnpm build --target aarch64-apple-darwin
@@ -95,6 +92,24 @@ jobs:
           choco install llvm visualstudio-installer visualstudio2017-workload-vctools visualstudio2017buildtools-y
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
           vcpkg install openssl:x64-windows-static-md
+
+      - name: Install linux dependencies
+        if: ${{contains(matrix.settings.host, 'ubuntu')}}
+        run: |
+          sudo apt-get update
+          sudo apt-get install curl lsb-release wget software-properties-common gnupg -y
+          wget https://apt.llvm.org/llvm.sh
+          chmod u+x llvm.sh
+          sudo ./llvm.sh 18
+          sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
+
+      - name: Setup linux env
+        if: ${{contains(matrix.settings.host, 'ubuntu')}}
+        run: |
+          echo "CC=clang-18" >> $GITHUB_ENV
+          echo "CXX=clang++-18" >> $GITHUB_ENV
+          echo "CXXFLAGS=-std=c++11 -stdlib=libc++" >> $GITHUB_ENV
+          echo "LDFLAGS=-stdlib=libc++" >> $GITHUB_ENV
       - name: Install dependencies
         run: pnpm install
       - name: Build
