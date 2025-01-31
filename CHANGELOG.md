@@ -1,5 +1,11 @@
 # @xcfx/node
 
+## 0.5.0
+
+### Minor Changes
+
+- e59db9e: add aarch64-unknown-linux-gnu supported
+
 ## 0.4.0
 
 ### Minor Changes

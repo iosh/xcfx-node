@@ -51,6 +51,8 @@ importers:
 
   npm/darwin-x64: {}
 
+  npm/linux-arm64-gnu: {}
+
   npm/linux-x64-gnu: {}
 
   npm/win32-x64-msvc: {}
