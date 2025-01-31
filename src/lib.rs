@@ -1,7 +1,7 @@
 #![deny(clippy::all)]
 
 use config::convert_config;
-use log::{error, info};
+use log::info;
 use napi::{
   bindgen_prelude::*,
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -130,7 +130,7 @@ impl ConfluxNode {
             );
           }
         },
-        Err(e) => {
+        Err(_e) => {
           js_callback.call(
             Err(NodeError::ShutdownError("Thread terminated abnormally".to_string()).into()),
             ThreadsafeFunctionCallMode::NonBlocking,
