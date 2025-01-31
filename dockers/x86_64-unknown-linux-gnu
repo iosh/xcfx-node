@@ -10,7 +10,6 @@ RUN wget https://apt.llvm.org/llvm.sh && \
 RUN apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev git curl unzip
 
 RUN  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-host x86_64-unknown-linux-gnu -y && \ 
-     . ~/.bashrc  && \
      rustup target add x86_64-unknown-linux-gnu
 
 
