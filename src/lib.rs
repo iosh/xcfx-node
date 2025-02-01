@@ -18,8 +18,8 @@ use client::{
 use parking_lot::{Condvar, Mutex};
 use primitives::block_header::CIP112_TRANSITION_HEIGHT;
 use std::thread;
-use std::{env, sync::Arc};
-use tempfile::{tempdir, TempDir};
+use std::{env, fs, sync::Arc};
+use tempfile::tempdir;
 mod config;
 mod error;
 use error::{NodeError, Result};
@@ -28,22 +28,25 @@ use log4rs;
 
 fn setup_env(
   config: config::ConfluxConfig,
-  temp_dir: &TempDir,
+  data_dir: &std::path::Path,
 ) -> Result<client::common::Configuration> {
-  let temp_dir_path = temp_dir.path();
-  let conf = convert_config(config, &temp_dir_path);
-  info!("Node working directory: {:?}", temp_dir_path);
+  info!("Node working directory: {:?}", data_dir);
 
-  env::set_current_dir(temp_dir_path).map_err(|e| {
+  // ensure directory exists
+  fs::create_dir_all(data_dir).map_err(|e| {
+    NodeError::InitializationError(format!("Failed to create data directory: {}", e))
+  })?;
+
+  env::set_current_dir(data_dir).map_err(|e| {
     NodeError::InitializationError(format!("Failed to set working directory: {}", e))
   })?;
 
-  if let Some(ref log_conf) = conf.raw_conf.log_conf {
+  if let Some(ref log_conf) = config.log_conf {
     log4rs::init_file(log_conf, Default::default())
       .map_err(|e| NodeError::ConfigurationError(format!("Failed to initialize logging: {}", e)))?;
   };
 
-  Ok(conf)
+  Ok(convert_config(config, data_dir))
 }
 
 #[napi]
@@ -51,6 +54,7 @@ pub struct ConfluxNode {
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
   thread_handle: Option<thread::JoinHandle<std::result::Result<(), Error>>>,
 }
+
 #[napi]
 impl ConfluxNode {
   #[napi(constructor)]
@@ -60,6 +64,7 @@ impl ConfluxNode {
       thread_handle: None,
     }
   }
+
   #[napi]
   pub fn start_node(
     &mut self,
@@ -70,14 +75,26 @@ impl ConfluxNode {
       CIP112_TRANSITION_HEIGHT.set(u64::MAX).expect("called once");
     }
 
+    println!("start_node 111");
     let exit_sign = self.exit_sign.clone();
 
+    println!("start_node 222");
     let thread_handle = thread::spawn(move || {
-      let temp_dir = tempdir().map_err(|e| {
-        NodeError::InitializationError(format!("Failed to create temporary directory: {}", e))
-      })?;
+      // if data_dir is not set, use temp dir
+      let data_dir = if let Some(dir) = config.data_dir.as_ref() {
+        std::path::PathBuf::from(dir)
+      } else {
+        tempdir()
+          .map_err(|e| {
+            NodeError::InitializationError(format!("Failed to create temporary directory: {}", e))
+          })?
+          .into_path()
+      };
 
-      let conf = setup_env(config, &temp_dir)?;
+      println!("start_node 333");
+
+      let conf = setup_env(config, &data_dir)?;
+
 
       let client_handle: Box<dyn ClientTrait> = match conf.node_type() {
         NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
@@ -99,6 +116,8 @@ impl ConfluxNode {
           return Err(NodeError::ConfigurationError("Unknown node type".to_string()).into());
         }
       };
+
+      println!("start_node 444");
 
       let mut lock = exit_sign.0.lock();
       if !*lock {

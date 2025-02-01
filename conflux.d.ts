@@ -19,8 +19,14 @@ export interface ConfluxConfig {
    * @default sqlite
    */
   blockDbType?: string
-  /** @default: temp dir */
+  /** @default: data_dir */
   confluxDataDir?: string
+  /**
+   * Add data directory configuration
+   * The conflux node will use this directory to store data.  If not set, a temporary directory will be used.
+   * @default temp dir
+   */
+  dataDir?: string
   /**
    * The chain ID of the network.(core space)
    * @default 1234

@@ -17,16 +17,14 @@ export type CreateServerReturnType = {
   stop: () => Promise<void>;
 };
 
-let isServiceCreated = false;
+let isServiceStarted = false;
+
 export async function createServer(
-  config: Config = {},
+  config: Config = {}
 ): Promise<CreateServerReturnType> {
-  if (isServiceCreated) {
-    throw new Error("The server has already been created");
-  }
   const { timeout = 20000, retryInterval = 300 } = config;
 
-  isServiceCreated = true;
+  // isServiceCreated = true;
 
   const { log = false, ...userConfig } = config;
 
@@ -34,9 +32,8 @@ export async function createServer(
     posConfigPath: path.join(__dirname, "./configs/pos_config/pos_config.yaml"),
     posInitialNodesPath: path.join(
       __dirname,
-      "./configs/pos_config/initial_nodes.json",
+      "./configs/pos_config/initial_nodes.json"
     ),
-    posPrivateKeyPath: path.join(__dirname, "../configs/pos_config/pos_key"),
 
     logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
 
@@ -46,6 +43,12 @@ export async function createServer(
   const node = new ConfluxNode();
   return {
     async start() {
+      if (isServiceStarted) {
+        throw new Error(
+          "The server has already been started, you can't start it again"
+        );
+      }
+
       await new Promise<void>((resolve, reject) => {
         node.startNode(filledConfig, (err) => {
           if (err) {
@@ -63,6 +66,7 @@ export async function createServer(
           retryInterval: retryInterval,
         });
       }
+      isServiceStarted = true;
     },
     async stop() {
       return new Promise((resolve, reject) => {

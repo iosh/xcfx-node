@@ -22,8 +22,13 @@ pub struct ConfluxConfig {
   /// @default sqlite
   pub block_db_type: Option<String>,
 
-  /// @default: temp dir
+  /// @default: data_dir
   pub conflux_data_dir: Option<String>,
+
+  /// Add data directory configuration
+  /// The conflux node will use this directory to store data.  If not set, a temporary directory will be used.
+  /// @default temp dir
+  pub data_dir: Option<String>,
 
   // ============= Chain Configuration =============
   /// The chain ID of the network.(core space)
@@ -175,7 +180,6 @@ pub struct ConfluxConfig {
   // ============= Logging Configuration =============
   /// log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`.
   pub log_conf: Option<String>,
-
 
   /// log_level` is the printed log level.
   /// "error" | "warn" | "info" | "debug" | "trace" | "off"

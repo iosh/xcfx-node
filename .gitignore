@@ -197,3 +197,6 @@ index.d.ts.map
 !conflux.d.ts
 ## pnpm ##
 .pnpm-store
+
+# test data
+test_data
