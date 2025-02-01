@@ -20,7 +20,7 @@ export type CreateServerReturnType = {
 let isServiceStarted = false;
 
 export async function createServer(
-  config: Config = {}
+  config: Config = {},
 ): Promise<CreateServerReturnType> {
   const { timeout = 20000, retryInterval = 300 } = config;
 
@@ -32,7 +32,7 @@ export async function createServer(
     posConfigPath: path.join(__dirname, "./configs/pos_config/pos_config.yaml"),
     posInitialNodesPath: path.join(
       __dirname,
-      "./configs/pos_config/initial_nodes.json"
+      "./configs/pos_config/initial_nodes.json",
     ),
 
     logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
@@ -45,7 +45,7 @@ export async function createServer(
     async start() {
       if (isServiceStarted) {
         throw new Error(
-          "The server has already been started, you can't start it again"
+          "The server has already been started, you can't start it again",
         );
       }
 

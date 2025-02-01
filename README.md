@@ -77,6 +77,12 @@ const server = await createServer({
 
   // Logging
   log: true, // default print log to console, you can see the log.yaml in ./configs/log.yaml
+  // or you can set logConf to your own log.yaml file, you can see log.test.ts for more details
+  logConf: "./configs/log.yaml",
+
+  // Data persistence
+  // Data directory, default is temp dir, you can set your own data dir
+  dataDir: "/path/to/your/data/dir",
 });
 ```
 
