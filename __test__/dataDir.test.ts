@@ -1,11 +1,11 @@
 import { describe, expect, test, beforeAll, afterAll, afterEach } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts } from "./help";
+import { getFreePorts, TEST_TEMP_DATA_DIR } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
 describe("Data Directory Tests", () => {
-  const TEST_DATA_DIR = path.join(__dirname, "test_data");
+  const TEST_DATA_DIR = path.join(TEST_TEMP_DATA_DIR, "dataDir");
 
   // Clean test directory and get ports before all tests
   beforeAll(async () => {

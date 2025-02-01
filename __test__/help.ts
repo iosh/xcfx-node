@@ -1,6 +1,9 @@
 import net from "node:net";
 import { privateKeyToAccount } from "cive/accounts";
 import { defineChain } from "cive/utils";
+import path from "node:path";
+
+export const TEST_TEMP_DATA_DIR = path.join(__dirname, "test_data");
 
 export async function getPort(): Promise<number> {
   return new Promise((resolve, reject) => {
