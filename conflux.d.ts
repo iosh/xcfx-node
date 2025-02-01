@@ -172,11 +172,6 @@ export interface ConfluxConfig {
   /** log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`. */
   logConf?: string
   /**
-   * `log_file` is the path of the log file"
-   * If not set, the log will only be printed to stdout, and not persisted to files.
-   */
-  logFile?: string
-  /**
    * log_level` is the printed log level.
    * "error" | "warn" | "info" | "debug" | "trace" | "off"
    */

@@ -76,7 +76,7 @@ const server = await createServer({
   evmChainId: 1235, // eSpace chain ID
 
   // Logging
-  log: true, // show conflux node log in console
+  log: true, // default print log to console, you can see the log.yaml in ./configs/log.yaml
 });
 ```
 

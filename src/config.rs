@@ -176,9 +176,6 @@ pub struct ConfluxConfig {
   /// log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`.
   pub log_conf: Option<String>,
 
-  /// `log_file` is the path of the log file"
-  /// If not set, the log will only be printed to stdout, and not persisted to files.
-  pub log_file: Option<String>,
 
   /// log_level` is the printed log level.
   /// "error" | "warn" | "info" | "debug" | "trace" | "off"
