@@ -16,8 +16,6 @@ use client::{
   light::LightClient,
 };
 use parking_lot::{Condvar, Mutex};
-use primitives::block_header::CIP112_TRANSITION_HEIGHT;
-use std::thread;
 use std::{env, fs, sync::Arc};
 use tempfile::tempdir;
 mod config;
@@ -51,8 +49,8 @@ fn setup_env(
 
 #[napi]
 pub struct ConfluxNode {
+  client_handle: Option<Box<dyn ClientTrait>>,
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
-  thread_handle: Option<thread::JoinHandle<std::result::Result<(), Error>>>,
 }
 
 #[napi]
@@ -60,9 +58,13 @@ impl ConfluxNode {
   #[napi(constructor)]
   pub fn new() -> Self {
     ConfluxNode {
+      client_handle: None,
       exit_sign: Arc::new((Mutex::new(false), Condvar::new())),
-      thread_handle: None,
     }
+  }
+
+  fn handle_error(error: NodeError, js_callback: &ThreadsafeFunction<Null>) {
+    js_callback.call(Err(error.into()), ThreadsafeFunctionCallMode::NonBlocking);
   }
 
   #[napi]
@@ -71,64 +73,53 @@ impl ConfluxNode {
     config: config::ConfluxConfig,
     js_callback: ThreadsafeFunction<Null>,
   ) {
-    if CIP112_TRANSITION_HEIGHT.get().is_none() {
-      CIP112_TRANSITION_HEIGHT.set(u64::MAX).expect("called once");
-    }
-
-    println!("start_node 111");
-    let exit_sign = self.exit_sign.clone();
-
-    println!("start_node 222");
-    let thread_handle = thread::spawn(move || {
-      // if data_dir is not set, use temp dir
-      let data_dir = if let Some(dir) = config.data_dir.as_ref() {
-        std::path::PathBuf::from(dir)
-      } else {
-        tempdir()
-          .map_err(|e| {
-            NodeError::InitializationError(format!("Failed to create temporary directory: {}", e))
-          })?
-          .into_path()
-      };
-
-      println!("start_node 333");
-
-      let conf = setup_env(config, &data_dir)?;
-
-
-      let client_handle: Box<dyn ClientTrait> = match conf.node_type() {
-        NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
-          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Archive node: {}", e)))
-          .inspect(|_| {
-            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })?,
-        NodeType::Full => FullClient::start(conf, exit_sign.clone())
-          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Full node: {}", e)))
-          .inspect(|_| {
-            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })?,
-        NodeType::Light => LightClient::start(conf, exit_sign.clone())
-          .map_err(|e| NodeError::RuntimeError(format!("Failed to start Light node: {}", e)))
-          .inspect(|_| {
-            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          })?,
-        NodeType::Unknown => {
-          return Err(NodeError::ConfigurationError("Unknown node type".to_string()).into());
-        }
-      };
-
-      println!("start_node 444");
-
-      let mut lock = exit_sign.0.lock();
-      if !*lock {
-        exit_sign.1.wait(&mut lock);
+    // if data_dir is not set, use temp dir
+    let data_dir = match config.data_dir.as_ref().map_or_else(
+      || tempdir().map(|dir| dir.into_path()),
+      |dir| Ok(std::path::PathBuf::from(dir)),
+    ) {
+      Ok(dir) => dir,
+      Err(e) => {
+        Self::handle_error(
+          NodeError::InitializationError(format!("Failed to create directory: {}", e)),
+          &js_callback,
+        );
+        return;
       }
+    };
 
-      shutdown(client_handle);
-      Ok(())
-    });
+    let conf = match setup_env(config, &data_dir) {
+      Ok(conf) => conf,
+      Err(e) => {
+        Self::handle_error(e, &js_callback);
+        return;
+      }
+    };
 
-    self.thread_handle = Some(thread_handle);
+    let client_handle: Result<Box<dyn ClientTrait>> = match conf.node_type() {
+      NodeType::Archive => ArchiveClient::start(conf, self.exit_sign.clone())
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Archive node: {}", e))),
+      NodeType::Full => FullClient::start(conf, self.exit_sign.clone())
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Full node: {}", e))),
+      NodeType::Light => LightClient::start(conf, self.exit_sign.clone())
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Light node: {}", e))),
+      NodeType::Unknown => Err(NodeError::ConfigurationError(
+        "Unknown node type".to_string(),
+      )),
+    };
+
+    match client_handle {
+      Ok(handle) => {
+        self.client_handle = Some(handle);
+        js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+      }
+      Err(e) => {
+        Self::handle_error(e, &js_callback);
+      }
+    }
   }
 
   #[napi]
@@ -136,26 +127,9 @@ impl ConfluxNode {
     *self.exit_sign.0.lock() = true;
     self.exit_sign.1.notify_all();
 
-    if let Some(thread_handle) = self.thread_handle.take() {
-      match thread_handle.join() {
-        Ok(result) => match result {
-          Ok(_) => {
-            js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-          }
-          Err(e) => {
-            js_callback.call(
-              Err(NodeError::ShutdownError(format!("Failed to shutdown node: {:?}", e)).into()),
-              ThreadsafeFunctionCallMode::NonBlocking,
-            );
-          }
-        },
-        Err(_e) => {
-          js_callback.call(
-            Err(NodeError::ShutdownError("Thread terminated abnormally".to_string()).into()),
-            ThreadsafeFunctionCallMode::NonBlocking,
-          );
-        }
-      }
+    if let Some(client_handle) = self.client_handle.take() {
+      shutdown(client_handle);
+      js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
     }
   }
 }

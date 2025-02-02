@@ -195,6 +195,7 @@ index.d.ts
 index.d.ts.map
 !conflux.js
 !conflux.d.ts
+node.d.ts
 ## pnpm ##
 .pnpm-store
 

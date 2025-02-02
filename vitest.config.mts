@@ -1,5 +1,4 @@
 import { defineConfig } from "vitest/config";
-import { BaseSequencer } from "vitest/node";
 export default defineConfig({
   test: {
     testTimeout: 500000,

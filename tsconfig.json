@@ -11,6 +11,6 @@
     "skipLibCheck": true,
     "declaration": true
   },
-  "include": ["./index.ts"],
-  "exclude": ["node_modules", "benchmark", "__test__", "target", "pos_config"]
+  "include": ["./*.ts"],
+  "exclude": ["node_modules", "benchmark", "__test__", "target", "pos_config", "vitest.config.mts"]
 }

@@ -1,6 +1,7 @@
 import path from "node:path";
+import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
-import { type ConfluxConfig, ConfluxNode } from "./conflux";
+import { type ConfluxConfig } from "./conflux";
 
 export type Config = {
   /**
@@ -17,68 +18,120 @@ export type CreateServerReturnType = {
   stop: () => Promise<void>;
 };
 
-let isServiceStarted = false;
+class ConfluxInstance {
+  private nodeProcess: ChildProcess | null = null;
+  private isServiceStarted = false;
+  private readonly config: ConfluxConfig;
+  private readonly timeout: number;
+  private readonly retryInterval: number;
+
+  constructor(config: Config) {
+    const {
+      timeout = 20000,
+      retryInterval = 300,
+      log = false,
+      ...userConfig
+    } = config;
+
+    this.timeout = timeout;
+    this.retryInterval = retryInterval;
+    this.config = {
+      posConfigPath: path.join(
+        __dirname,
+        "./configs/pos_config/pos_config.yaml",
+      ),
+      posInitialNodesPath: path.join(
+        __dirname,
+        "./configs/pos_config/initial_nodes.json",
+      ),
+      logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
+      ...userConfig,
+    };
+  }
+
+  async start(): Promise<void> {
+    if (this.isServiceStarted) {
+      throw new Error(
+        "This instance has already been started, you can't start it again",
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      this.nodeProcess = fork(path.join(__dirname, "node.js"));
+
+      this.nodeProcess.on(
+        "message",
+        (message: { type: string; error?: string }) => {
+          if (message.type === "started") {
+            resolve();
+          } else if (message.type === "error") {
+            reject(new Error(message.error));
+          }
+        },
+      );
+
+      this.nodeProcess.on("error", (err) => {
+        reject(err);
+      });
+
+      this.nodeProcess.on("exit", (code) => {
+        if (code !== 0 && !this.isServiceStarted) {
+          reject(new Error(`Worker process exited with code ${code}`));
+        }
+        this.isServiceStarted = false;
+        this.nodeProcess = null;
+      });
+
+      this.nodeProcess.send({ type: "start", config: this.config });
+    });
+
+    if (this.config.jsonrpcHttpPort || this.config.jsonrpcWsPort) {
+      await retryGetCurrentSyncPhase({
+        httpPort: this.config.jsonrpcHttpPort,
+        wsPort: this.config.jsonrpcWsPort,
+        timeout: this.timeout,
+        retryInterval: this.retryInterval,
+      });
+    }
+    this.isServiceStarted = true;
+  }
+
+  async stop(): Promise<void> {
+    if (!this.nodeProcess) {
+      return;
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      if (!this.nodeProcess) {
+        resolve();
+        return;
+      }
+
+      this.nodeProcess.on(
+        "message",
+        (message: { type: string; error?: string }) => {
+          if (message.type === "stopped") {
+            this.nodeProcess = null;
+            this.isServiceStarted = false;
+            resolve();
+          } else if (message.type === "error") {
+            reject(new Error(message.error));
+          }
+        },
+      );
+
+      this.nodeProcess.send({ type: "stop" });
+    });
+  }
+}
 
 export async function createServer(
   config: Config = {},
 ): Promise<CreateServerReturnType> {
-  const { timeout = 20000, retryInterval = 300 } = config;
-
-  // isServiceCreated = true;
-
-  const { log = false, ...userConfig } = config;
-
-  const filledConfig: ConfluxConfig = {
-    posConfigPath: path.join(__dirname, "./configs/pos_config/pos_config.yaml"),
-    posInitialNodesPath: path.join(
-      __dirname,
-      "./configs/pos_config/initial_nodes.json",
-    ),
-
-    logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
-
-    ...userConfig,
-  };
-
-  const node = new ConfluxNode();
+  const instance = new ConfluxInstance(config);
   return {
-    async start() {
-      if (isServiceStarted) {
-        throw new Error(
-          "The server has already been started, you can't start it again",
-        );
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        node.startNode(filledConfig, (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-      if (filledConfig.jsonrpcHttpPort || filledConfig.jsonrpcWsPort) {
-        await retryGetCurrentSyncPhase({
-          httpPort: filledConfig.jsonrpcHttpPort,
-          wsPort: filledConfig.jsonrpcWsPort,
-          timeout: timeout,
-          retryInterval: retryInterval,
-        });
-      }
-      isServiceStarted = true;
-    },
-    async stop() {
-      return new Promise((resolve, reject) => {
-        node.stopNode((err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
-    },
+    start: () => instance.start(),
+    stop: () => instance.stop(),
   };
 }
 
