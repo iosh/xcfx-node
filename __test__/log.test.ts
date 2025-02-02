@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, TEST_TEMP_DATA_DIR } from "./help";
+import { getFreePorts, sleep, TEST_TEMP_DATA_DIR } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -11,14 +11,15 @@ describe("test log", () => {
   beforeAll(() => {
     if (fs.existsSync(TEST_LOG_PATH)) {
       fs.unlinkSync(TEST_LOG_PATH);
-      fs.rmdirSync(WORK_DIR, { recursive: true });
+      fs.rmSync(WORK_DIR, { recursive: true, force: true });
     }
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     if (fs.existsSync(TEST_LOG_PATH)) {
       fs.unlinkSync(TEST_LOG_PATH);
-      fs.rmdirSync(WORK_DIR, { recursive: true });
+      await sleep(1000);
+      fs.rmSync(WORK_DIR, { recursive: true, force: true });
     }
   });
 

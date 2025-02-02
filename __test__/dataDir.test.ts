@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll, afterEach } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, TEST_TEMP_DATA_DIR } from "./help";
+import { getFreePorts, sleep, TEST_TEMP_DATA_DIR } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -17,6 +17,7 @@ describe("Data Directory Tests", () => {
   // Clean up after all tests
   afterAll(async () => {
     if (fs.existsSync(TEST_DATA_DIR)) {
+      await sleep(1000);
       fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
     }
   });

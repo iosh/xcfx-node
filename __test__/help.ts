@@ -5,6 +5,8 @@ import path from "node:path";
 
 export const TEST_TEMP_DATA_DIR = path.join(__dirname, "test_data");
 
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export async function getPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();

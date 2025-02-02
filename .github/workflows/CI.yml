@@ -208,6 +208,7 @@ jobs:
           options: "-v ${{ steps.docker.outputs.PNPM_STORE_PATH }}:${{ steps.docker.outputs.PNPM_STORE_PATH }} -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} --platform ${{ steps.docker.outputs.PLATFORM }}"
           run: |
             apt update && apt install openssl sqlite3 -y
+            npm install -g pnpm
             npm run test
   publish:
     name: Publish
