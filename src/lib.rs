@@ -22,7 +22,6 @@ mod config;
 mod error;
 use error::{NodeError, Result};
 
-use log4rs;
 
 fn setup_env(
   config: config::ConfluxConfig,
@@ -32,16 +31,16 @@ fn setup_env(
 
   // ensure directory exists
   fs::create_dir_all(data_dir).map_err(|e| {
-    NodeError::InitializationError(format!("Failed to create data directory: {}", e))
+    NodeError::Initialization(format!("Failed to create data directory: {}", e))
   })?;
 
   env::set_current_dir(data_dir).map_err(|e| {
-    NodeError::InitializationError(format!("Failed to set working directory: {}", e))
+    NodeError::Initialization(format!("Failed to set working directory: {}", e))
   })?;
 
   if let Some(ref log_conf) = config.log_conf {
     log4rs::init_file(log_conf, Default::default())
-      .map_err(|e| NodeError::ConfigurationError(format!("Failed to initialize logging: {}", e)))?;
+      .map_err(|e| NodeError::Configuration(format!("Failed to initialize logging: {}", e)))?;
   };
 
   Ok(convert_config(config, data_dir))
@@ -81,7 +80,7 @@ impl ConfluxNode {
       Ok(dir) => dir,
       Err(e) => {
         Self::handle_error(
-          NodeError::InitializationError(format!("Failed to create directory: {}", e)),
+          NodeError::Initialization(format!("Failed to create directory: {}", e)),
           &js_callback,
         );
         return;
@@ -99,14 +98,14 @@ impl ConfluxNode {
     let client_handle: Result<Box<dyn ClientTrait>> = match conf.node_type() {
       NodeType::Archive => ArchiveClient::start(conf, self.exit_sign.clone())
         .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Archive node: {}", e))),
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Archive node: {}", e))),
       NodeType::Full => FullClient::start(conf, self.exit_sign.clone())
         .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Full node: {}", e))),
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Full node: {}", e))),
       NodeType::Light => LightClient::start(conf, self.exit_sign.clone())
         .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::RuntimeError(format!("Failed to start Light node: {}", e))),
-      NodeType::Unknown => Err(NodeError::ConfigurationError(
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
+      NodeType::Unknown => Err(NodeError::Configuration(
         "Unknown node type".to_string(),
       )),
     };

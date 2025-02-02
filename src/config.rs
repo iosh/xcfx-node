@@ -239,10 +239,8 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   // ============= Development Mode Configuration =============
   conf.raw_conf.mode = Some("dev".to_string());
-  conf.raw_conf.dev_block_interval_ms = match js_config.dev_block_interval_ms {
-    Some(n) => Some(n as u64),
-    _ => None,
-  };
+  conf.raw_conf.dev_block_interval_ms = js_config.dev_block_interval_ms.map(|n| n as u64);
+
   conf.raw_conf.dev_pack_tx_immediately = js_config.dev_pack_tx_immediately;
 
   if let Some(pk) = js_config.genesis_secrets {
@@ -336,8 +334,8 @@ fn write_secrets_to_file(
   let mut w = BufWriter::new(f);
 
   for secret in secrets {
-    let pk = if secret.starts_with("0x") {
-      &secret[2..]
+    let pk = if let Some(stripped) = secret.strip_prefix("0x") {
+      stripped
     } else {
       &secret
     };
@@ -345,11 +343,11 @@ fn write_secrets_to_file(
   }
   w.flush().unwrap();
 
-  return Some(
+  Some(
     temp_dir_path
       .join(filename)
       .into_os_string()
       .into_string()
       .unwrap(),
-  );
+  )
 }
