@@ -1,6 +1,7 @@
 use cfxcore::NodeType;
 use client::{common::Configuration, rpc::rpc_apis::ApiSet};
 use napi_derive::napi;
+use primitives::block_header::CIP112_TRANSITION_HEIGHT;
 use std::{
   fs::File,
   io::{BufWriter, Write},
@@ -177,6 +178,10 @@ pub struct ConfluxConfig {
   /// @default:1
   pub hydra_transition_height: Option<i64>,
 
+  /// Enable cip112 after hydra_transition_height
+  /// @default:1
+  pub cip112_transition_height: Option<i64>,
+
   // ============= Logging Configuration =============
   /// log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`.
   pub log_conf: Option<String>,
@@ -300,6 +305,15 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     Some(js_config.hydra_transition_number.unwrap_or(1) as u64);
   conf.raw_conf.hydra_transition_height =
     Some(js_config.hydra_transition_height.unwrap_or(1) as u64);
+
+  // the transition height of CIP112, default it set in the `Configuration::parse` function, we don't use it here so we set it here
+  conf.raw_conf.cip112_transition_height =
+    Some(js_config.cip112_transition_height.unwrap_or(1) as u64);
+  if CIP112_TRANSITION_HEIGHT.get().is_none() {
+    CIP112_TRANSITION_HEIGHT
+      .set(js_config.cip112_transition_height.unwrap_or(1) as u64)
+      .expect("called once");
+  }
 
   // ============= Logging Configuration =============
   conf.raw_conf.log_conf = js_config.log_conf;

@@ -175,6 +175,11 @@ export interface ConfluxConfig {
    * @default:1
    */
   hydraTransitionHeight?: number
+  /**
+   * Enable cip112 after hydra_transition_height
+   * @default:1
+   */
+  cip112TransitionHeight?: number
   /** log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`. */
   logConf?: string
   /**
