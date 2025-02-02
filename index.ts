@@ -38,11 +38,11 @@ class ConfluxInstance {
     this.config = {
       posConfigPath: path.join(
         __dirname,
-        "./configs/pos_config/pos_config.yaml",
+        "./configs/pos_config/pos_config.yaml"
       ),
       posInitialNodesPath: path.join(
         __dirname,
-        "./configs/pos_config/initial_nodes.json",
+        "./configs/pos_config/initial_nodes.json"
       ),
       logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
       ...userConfig,
@@ -52,7 +52,7 @@ class ConfluxInstance {
   async start(): Promise<void> {
     if (this.isServiceStarted) {
       throw new Error(
-        "This instance has already been started, you can't start it again",
+        "This instance has already been started, you can't start it again"
       );
     }
 
@@ -67,7 +67,7 @@ class ConfluxInstance {
           } else if (message.type === "error") {
             reject(new Error(message.error));
           }
-        },
+        }
       );
 
       this.nodeProcess.on("error", (err) => {
@@ -117,7 +117,7 @@ class ConfluxInstance {
           } else if (message.type === "error") {
             reject(new Error(message.error));
           }
-        },
+        }
       );
 
       this.nodeProcess.send({ type: "stop" });
@@ -126,7 +126,7 @@ class ConfluxInstance {
 }
 
 export async function createServer(
-  config: Config = {},
+  config: Config = {}
 ): Promise<CreateServerReturnType> {
   const instance = new ConfluxInstance(config);
   return {

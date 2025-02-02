@@ -22,7 +22,6 @@ mod config;
 mod error;
 use error::{NodeError, Result};
 
-
 fn setup_env(
   config: config::ConfluxConfig,
   data_dir: &std::path::Path,
@@ -30,13 +29,11 @@ fn setup_env(
   info!("Node working directory: {:?}", data_dir);
 
   // ensure directory exists
-  fs::create_dir_all(data_dir).map_err(|e| {
-    NodeError::Initialization(format!("Failed to create data directory: {}", e))
-  })?;
+  fs::create_dir_all(data_dir)
+    .map_err(|e| NodeError::Initialization(format!("Failed to create data directory: {}", e)))?;
 
-  env::set_current_dir(data_dir).map_err(|e| {
-    NodeError::Initialization(format!("Failed to set working directory: {}", e))
-  })?;
+  env::set_current_dir(data_dir)
+    .map_err(|e| NodeError::Initialization(format!("Failed to set working directory: {}", e)))?;
 
   if let Some(ref log_conf) = config.log_conf {
     log4rs::init_file(log_conf, Default::default())
@@ -105,9 +102,7 @@ impl ConfluxNode {
       NodeType::Light => LightClient::start(conf, self.exit_sign.clone())
         .map(|client| client as Box<dyn ClientTrait>)
         .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
-      NodeType::Unknown => Err(NodeError::Configuration(
-        "Unknown node type".to_string(),
-      )),
+      NodeType::Unknown => Err(NodeError::Configuration("Unknown node type".to_string())),
     };
 
     match client_handle {
