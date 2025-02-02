@@ -20,7 +20,11 @@ Need support for another platform? [Open an issue](https://github.com/iosh/xcfx-
 ## Installation
 
 ```bash
-npm install @xcfx/node
+npm install xcfx-node
+# or
+yarn add xcfx-node
+# or
+pnpm add xcfx-node
 ```
 
 ## Basic Usage
@@ -195,8 +199,14 @@ interface ConfluxConfig {
    * @default sqlite
    */
   blockDbType?: string;
-  /** @default: temp dir */
+  /** @default: data_dir */
   confluxDataDir?: string;
+  /**
+   * Add data directory configuration
+   * The conflux node will use this directory to store data.  If not set, a temporary directory will be used.
+   * @default temp dir
+   */
+  dataDir?: string;
   /**
    * The chain ID of the network.(core space)
    * @default 1234
@@ -345,13 +355,13 @@ interface ConfluxConfig {
    * @default:1
    */
   hydraTransitionHeight?: number;
+  /**
+   * Enable cip112 after hydra_transition_height
+   * @default:1
+   */
+  cip112TransitionHeight?: number;
   /** log_conf` the path of the log4rs configuration file. The configuration in the file will overwrite the value set by `log_level`. */
   logConf?: string;
-  /**
-   * `log_file` is the path of the log file"
-   * If not set, the log will only be printed to stdout, and not persisted to files.
-   */
-  logFile?: string;
   /**
    * log_level` is the printed log level.
    * "error" | "warn" | "info" | "debug" | "trace" | "off"
