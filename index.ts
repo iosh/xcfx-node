@@ -3,19 +3,38 @@ import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
 import { type ConfluxConfig } from "./conflux";
 
-export type Config = {
-  /**
-   * show conflux node log
-   * @default false
-   */
+// Type definitions
+export interface Config extends ConfluxConfig {
+  /** Whether to show conflux node logs */
   log?: boolean;
+  /** Timeout in milliseconds */
   timeout?: number;
+  /** Retry interval in milliseconds */
   retryInterval?: number;
-} & ConfluxConfig;
+}
 
-export type CreateServerReturnType = {
+export interface CreateServerReturnType {
   start: () => Promise<void>;
   stop: () => Promise<void>;
+}
+
+interface NodeMessage {
+  type: string;
+  error?: string;
+}
+
+interface SyncPhaseConfig {
+  httpPort?: number;
+  wsPort?: number;
+  timeout: number;
+  retryInterval: number;
+}
+
+// Default configuration
+const DEFAULT_CONFIG = {
+  timeout: 20000,
+  retryInterval: 300,
+  log: false,
 };
 
 class ConfluxInstance {
@@ -26,15 +45,11 @@ class ConfluxInstance {
   private readonly retryInterval: number;
 
   constructor(config: Config) {
-    const {
-      timeout = 20000,
-      retryInterval = 300,
-      log = false,
-      ...userConfig
-    } = config;
+    const finalConfig = { ...DEFAULT_CONFIG, ...config };
+    this.timeout = finalConfig.timeout;
+    this.retryInterval = finalConfig.retryInterval;
 
-    this.timeout = timeout;
-    this.retryInterval = retryInterval;
+    // Build base configuration
     this.config = {
       posConfigPath: path.join(
         __dirname,
@@ -44,11 +59,76 @@ class ConfluxInstance {
         __dirname,
         "./configs/pos_config/initial_nodes.json"
       ),
-      logConf: log ? path.join(__dirname, "./configs/log.yaml") : undefined,
-      ...userConfig,
+      logConf: finalConfig.log
+        ? path.join(__dirname, "./configs/log.yaml")
+        : undefined,
+      ...config,
     };
   }
 
+  private setupProcessListeners = (
+    resolve: () => void,
+    reject: (error: Error) => void
+  ) => {
+    if (!this.nodeProcess) return;
+
+    const handleMessage = (message: NodeMessage) => {
+      switch (message.type) {
+        case "started":
+          resolve();
+          break;
+        case "error":
+          reject(new Error(message.error));
+          break;
+      }
+    };
+
+    const handleError = (err: Error) => {
+      reject(err);
+    };
+
+    const handleExit = (code: number) => {
+      if (code !== 0 && !this.isServiceStarted) {
+        reject(new Error(`Worker process exited with code ${code}`));
+      }
+      this.isServiceStarted = false;
+      this.nodeProcess = null;
+    };
+
+    this.nodeProcess.on("message", handleMessage);
+    this.nodeProcess.on("error", handleError);
+    this.nodeProcess.on("exit", handleExit);
+  };
+
+  private setupStopListeners = (
+    resolve: () => void,
+    reject: (error: Error) => void
+  ) => {
+    if (!this.nodeProcess) {
+      resolve();
+      return;
+    }
+
+    const handleMessage = (message: NodeMessage) => {
+      switch (message.type) {
+        case "stopped":
+          this.nodeProcess = null;
+          this.isServiceStarted = false;
+          resolve();
+          break;
+        case "error":
+          reject(new Error(message.error));
+          break;
+      }
+    };
+
+    this.nodeProcess.on("message", handleMessage);
+  };
+
+  /**
+   * Starts the Conflux node instance
+   * @throws {Error} If the instance is already started
+   */
   async start(): Promise<void> {
     if (this.isServiceStarted) {
       throw new Error(
@@ -58,104 +138,80 @@ class ConfluxInstance {
 
     await new Promise<void>((resolve, reject) => {
       this.nodeProcess = fork(path.join(__dirname, "node.js"));
-
-      this.nodeProcess.on(
-        "message",
-        (message: { type: string; error?: string }) => {
-          if (message.type === "started") {
-            resolve();
-          } else if (message.type === "error") {
-            reject(new Error(message.error));
-          }
-        }
-      );
-
-      this.nodeProcess.on("error", (err) => {
-        reject(err);
-      });
-
-      this.nodeProcess.on("exit", (code) => {
-        if (code !== 0 && !this.isServiceStarted) {
-          reject(new Error(`Worker process exited with code ${code}`));
-        }
-        this.isServiceStarted = false;
-        this.nodeProcess = null;
-      });
-
+      this.setupProcessListeners(resolve, reject);
       this.nodeProcess.send({ type: "start", config: this.config });
     });
 
+    // Wait for node synchronization if RPC ports are configured
     if (this.config.jsonrpcHttpPort || this.config.jsonrpcWsPort) {
-      await retryGetCurrentSyncPhase({
-        httpPort: this.config.jsonrpcHttpPort,
-        wsPort: this.config.jsonrpcWsPort,
-        timeout: this.timeout,
-        retryInterval: this.retryInterval,
-      });
+      await this.waitForSyncPhase();
     }
+
     this.isServiceStarted = true;
   }
 
+  /**
+   * Stops the Conflux node instance
+   * @returns Promise that resolves when the node is stopped
+   */
   async stop(): Promise<void> {
-    if (!this.nodeProcess) {
-      return;
-    }
+    if (!this.nodeProcess) return;
 
-    return new Promise<void>((resolve, reject) => {
-      if (!this.nodeProcess) {
-        resolve();
-        return;
-      }
-
-      this.nodeProcess.on(
-        "message",
-        (message: { type: string; error?: string }) => {
-          if (message.type === "stopped") {
-            this.nodeProcess = null;
-            this.isServiceStarted = false;
-            resolve();
-          } else if (message.type === "error") {
-            reject(new Error(message.error));
-          }
-        }
-      );
-
-      this.nodeProcess.send({ type: "stop" });
+    await new Promise<void>((resolve, reject) => {
+      this.setupStopListeners(resolve, reject);
+      this.nodeProcess?.send({ type: "stop" });
     });
+  }
+
+  /**
+   * Waits for the node to reach normal sync phase
+   * @throws {Error} If sync phase check times out
+   */
+  private async waitForSyncPhase(): Promise<void> {
+    const config: SyncPhaseConfig = {
+      httpPort: this.config.jsonrpcHttpPort,
+      wsPort: this.config.jsonrpcWsPort,
+      timeout: this.timeout,
+      retryInterval: this.retryInterval,
+    };
+
+    await retryGetCurrentSyncPhase(config);
   }
 }
 
-export async function createServer(
+/**
+ * Creates a new Conflux server instance
+ * @param config - Server configuration options
+ * @returns Object with start and stop methods
+ */
+export const createServer = async (
   config: Config = {}
-): Promise<CreateServerReturnType> {
+): Promise<CreateServerReturnType> => {
   const instance = new ConfluxInstance(config);
   return {
     start: () => instance.start(),
     stop: () => instance.stop(),
   };
-}
-
-type retryGetCurrentSyncPhaseParameters = {
-  httpPort?: number;
-  wsPort?: number;
-  timeout: number;
-  retryInterval: number;
 };
 
-async function retryGetCurrentSyncPhase({
+/**
+ * Retries getting the current sync phase until it reaches normal state or times out
+ * @param config - Sync phase configuration
+ * @throws {Error} If the operation times out
+ */
+const retryGetCurrentSyncPhase = async ({
   httpPort,
   wsPort,
   timeout,
   retryInterval,
-}: retryGetCurrentSyncPhaseParameters) {
+}: SyncPhaseConfig): Promise<void> => {
   if (!httpPort && !wsPort) return;
 
-  const testClient = createTestClient({
-    transport: httpPort
-      ? http(`http://127.0.0.1:${httpPort}`)
-      : webSocket(`ws://127.0.0.1:${wsPort}`),
-  });
+  const transport = httpPort
+    ? http(`http://127.0.0.1:${httpPort}`)
+    : webSocket(`ws://127.0.0.1:${wsPort}`);
 
+  const testClient = createTestClient({ transport });
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -176,4 +232,4 @@ async function retryGetCurrentSyncPhase({
   } finally {
     clearTimeout(timeoutId);
   }
-}
+};
