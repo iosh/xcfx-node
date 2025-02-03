@@ -17,7 +17,7 @@ use client::{
 };
 use parking_lot::{Condvar, Mutex};
 use std::{env, fs, sync::Arc};
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
 mod config;
 mod error;
 use error::{NodeError, Result};
@@ -47,6 +47,7 @@ fn setup_env(
 pub struct ConfluxNode {
   client_handle: Option<Box<dyn ClientTrait>>,
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
+  temp_dir_handle: Option<TempDir>,
 }
 
 #[napi]
@@ -56,6 +57,7 @@ impl ConfluxNode {
     ConfluxNode {
       client_handle: None,
       exit_sign: Arc::new((Mutex::new(false), Condvar::new())),
+      temp_dir_handle: None,
     }
   }
 
@@ -71,7 +73,12 @@ impl ConfluxNode {
   ) {
     // if data_dir is not set, use temp dir
     let data_dir = match config.data_dir.as_ref().map_or_else(
-      || tempdir().map(|dir| dir.into_path()),
+      || {
+        tempdir().map(|dir| {
+          self.temp_dir_handle = Some(dir);
+          self.temp_dir_handle.as_ref().unwrap().path().to_path_buf()
+        })
+      },
       |dir| Ok(std::path::PathBuf::from(dir)),
     ) {
       Ok(dir) => dir,
@@ -123,7 +130,13 @@ impl ConfluxNode {
 
     if let Some(client_handle) = self.client_handle.take() {
       shutdown(client_handle);
+      self.temp_dir_handle = None;
       js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
+    } else {
+      js_callback.call(
+        Err(NodeError::Runtime("Node is not running".to_string()).into()),
+        ThreadsafeFunctionCallMode::NonBlocking,
+      );
     }
   }
 }
