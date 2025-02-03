@@ -87,6 +87,19 @@ jobs:
         run: |
           # brew update
           brew install bzip2 # cmake pkg-config openssl llvm
+          
+      - name: Cache Windows Dependencies
+        if: ${{contains(matrix.settings.host, 'windows')}}
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\Users\runneradmin\AppData\Local\Temp\chocolatey
+            C:\tools\vcpkg
+            C:\vcpkg\installed
+          key: ${{ runner.os }}-windows-deps-${{ hashFiles('**/*.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-windows-deps-
+
       - name: Install windows dependencies
         if: ${{contains(matrix.settings.host, 'windows')}}
         run: |
