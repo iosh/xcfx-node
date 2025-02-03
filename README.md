@@ -7,7 +7,10 @@ Run a Conflux-Rust node in Node.js for development and testing purposes. Perfect
 - 🚀 Easy to set up and use
 - 🔧 Highly configurable
 - 💻 Cross-platform support
-- 🔌 Built-in JSON-RPC server
+- 🔌 Built-in JSON-RPC server (HTTP & WebSocket)
+- 📦 Automatic & Manual block generation
+- 🔍 Customizable logging
+- 💎 Support for both Core space and EVM space
 
 ## Supported Platforms
 
@@ -62,66 +65,111 @@ async function main() {
 main().catch(console.error);
 ```
 
-## Advanced Configuration
-
-The `createServer` function accepts various configuration options. Here are some commonly used ones:
-
-```ts
-const server = await createServer({
-  // Node type: "full" | "archive" | "light"
-  nodeType: "full",
-
-  // JSON-RPC ports
-  jsonrpcHttpPort: 12537, // HTTP port
-  jsonrpcWsPort: 12535, // WebSocket port
-
-  // Network configuration
-  chainId: 1234, // Core space chain ID
-  evmChainId: 1235, // eSpace chain ID
-
-  // Logging
-  log: true, // default print log to console, you can see the log.yaml in ./configs/log.yaml
-  // or you can set logConf to your own log.yaml file, you can see log.test.ts for more details
-  logConf: "./configs/log.yaml",
-
-  // Data persistence
-  // Data directory, default is temp dir, you can set your own data dir
-  dataDir: "/path/to/your/data/dir",
-});
-```
-
-For a complete list of configuration options, see the [Configuration](#configuration) section below.
-
 ## Common Use Cases
 
-### 1. Testing Smart Contracts
+### 1. Automatic Block Generation
 
 ```ts
-import { createServer } from "@xcfx/node";
-
-async function testEnvironment() {
-  const server = await createServer({
-    jsonrpcHttpPort: 12537,
-    devBlockIntervalMs: 1000,
-    // Add test accounts with initial balance
-    genesisSecrets: [
-      "0x1234...", // Your private key here
-    ],
-  });
-
-  await server.start();
-  // Run your tests here
-  await server.stop();
-}
-```
-
-### 2. Development Node with Instant Mining
-
-```ts
+// Create a node with automatic block generation
 const server = await createServer({
   jsonrpcHttpPort: 12537,
-  devPackTxImmediately: true, // Mine blocks immediately when receiving transactions
+  devBlockIntervalMs: 100, // Generate blocks every 100ms
 });
+```
+
+### 2. Manual Block Generation
+
+```ts
+import { createTestClient } from "cive";
+
+// Create a node with manual block generation
+const server = await createServer({
+  jsonrpcHttpPort: 12537,
+  devPackTxImmediately: false, // Disable automatic block generation
+});
+
+// Use test client to generate blocks manually
+const testClient = createTestClient({
+  transport: http(`http://127.0.0.1:12537`),
+});
+
+// Generate 10 blocks
+await testClient.mine({ blocks: 10 });
+```
+
+### 3. Custom Logging Configuration
+
+```ts
+// Use default console logging
+const server1 = await createServer({
+  jsonrpcHttpPort: 12537,
+  log: true, // Enable default console logging
+});
+
+// Use custom log configuration
+const server2 = await createServer({
+  jsonrpcHttpPort: 12537,
+  logConf: "./path/to/your/log.yaml", // Custom log configuration, you can use the default log configuration file in configs/log.yaml
+});
+```
+
+### 4. Genesis Account Configuration
+
+```ts
+// Configure initial accounts in both spaces
+const server = await createServer({
+  jsonrpcHttpPort: 12537,
+  jsonrpcHttpEthPort: 8545,
+  chainId: 1111,          // Core space chain ID
+  evmChainId: 2222,       // EVM space chain ID
+  genesisSecrets: [       // Core space accounts
+    "0x.....",
+    "0x....."
+  ],
+  genesisEvmSecrets: [    // EVM space accounts
+    "0x.....",
+    "0x....."
+  ],
+});
+```
+
+## Advanced Configuration
+
+The `createServer` function accepts various configuration options:
+
+```ts
+interface ConfluxConfig {
+  // Node Type Configuration
+  nodeType?: "full" | "archive" | "light"; // default: "full"
+  blockDbType?: "rocksdb" | "sqlite";      // default: "sqlite"
+  
+  // Data Storage
+  dataDir?: string;        // Data directory, default: temp dir
+  
+  // Network Configuration
+  chainId?: number;        // Core space chain ID, default: 1234
+  evmChainId?: number;     // EVM space chain ID, default: 1235
+  bootnodes?: string;      // Bootstrap nodes list
+  
+  // Mining Configuration
+  miningAuthor?: string;   // Mining rewards recipient address
+  miningType?: "stratum" | "cpu" | "disable";
+  stratumListenAddress?: string;  // default: "127.0.0.1"
+  stratumPort?: number;
+  stratumSecret?: string;
+  
+  // Development Options
+  devBlockIntervalMs?: number;     // Automatic block generation interval
+  devPackTxImmediately?: boolean;  // Pack transactions immediately
+  
+  // Logging
+  log?: boolean;           // Enable console logging
+  logConf?: string;        // Custom log configuration file path
+  
+  // RPC Endpoints
+  jsonrpcHttpPort?: number;  // HTTP RPC port
+  jsonrpcWsPort?: number;    // WebSocket RPC port
+}
 ```
 
 ## For Production Use
