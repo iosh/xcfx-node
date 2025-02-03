@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, sleep, TEST_TEMP_DATA_DIR } from "./help";
+import { getFreePorts, sleep, TEST_TEMP_DATA_DIR, retryDelete } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -8,18 +8,15 @@ describe("test log", () => {
   const TEST_LOG_PATH = path.join(TEST_TEMP_DATA_DIR, "/log/log/test.log");
   const WORK_DIR = path.join(TEST_TEMP_DATA_DIR, "/log");
 
-  beforeAll(() => {
-    if (fs.existsSync(TEST_LOG_PATH)) {
-      fs.unlinkSync(TEST_LOG_PATH);
-      fs.rmSync(WORK_DIR, { recursive: true, force: true });
-    }
-  });
-
   afterAll(async () => {
     if (fs.existsSync(TEST_LOG_PATH)) {
-      fs.unlinkSync(TEST_LOG_PATH);
-      await sleep(1000);
-      fs.rmSync(WORK_DIR, { recursive: true, force: true });
+      try {
+        await retryDelete(WORK_DIR, true);
+      } catch (error) {
+        console.warn(
+          `Warning: Failed to clean up test files: ${error.message}`
+        );
+      }
     }
   });
 

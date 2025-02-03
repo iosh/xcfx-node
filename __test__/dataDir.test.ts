@@ -1,24 +1,22 @@
 import { describe, expect, test, beforeAll, afterAll, afterEach } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, sleep, TEST_TEMP_DATA_DIR } from "./help";
+import { getFreePorts, retryDelete, sleep, TEST_TEMP_DATA_DIR } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
 describe("Data Directory Tests", () => {
   const TEST_DATA_DIR = path.join(TEST_TEMP_DATA_DIR, "dataDir");
 
-  // Clean test directory and get ports before all tests
-  beforeAll(async () => {
-    if (fs.existsSync(TEST_DATA_DIR)) {
-      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-    }
-  });
-
   // Clean up after all tests
   afterAll(async () => {
     if (fs.existsSync(TEST_DATA_DIR)) {
-      await sleep(1000);
-      fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      try {
+        await retryDelete(TEST_DATA_DIR, true);
+      } catch (error) {
+        console.warn(
+          `Warning: Failed to clean up test files: ${error.message}`
+        );
+      }
     }
   });
 

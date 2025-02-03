@@ -53,11 +53,11 @@ class ConfluxInstance {
     this.config = {
       posConfigPath: path.join(
         __dirname,
-        "./configs/pos_config/pos_config.yaml"
+        "./configs/pos_config/pos_config.yaml",
       ),
       posInitialNodesPath: path.join(
         __dirname,
-        "./configs/pos_config/initial_nodes.json"
+        "./configs/pos_config/initial_nodes.json",
       ),
       logConf: finalConfig.log
         ? path.join(__dirname, "./configs/log.yaml")
@@ -68,7 +68,7 @@ class ConfluxInstance {
 
   private setupProcessListeners = (
     resolve: () => void,
-    reject: (error: Error) => void
+    reject: (error: Error) => void,
   ) => {
     if (!this.nodeProcess) return;
 
@@ -102,7 +102,7 @@ class ConfluxInstance {
 
   private setupStopListeners = (
     resolve: () => void,
-    reject: (error: Error) => void
+    reject: (error: Error) => void,
   ) => {
     if (!this.nodeProcess) {
       resolve();
@@ -132,7 +132,7 @@ class ConfluxInstance {
   async start(): Promise<void> {
     if (this.isServiceStarted) {
       throw new Error(
-        "This instance has already been started, you can't start it again"
+        "This instance has already been started, you can't start it again",
       );
     }
 
@@ -185,7 +185,7 @@ class ConfluxInstance {
  * @returns Object with start and stop methods
  */
 export const createServer = async (
-  config: Config = {}
+  config: Config = {},
 ): Promise<CreateServerReturnType> => {
   const instance = new ConfluxInstance(config);
   return {
