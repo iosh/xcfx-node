@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
-import { type ConfluxConfig } from "./conflux";
+import type { ConfluxConfig } from "./conflux";
 
 // Type definitions
 export interface Config extends ConfluxConfig {

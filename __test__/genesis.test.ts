@@ -1,14 +1,20 @@
-import { http, createPublicClient, parseCFX } from "cive";
+import { http, createPublicClient } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
 import { base32AddressToHex } from "cive/utils";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
 import { TEST_NETWORK_ID, TEST_PK, getFreePorts } from "./help";
 
-describe("genesis", () => {
-  test("default", async () => {
-    const [jsonrpcHttpPort, jsonrpcHttpEthPort, udpAndTcpPort] =
-      await getFreePorts();
+/**
+ * Test genesis configuration
+ * Shows how to:
+ * 1. Configure initial accounts in both Core space and EVM space
+ * 2. Verify initial balances through both Core and EVM RPC endpoints
+ */
+describe("Genesis Configuration", () => {
+  test("should initialize accounts with correct balances in both spaces", async () => {
+    // Setup server with dual-space support
+    const [jsonrpcHttpPort, jsonrpcHttpEthPort, udpAndTcpPort] = await getFreePorts();
     const server = await createServer({
       tcpPort: udpAndTcpPort,
       udpPort: udpAndTcpPort,
@@ -19,20 +25,26 @@ describe("genesis", () => {
       // 0x prefix is optional
       genesisEvmSecrets: TEST_PK.map((pk) => `0x${pk}`),
     });
+
     await server.start();
+
+    // Create Core space client
     const client = createPublicClient({
       transport: http(`http://127.0.0.1:${jsonrpcHttpPort}`),
     });
 
-    const coreSpaceAccount = privateKeyToAccount(`0x${TEST_PK[0]}`, {
+    // Get test account
+    const testAccount = privateKeyToAccount(`0x${TEST_PK[0]}`, {
       networkId: TEST_NETWORK_ID,
     });
 
-    const balance = await client.getBalance({
-      address: coreSpaceAccount.address,
+    // Check Core space balance
+    const coreBalance = await client.getBalance({
+      address: testAccount.address,
     });
+    expect(coreBalance).toBe(10000000000000000000000n); // 10,000 CFX
 
-    expect(balance).toBe(10000000000000000000000n);
+    // Check EVM space balance
     const evmBalance = await fetch(`http://127.0.0.1:${jsonrpcHttpEthPort}`, {
       method: "POST",
       headers: {
@@ -42,14 +54,14 @@ describe("genesis", () => {
         jsonrpc: "2.0",
         method: "eth_getBalance",
         params: [
-          base32AddressToHex({ address: coreSpaceAccount.address }),
+          base32AddressToHex({ address: testAccount.address }),
           "latest",
         ],
         id: 1,
       }),
     }).then((res) => res.json());
 
-    expect(BigInt(evmBalance.result)).toBe(10000000000000000000000n);
+    expect(BigInt(evmBalance.result)).toBe(10000000000000000000000n); // 10,000 CFX
 
     await server.stop();
   });

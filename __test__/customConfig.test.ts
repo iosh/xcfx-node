@@ -9,76 +9,100 @@ import {
   TEST_NETWORK_ID,
   TEST_PK,
   getFreePorts,
-  localChain,
   wait,
 } from "./help";
-let HTTP_PORT: number;
-let WS_PORT: number;
-beforeAll(async () => {
-  const [jsonrpcHttpPort, jsonrpcWsPort, udpAndTcpPort] = await getFreePorts();
-  HTTP_PORT = jsonrpcHttpPort;
-  WS_PORT = jsonrpcWsPort;
-  const server = await createServer({
-    nodeType: "full",
-    devBlockIntervalMs: 100,
-    miningAuthor: TEST_MINING_ADDRESS,
-    jsonrpcHttpPort: jsonrpcHttpPort,
-    jsonrpcWsPort: jsonrpcWsPort,
-    chainId: TEST_NETWORK_ID,
-    evmChainId: 2222,
-    genesisSecrets: TEST_PK,
-    // devPackTxImmediately: true,
-    tcpPort: udpAndTcpPort,
-    udpPort: udpAndTcpPort,
-    pollLifetimeInSeconds: 180,
-  });
 
-  await server.start();
+/**
+ * Test custom node configurations
+ * Shows how to:
+ * 1. Configure node type and mining settings
+ * 2. Set up HTTP and WebSocket endpoints
+ * 3. Configure chain IDs and genesis accounts
+ * 4. Enable and test filter RPC
+ */
+describe("Custom Node Configuration", () => {
+  let httpPort: number;
+  let wsPort: number;
 
-  await wait(10000);
-  return () => server.stop();
-});
+  // Set up a shared test node with custom configurations
+  beforeAll(async () => {
+    const [jsonrpcHttpPort, jsonrpcWsPort, udpAndTcpPort] =
+      await getFreePorts();
+    httpPort = jsonrpcHttpPort;
+    wsPort = jsonrpcWsPort;
 
-describe("customConfig", () => {
-  test("test http port", async () => {
-    const client = createPublicClient({
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+    const server = await createServer({
+      // Node type and mining configuration
+      nodeType: "full",
+      devBlockIntervalMs: 100,
+      miningAuthor: TEST_MINING_ADDRESS,
+
+      // RPC endpoints
+      jsonrpcHttpPort,
+      jsonrpcWsPort,
+      tcpPort: udpAndTcpPort,
+      udpPort: udpAndTcpPort,
+
+      // Chain configuration
+      chainId: TEST_NETWORK_ID,
+      evmChainId: 2222,
+      genesisSecrets: TEST_PK,
+
+      // Filter RPC configuration
+      pollLifetimeInSeconds: 180,
     });
 
-    expect((await client.getStatus()).chainId).toBe(1111);
+    await server.start();
+
+    // wait for node to generate blocks
+
+    await wait(7000);
+
+    return () => server.stop();
   });
 
-  test("test ws port", async () => {
+  test("should expose HTTP RPC endpoint", async () => {
     const client = createPublicClient({
-      transport: webSocket(`ws://127.0.0.1:${WS_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
-    expect((await client.getStatus()).chainId).toBe(1111);
+    const status = await client.getStatus();
+    expect(status.chainId).toBe(1111);
   });
 
-  test("test mining address", async () => {
+  test("should expose WebSocket RPC endpoint", async () => {
     const client = createPublicClient({
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: webSocket(`ws://127.0.0.1:${wsPort}`),
     });
-    expect(
-      await client.getBalance({
-        address: MINING_ACCOUNT.address,
-      }),
-    ).toBeGreaterThan(0n);
+
+    const status = await client.getStatus();
+    expect(status.chainId).toBe(1111);
   });
 
-  test("auto mining", async () => {
+  test("should mine blocks to configured mining address", async () => {
     const client = createPublicClient({
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
+
+    const balance = await client.getBalance({
+      address: MINING_ACCOUNT.address,
+    });
+    expect(balance).toBeGreaterThan(0n);
+  });
+
+  test("should automatically generate blocks", async () => {
+    const client = createPublicClient({
+      transport: http(`http://127.0.0.1:${httpPort}`),
+    });
+
     const block = await client.getBlock();
     expect(block.blockNumber).toBeGreaterThan(0);
     expect(block.baseFeePerGas).toBeDefined();
   });
 
-  test("test genesis", async () => {
+  test("should initialize genesis accounts with correct balances", async () => {
     const client = createPublicClient({
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
     for (const pk of TEST_PK) {
@@ -88,17 +112,16 @@ describe("customConfig", () => {
       const balance = await client.getBalance({
         address: account.address,
       });
-      expect(balance).toBe(parseCFX("10000"));
+      expect(balance).toBe(parseCFX("10000")); // 10,000 CFX
     }
   });
 
-  test("pollLifetimeInSeconds enable filter rpc", async () => {
+  test("should enable filter RPC with configured lifetime", async () => {
     const client = createPublicClient({
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
-    const id = await client.createBlockFilter();
-
-    expect(id).toBeDefined();
+    const filterId = await client.createBlockFilter();
+    expect(filterId).toBeDefined();
   });
 });

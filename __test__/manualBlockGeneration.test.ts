@@ -3,7 +3,6 @@ import {
   createPublicClient,
   createTestClient,
   createWalletClient,
-  webSocket,
 } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
 import { parseCFX } from "cive/utils";
@@ -17,93 +16,114 @@ import {
   wait,
 } from "./help";
 
-const account = privateKeyToAccount(`0x${TEST_PK[0]}`, {
-  networkId: TEST_NETWORK_ID,
-});
-let HTTP_PORT: number;
-beforeAll(async () => {
-  const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
-  HTTP_PORT = jsonrpcHttpPort;
-  const server = await createServer({
-    nodeType: "full",
-    jsonrpcHttpPort: jsonrpcHttpPort,
-    chainId: TEST_NETWORK_ID,
-    evmChainId: 2222,
-    devPackTxImmediately: false,
-    genesisSecrets: TEST_PK,
-    tcpPort: udpAndTcpPort,
-    udpPort: udpAndTcpPort,
+/**
+ * Test manual block generation functionality
+ * Shows how to:
+ * 1. Configure a node with manual block generation
+ * 2. Verify block generation behavior
+ * 3. Test transaction handling without auto-mining
+ * 4. Manually generate blocks using test client
+ */
+describe("Manual Block Generation", () => {
+  const testAccount = privateKeyToAccount(`0x${TEST_PK[0]}`, {
+    networkId: TEST_NETWORK_ID,
   });
+  let httpPort: number;
 
-  await server.start();
-
-  await wait(10000);
-  return () => server.stop();
-});
-
-describe("manual block generation", async () => {
-  test("block not changed", async () => {
-    const client = createPublicClient({
-      chain: localChain,
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+  // Setup a node with manual block generation
+  beforeAll(async () => {
+    const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
+    httpPort = jsonrpcHttpPort;
+    
+    const server = await createServer({
+      // Node configuration
+      nodeType: "full",
+      jsonrpcHttpPort,
+      tcpPort: udpAndTcpPort,
+      udpPort: udpAndTcpPort,
+      
+      // Chain configuration
+      chainId: TEST_NETWORK_ID,
+      evmChainId: 2222,
+      genesisSecrets: TEST_PK,
+      
+      // Disable automatic block packaging
+      devPackTxImmediately: false,
     });
 
-    await wait(1000);
+    await server.start();
+
+    return () => server.stop();
+  });
+
+  test("should not generate blocks automatically", async () => {
+    const client = createPublicClient({
+      chain: localChain,
+      transport: http(`http://127.0.0.1:${httpPort}`),
+    });
+
+    // Check block number at different intervals
     const status1 = await client.getStatus();
-
     await wait(1000);
+    
     const status2 = await client.getStatus();
-
     expect(status1.blockNumber).toBe(status2.blockNumber);
-
     await wait(1000);
+    
     const status3 = await client.getStatus();
     expect(status2.blockNumber).toBe(status3.blockNumber);
-
     await wait(1000);
+    
     const status4 = await client.getStatus();
     expect(status3.blockNumber).toBe(status4.blockNumber);
   });
 
-  test("block not change in receive tx", async () => {
+  test("should not generate blocks when receiving transactions", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
     const walletClient = createWalletClient({
-      account,
+      account: testAccount,
       chain: localChain,
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
-    const status = await client.getStatus();
 
+    // Record initial block number
+    const status1 = await client.getStatus();
+
+    // Send a transaction
     await walletClient.sendTransaction({
-      to: account.address,
+      to: testAccount.address,
       value: parseCFX("1"),
     });
 
+    // Verify block number hasn't changed
     await wait(1000);
     const status2 = await client.getStatus();
-    expect(status.blockNumber).toBe(status2.blockNumber);
+    expect(status1.blockNumber).toBe(status2.blockNumber);
   });
 
-  test("gen block", async () => {
+  test("should generate blocks manually using test client", async () => {
     const client = createPublicClient({
       chain: localChain,
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
     const testClient = createTestClient({
       chain: localChain,
-      transport: http(`http://127.0.0.1:${HTTP_PORT}`),
+      transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
-    const status = await client.getStatus();
+    // Record initial block number
+    const status1 = await client.getStatus();
 
+    // Generate 10 blocks manually
     await testClient.mine({ blocks: 10 });
 
-    const status1 = await client.getStatus();
-    expect(status1.blockNumber).toBe(status.blockNumber + 10n);
+    // Verify block number increased by 10
+    const status2 = await client.getStatus();
+    expect(status2.blockNumber).toBe(status1.blockNumber + 10n);
   });
 });

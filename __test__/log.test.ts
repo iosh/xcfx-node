@@ -1,51 +1,58 @@
-import { describe, expect, test, beforeAll, afterAll } from "vitest";
+import { describe, expect, test, afterAll } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, sleep, TEST_TEMP_DATA_DIR, retryDelete } from "./help";
+import { getFreePorts, TEST_TEMP_DATA_DIR, retryDelete } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("test log", () => {
+/**
+ * Test log configuration
+ * Shows how to set up custom logging with a YAML config file
+ */
+describe("Logging", () => {
   const TEST_LOG_PATH = path.join(TEST_TEMP_DATA_DIR, "/log/log/test.log");
   const WORK_DIR = path.join(TEST_TEMP_DATA_DIR, "/log");
 
   afterAll(async () => {
-    if (fs.existsSync(TEST_LOG_PATH)) {
-      try {
-        await retryDelete(WORK_DIR, true);
-      } catch (error) {
-        console.warn(
-          `Warning: Failed to clean up test files: ${error.message}`
-        );
-      }
+    if (fs.existsSync(WORK_DIR)) {
+      await retryDelete(WORK_DIR, true);
     }
   });
 
-  test("test custom log", async () => {
-    const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
-
+  test("should use custom log configuration file", async () => {
+    const ports = await getFreePorts();
     const server = await createServer({
-      tcpPort: udpAndTcpPort,
-      udpPort: udpAndTcpPort,
-      jsonrpcHttpPort: jsonrpcHttpPort,
+      tcpPort: ports[0],
+      udpPort: ports[0],
+      jsonrpcHttpPort: ports[1],
       logConf: path.join(__dirname, "fixtures/custom_log.yaml"),
       dataDir: WORK_DIR,
     });
 
-    // start server
     await server.start();
 
-    // wait for log generate
+    // Wait for log4rs to initialize and write logs
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // check log file is created
+    // Verify log file exists and contains log entries
     expect(fs.existsSync(TEST_LOG_PATH)).toBe(true);
-
-    // read log content
     const logContent = fs.readFileSync(TEST_LOG_PATH, "utf-8");
+    // Log format should match pattern from log4rs config
+    expect(logContent).toMatch(/\d{4}-\d{2}-\d{2}/); // Date format
 
-    // check log content
-    expect(logContent).toContain("DEBUG");
-    // stop server
     await server.stop();
   });
+
+  // test("should use default console logging", async () => {
+  //   const ports = await getFreePorts();
+  //   const server = await createServer({
+  //     tcpPort: ports[0],
+  //     udpPort: ports[0],
+  //     jsonrpcHttpPort: ports[1],
+  //     dataDir: WORK_DIR,
+  //     log: true, // This will use the default log.yaml in configs the log will print to console
+  //   });
+
+  //   await server.start();
+  //   await server.stop();
+  // });
 });

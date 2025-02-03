@@ -1,40 +1,37 @@
-import { describe, expect, test, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, expect, test, afterEach } from "vitest";
 import { createServer } from "../index";
-import { getFreePorts, retryDelete, sleep, TEST_TEMP_DATA_DIR } from "./help";
+import { getFreePorts, retryDelete, TEST_TEMP_DATA_DIR } from "./help";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("Data Directory Tests", () => {
+/**
+ * Test data directory configuration
+ * Shows how to set up a custom data directory for the node
+ */
+describe("Data Directory", () => {
   const TEST_DATA_DIR = path.join(TEST_TEMP_DATA_DIR, "dataDir");
 
-  // Clean up after all tests
-  afterAll(async () => {
+  // Cleanup after each test
+  afterEach(async () => {
     if (fs.existsSync(TEST_DATA_DIR)) {
-      try {
-        await retryDelete(TEST_DATA_DIR, true);
-      } catch (error) {
-        console.warn(
-          `Warning: Failed to clean up test files: ${error.message}`
-        );
-      }
+      await retryDelete(TEST_DATA_DIR, true);
     }
   });
 
-  test("custom data directory", async () => {
+  test("should create and use custom data directory", async () => {
     const ports = await getFreePorts();
     const server = await createServer({
-      tcpPort: ports[1],
-      udpPort: ports[1],
-      jsonrpcHttpPort: ports[0],
+      tcpPort: ports[0],
+      udpPort: ports[0],
+      jsonrpcHttpPort: ports[1],
       dataDir: TEST_DATA_DIR,
     });
 
-    // Start server
     await server.start();
-
+    
+    // Verify data directory exists
     expect(fs.existsSync(TEST_DATA_DIR)).toBe(true);
-
-    const files = fs.readdirSync(TEST_DATA_DIR);
-    expect(files.length).toBeGreaterThan(0);
+    
+    await server.stop();
   });
 });

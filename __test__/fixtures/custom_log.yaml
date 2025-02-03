@@ -19,7 +19,6 @@ appenders:
 root:
   level: debug
   appenders:
-    - stdout
     - test_logfile
 
 loggers:
