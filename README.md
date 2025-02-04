@@ -144,7 +144,7 @@ interface ConfluxConfig {
   blockDbType?: "rocksdb" | "sqlite";      // default: "sqlite"
   
   // Data Storage
-  dataDir?: string;        // Data directory, default: temp dir
+  confluxDataDir?: string;        // Data directory, default: temp dir
   
   // Network Configuration
   chainId?: number;        // Core space chain ID, default: 1234
