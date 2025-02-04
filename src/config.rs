@@ -23,13 +23,18 @@ pub struct ConfluxConfig {
   /// @default sqlite
   pub block_db_type: Option<String>,
 
-  /// @default: data_dir
-  pub conflux_data_dir: Option<String>,
-
   /// Add data directory configuration
   /// The conflux node will use this directory to store data.  If not set, a temporary directory will be used.
-  /// @default temp dir
-  pub data_dir: Option<String>,
+  /// @default: temp dir
+  pub conflux_data_dir: Option<String>,
+
+  /// Add block db directory configuration
+  /// @default: conflux_data_dir + blockchain_db
+  pub block_db_dir: Option<String>,
+
+  /// Add netconf directory configuration
+  /// @default: conflux_data_dir + net_config
+  pub netconf_dir: Option<String>,
 
   // ============= Chain Configuration =============
   /// The chain ID of the network.(core space)
@@ -218,9 +223,13 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
 
   conf.raw_conf.block_db_type = js_config.block_db_type.unwrap_or("sqlite".to_string());
 
-  conf.raw_conf.conflux_data_dir = js_config
+  let conflux_data_dir = js_config
     .conflux_data_dir
     .unwrap_or(String::from(temp_dir_path.to_str().unwrap()));
+
+  conf.raw_conf.conflux_data_dir = conflux_data_dir.clone();
+  conf.raw_conf.block_db_dir = Some(format!("{}/blockchain_db", conflux_data_dir.clone()));
+  conf.raw_conf.netconf_dir = Some(format!("{}/net_config", conflux_data_dir.clone()));
 
   // ============= Chain Configuration =============
   conf.raw_conf.chain_id = Some(js_config.chain_id.unwrap_or(1234));

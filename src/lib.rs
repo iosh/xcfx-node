@@ -32,6 +32,7 @@ fn setup_env(
   fs::create_dir_all(data_dir)
     .map_err(|e| NodeError::Initialization(format!("Failed to create data directory: {}", e)))?;
 
+  // set working directory， some file use relative path
   env::set_current_dir(data_dir)
     .map_err(|e| NodeError::Initialization(format!("Failed to set working directory: {}", e)))?;
 
@@ -71,8 +72,8 @@ impl ConfluxNode {
     config: config::ConfluxConfig,
     js_callback: ThreadsafeFunction<Null>,
   ) {
-    // if data_dir is not set, use temp dir
-    let data_dir = match config.data_dir.as_ref().map_or_else(
+    // if conflux_data_dir is not set, use temp dir
+    let data_dir = match config.conflux_data_dir.as_ref().map_or_else(
       || {
         tempdir().map(|dir| {
           self.temp_dir_handle = Some(dir);

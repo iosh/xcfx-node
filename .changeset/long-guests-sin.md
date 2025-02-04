@@ -6,4 +6,4 @@
 "@xcfx/node-win32-x64-msvc": minor
 ---
 
-Added support for dataDir to configure the data storage location
+Added support for confluxDataDir to configure the data storage location
