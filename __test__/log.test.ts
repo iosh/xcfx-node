@@ -25,7 +25,7 @@ describe("Logging", () => {
       udpPort: ports[0],
       jsonrpcHttpPort: ports[1],
       logConf: path.join(__dirname, "fixtures/custom_log.yaml"),
-      dataDir: WORK_DIR,
+      confluxDataDir: WORK_DIR,
     });
 
     await server.start();
@@ -48,7 +48,7 @@ describe("Logging", () => {
   //     tcpPort: ports[0],
   //     udpPort: ports[0],
   //     jsonrpcHttpPort: ports[1],
-  //     dataDir: WORK_DIR,
+  //     confluxDataDir: WORK_DIR,
   //     log: true, // This will use the default log.yaml in configs the log will print to console
   //   });
 

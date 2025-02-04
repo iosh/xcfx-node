@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { createServer } from "../index";
 import {
   TEST_NETWORK_ID,
-  TEST_PK,
+  TEST_PRIVATE_KEYS,
   getFreePorts,
   localChain,
   wait,
@@ -25,7 +25,7 @@ import {
  * 4. Manually generate blocks using test client
  */
 describe("Manual Block Generation", () => {
-  const testAccount = privateKeyToAccount(`0x${TEST_PK[0]}`, {
+  const testAccount = privateKeyToAccount(`0x${TEST_PRIVATE_KEYS[0]}`, {
     networkId: TEST_NETWORK_ID,
   });
   let httpPort: number;
@@ -34,19 +34,19 @@ describe("Manual Block Generation", () => {
   beforeAll(async () => {
     const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
     httpPort = jsonrpcHttpPort;
-    
+
     const server = await createServer({
       // Node configuration
       nodeType: "full",
       jsonrpcHttpPort,
       tcpPort: udpAndTcpPort,
       udpPort: udpAndTcpPort,
-      
+
       // Chain configuration
       chainId: TEST_NETWORK_ID,
       evmChainId: 2222,
-      genesisSecrets: TEST_PK,
-      
+      genesisSecrets: TEST_PRIVATE_KEYS,
+
       // Disable automatic block packaging
       devPackTxImmediately: false,
     });
@@ -65,15 +65,15 @@ describe("Manual Block Generation", () => {
     // Check block number at different intervals
     const status1 = await client.getStatus();
     await wait(1000);
-    
+
     const status2 = await client.getStatus();
     expect(status1.blockNumber).toBe(status2.blockNumber);
     await wait(1000);
-    
+
     const status3 = await client.getStatus();
     expect(status2.blockNumber).toBe(status3.blockNumber);
     await wait(1000);
-    
+
     const status4 = await client.getStatus();
     expect(status3.blockNumber).toBe(status4.blockNumber);
   });

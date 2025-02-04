@@ -7,7 +7,7 @@ import {
   MINING_ACCOUNT,
   TEST_MINING_ADDRESS,
   TEST_NETWORK_ID,
-  TEST_PK,
+  TEST_PRIVATE_KEYS,
   getFreePorts,
   wait,
 } from "./help";
@@ -46,7 +46,7 @@ describe("Custom Node Configuration", () => {
       // Chain configuration
       chainId: TEST_NETWORK_ID,
       evmChainId: 2222,
-      genesisSecrets: TEST_PK,
+      genesisSecrets: TEST_PRIVATE_KEYS,
 
       // Filter RPC configuration
       pollLifetimeInSeconds: 180,
@@ -105,7 +105,7 @@ describe("Custom Node Configuration", () => {
       transport: http(`http://127.0.0.1:${httpPort}`),
     });
 
-    for (const pk of TEST_PK) {
+    for (const pk of TEST_PRIVATE_KEYS) {
       const account = privateKeyToAccount(`0x${pk}`, {
         networkId: TEST_NETWORK_ID,
       });

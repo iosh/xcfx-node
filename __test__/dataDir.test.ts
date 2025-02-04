@@ -24,7 +24,7 @@ describe("Data Directory", () => {
       tcpPort: ports[0],
       udpPort: ports[0],
       jsonrpcHttpPort: ports[1],
-      dataDir: TEST_DATA_DIR,
+      confluxDataDir: TEST_DATA_DIR,
     });
 
     await server.start();

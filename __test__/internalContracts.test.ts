@@ -5,7 +5,7 @@ import { createServer } from "../index";
 import {
   InternalContractsABI,
   TEST_NETWORK_ID,
-  TEST_PK,
+  TEST_PRIVATE_KEYS,
   getFreePorts,
 } from "./help";
 
@@ -26,7 +26,7 @@ describe("Internal Contracts", () => {
       chainId: TEST_NETWORK_ID,
       devBlockIntervalMs: 100,
       jsonrpcHttpPort: jsonrpcHttpPort,
-      genesisSecrets: TEST_PK,
+      genesisSecrets: TEST_PRIVATE_KEYS,
     });
     await server.start();
 
@@ -48,7 +48,9 @@ describe("Internal Contracts", () => {
         args: [adminControlAddress],
       }),
     });
-    expect(adminControl.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(adminControl.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test SponsorWhitelistControl contract
     const sponsorWhitelistControlAddress = hexAddressToBase32({
@@ -63,7 +65,9 @@ describe("Internal Contracts", () => {
         args: [adminControlAddress],
       }),
     });
-    expect(sponsorWhitelistControl.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(sponsorWhitelistControl.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test Staking contract
     const stakingAddress = hexAddressToBase32({
@@ -78,7 +82,9 @@ describe("Internal Contracts", () => {
         args: [adminControlAddress],
       }),
     });
-    expect(staking.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(staking.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test ConfluxContext contract
     const confluxContextAddress = hexAddressToBase32({
@@ -92,7 +98,9 @@ describe("Internal Contracts", () => {
         functionName: "finalizedEpochNumber",
       }),
     });
-    expect(confluxContext.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(confluxContext.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test PoSRegister contract
     const poSRegisterAddress = hexAddressToBase32({
@@ -107,7 +115,9 @@ describe("Internal Contracts", () => {
         args: [adminControlAddress],
       }),
     });
-    expect(poSRegister.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(poSRegister.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test CrossSpaceCall contract
     const crossSpaceCallAddress = hexAddressToBase32({
@@ -122,7 +132,9 @@ describe("Internal Contracts", () => {
         args: [adminControlAddress],
       }),
     });
-    expect(crossSpaceCall.data).toBe("0x0000000000000000000000000000000000000000000000000000000000000000");
+    expect(crossSpaceCall.data).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000000"
+    );
 
     // Test ParamsControl contract
     const paramsControlAddress = hexAddressToBase32({

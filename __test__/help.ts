@@ -49,7 +49,7 @@ export const MINING_ACCOUNT = privateKeyToAccount(TEST_MINING_ADDRESS_PK, {
   networkId: TEST_NETWORK_ID,
 });
 
-export const TEST_PK = [
+export const TEST_PRIVATE_KEYS = [
   "5880f9c6c419f4369b53327bae24e62d805ab0ff825acf7e7945d1f9a0a17bd0",
   "346328c0b7e2abf88fd9c5126192a85eb18b5309c3bd3cc7b61c8b403d1b0e68",
   "bdc6d1c95aaaac8db4eaa5d3d097ba556cf2871149f31e695458d7813543c258",

@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "cive/accounts";
 import { base32AddressToHex } from "cive/utils";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { TEST_NETWORK_ID, TEST_PK, getFreePorts } from "./help";
+import { TEST_NETWORK_ID, TEST_PRIVATE_KEYS, getFreePorts } from "./help";
 
 /**
  * Test genesis configuration
@@ -14,16 +14,17 @@ import { TEST_NETWORK_ID, TEST_PK, getFreePorts } from "./help";
 describe("Genesis Configuration", () => {
   test("should initialize accounts with correct balances in both spaces", async () => {
     // Setup server with dual-space support
-    const [jsonrpcHttpPort, jsonrpcHttpEthPort, udpAndTcpPort] = await getFreePorts();
+    const [jsonrpcHttpPort, jsonrpcHttpEthPort, udpAndTcpPort] =
+      await getFreePorts();
     const server = await createServer({
       tcpPort: udpAndTcpPort,
       udpPort: udpAndTcpPort,
       chainId: TEST_NETWORK_ID,
       jsonrpcHttpPort: jsonrpcHttpPort,
       jsonrpcHttpEthPort: jsonrpcHttpEthPort,
-      genesisSecrets: TEST_PK,
+      genesisSecrets: TEST_PRIVATE_KEYS,
       // 0x prefix is optional
-      genesisEvmSecrets: TEST_PK.map((pk) => `0x${pk}`),
+      genesisEvmSecrets: TEST_PRIVATE_KEYS,
     });
 
     await server.start();
@@ -34,7 +35,7 @@ describe("Genesis Configuration", () => {
     });
 
     // Get test account
-    const testAccount = privateKeyToAccount(`0x${TEST_PK[0]}`, {
+    const testAccount = privateKeyToAccount(`0x${TEST_PRIVATE_KEYS[0]}`, {
       networkId: TEST_NETWORK_ID,
     });
 
