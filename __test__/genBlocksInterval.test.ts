@@ -17,11 +17,11 @@ describe("Automatic Block Generation", () => {
   beforeAll(async () => {
     const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
     httpPort = jsonrpcHttpPort;
-    
+
     const server = await createServer({
       // Configure block generation every 100ms
       devBlockIntervalMs: 100,
-      
+
       // Node endpoints
       tcpPort: udpAndTcpPort,
       udpPort: udpAndTcpPort,
@@ -35,7 +35,7 @@ describe("Automatic Block Generation", () => {
   test("should generate blocks at configured interval", async () => {
     // Wait for initial block generation
     await wait(2000);
-    
+
     const client = createPublicClient({
       chain: localChain,
       transport: http(`http://127.0.0.1:${httpPort}`),

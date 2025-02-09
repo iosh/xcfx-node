@@ -49,7 +49,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(adminControl.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test SponsorWhitelistControl contract
@@ -66,7 +66,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(sponsorWhitelistControl.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test Staking contract
@@ -83,7 +83,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(staking.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test ConfluxContext contract
@@ -99,7 +99,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(confluxContext.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test PoSRegister contract
@@ -116,7 +116,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(poSRegister.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test CrossSpaceCall contract
@@ -133,7 +133,7 @@ describe("Internal Contracts", () => {
       }),
     });
     expect(crossSpaceCall.data).toBe(
-      "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     );
 
     // Test ParamsControl contract

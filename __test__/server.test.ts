@@ -29,8 +29,8 @@ describe("Server Lifecycle", () => {
 
     // Verify node status
     const status = await client.getStatus();
-    expect(status.chainId).toBe(1234);     // Default chain ID
-    expect(status.networkId).toBe(1234);   // Default network ID
+    expect(status.chainId).toBe(1234); // Default chain ID
+    expect(status.networkId).toBe(1234); // Default network ID
 
     // Check node version
     const version = await client.getClientVersion();
@@ -38,10 +38,8 @@ describe("Server Lifecycle", () => {
 
     // Test server shutdown
     await server.stop();
-    
+
     // Verify server is no longer accessible
-    await expect(
-      async () => client.getStatus()
-    ).rejects.toThrow();
+    await expect(async () => client.getStatus()).rejects.toThrow();
   });
 });
