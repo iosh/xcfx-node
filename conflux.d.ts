@@ -161,7 +161,7 @@ export interface ConfluxConfig {
    *  @default "123456"
    */
   devPosPrivateKeyEncryptionPassword?: string
-  /** @default:1 */
+  /** @default:0 */
   posReferenceEnableHeight?: number
   /** pos config path */
   posConfigPath?: string
@@ -169,9 +169,9 @@ export interface ConfluxConfig {
   posInitialNodesPath?: string
   /** pos pos_key file path */
   posPrivateKeyPath?: string
-  /** @default:2 */
+  /** @default:1 */
   defaultTransitionTime?: number
-  /** @default:3 */
+  /** @default:1 */
   cip1559TransitionHeight?: number
   /**
    * Enable CIP43A, CIP64, CIP71, CIP78A, CIP92 after hydra_transition_number

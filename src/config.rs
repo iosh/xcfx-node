@@ -156,7 +156,7 @@ pub struct ConfluxConfig {
   ///  @default "123456"
   pub dev_pos_private_key_encryption_password: Option<String>,
 
-  /// @default:1
+  /// @default:0
   pub pos_reference_enable_height: Option<i64>,
 
   /// pos config path
@@ -169,10 +169,10 @@ pub struct ConfluxConfig {
   pub pos_private_key_path: Option<String>,
 
   // ============= Protocol Upgrade Configuration =============
-  /// @default:2
+  /// @default:1
   pub default_transition_time: Option<i64>,
 
-  /// @default:3
+  /// @default:1
   pub cip1559_transition_height: Option<i64>,
 
   /// Enable CIP43A, CIP64, CIP71, CIP78A, CIP92 after hydra_transition_number
@@ -265,15 +265,19 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   conf.raw_conf.udp_port = js_config.udp_port.or(Some(32323));
 
   // ============= JSON-RPC Configuration =============
-  conf.raw_conf.public_rpc_apis = match js_config.public_rpc_apis {
-    Some(s) => ApiSet::from_str(&s).unwrap_or(ApiSet::All),
-    _ => ApiSet::All,
-  };
+  let default_rpc_apis = ApiSet::from_str("all").unwrap();
+  conf.raw_conf.public_rpc_apis = js_config
+    .public_rpc_apis
+    .map_or(default_rpc_apis.clone(), |s| {
+      ApiSet::from_str(&s).unwrap_or(default_rpc_apis)
+    });
 
-  conf.raw_conf.public_evm_rpc_apis = match js_config.public_evm_rpc_apis {
-    Some(s) => ApiSet::from_str(&s).unwrap_or(ApiSet::Evm),
-    _ => ApiSet::Evm,
-  };
+  let default_evm_apis = ApiSet::from_str("evm,ethdebug").unwrap();
+  conf.raw_conf.public_evm_rpc_apis = js_config
+    .public_evm_rpc_apis
+    .map_or(default_evm_apis.clone(), |s| {
+      ApiSet::from_str(&s).unwrap_or(default_evm_apis)
+    });
 
   conf.raw_conf.jsonrpc_ws_port = js_config.jsonrpc_ws_port;
   conf.raw_conf.jsonrpc_http_port = js_config.jsonrpc_http_port;
@@ -307,7 +311,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   conf.raw_conf.default_transition_time =
     Some(js_config.default_transition_time.unwrap_or(1) as u64);
   conf.raw_conf.cip1559_transition_height =
-    Some(js_config.cip1559_transition_height.unwrap_or(2) as u64);
+    Some(js_config.cip1559_transition_height.unwrap_or(1) as u64);
   conf.raw_conf.hydra_transition_number =
     Some(js_config.hydra_transition_number.unwrap_or(1) as u64);
   conf.raw_conf.hydra_transition_height =
@@ -328,7 +332,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
     js_config.print_memory_usage_period_s.map(|x| x as u64);
 
   // ============= Filter and Poll Configuration =============
-  conf.raw_conf.poll_lifetime_in_seconds = Some(js_config.poll_lifetime_in_seconds.unwrap_or(60));
+  conf.raw_conf.poll_lifetime_in_seconds = Some(js_config.poll_lifetime_in_seconds.unwrap_or(600));
   conf.raw_conf.get_logs_filter_max_limit = js_config.get_logs_filter_max_limit.map(|n| n as usize);
 
   conf
