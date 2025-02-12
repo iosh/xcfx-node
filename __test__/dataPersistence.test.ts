@@ -37,8 +37,8 @@ describe("Data Directory", () => {
   test("should create and use custom data directory", async () => {
     const [jsonrpcHttpPort, udpAndTcpPort] = await getFreePorts();
     const server = await createServer({
-      // tcpPort: udpAndTcpPort,
-      // udpPort: udpAndTcpPort,
+      tcpPort: udpAndTcpPort,
+      udpPort: udpAndTcpPort,
       jsonrpcHttpPort: jsonrpcHttpPort,
       genesisSecrets: TEST_PRIVATE_KEYS,
       confluxDataDir: TEST_DATA_DIR,
