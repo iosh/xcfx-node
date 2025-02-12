@@ -133,6 +133,16 @@ const server = await createServer({
 });
 ```
 
+### 5. Using Configuration File
+
+```ts
+const server = await createServer({
+  configFile: "./path/to/config.toml",
+});
+
+
+```
+
 ## Advanced Configuration
 
 The `createServer` function accepts various configuration options:
@@ -169,6 +179,9 @@ interface ConfluxConfig {
   // RPC Endpoints
   jsonrpcHttpPort?: number;  // HTTP RPC port
   jsonrpcWsPort?: number;    // WebSocket RPC port
+
+  // Configuration File
+  configFile?: string;       // Path to configuration file
 }
 ```
 ## Example
