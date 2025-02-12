@@ -7,6 +7,7 @@ export declare class ConfluxNode {
 }
 
 export interface ConfluxConfig {
+  configFile?: string
   /**
    * Set the node type to Full node, Archive node, or Light node.
    *  Possible values are "full", "archive",or "light".

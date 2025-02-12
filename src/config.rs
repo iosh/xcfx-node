@@ -1,5 +1,5 @@
 use cfxcore::NodeType;
-use client::{common::Configuration, rpc::rpc_apis::ApiSet};
+use client::{common::Configuration, configuration::RawConfiguration, rpc::rpc_apis::ApiSet};
 use napi_derive::napi;
 use primitives::block_header::CIP112_TRANSITION_HEIGHT;
 use std::{
@@ -9,9 +9,13 @@ use std::{
   str::FromStr,
 };
 
+use crate::error::NodeError;
+
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConfluxConfig {
+  pub config_file: Option<String>,
+
   // ============= Node Configuration =============
   /// Set the node type to Full node, Archive node, or Light node.
   ///  Possible values are "full", "archive",or "light".
@@ -210,7 +214,26 @@ pub struct ConfluxConfig {
   pub get_logs_filter_max_limit: Option<u32>,
 }
 
-pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configuration {
+pub fn convert_config(
+  js_config: ConfluxConfig,
+  temp_dir_path: &Path,
+) -> Result<Configuration, NodeError> {
+  if let Some(config_file) = js_config.config_file {
+    let mut conf = Configuration {
+      raw_conf: RawConfiguration::from_file(&config_file).map_err(|e| NodeError::Configuration(e))?,
+    };
+
+    if conf.raw_conf.node_type.is_none() {
+      conf.raw_conf.node_type = Some(NodeType::Full);
+    }
+
+    CIP112_TRANSITION_HEIGHT
+      .set(conf.raw_conf.cip112_transition_height.unwrap_or(u64::MAX))
+      .expect("called once");
+
+    return Ok(conf);
+  };
+
   let mut conf = Configuration::default();
 
   // ============= Node Configuration =============
@@ -335,7 +358,7 @@ pub fn convert_config(js_config: ConfluxConfig, temp_dir_path: &Path) -> Configu
   conf.raw_conf.poll_lifetime_in_seconds = Some(js_config.poll_lifetime_in_seconds.unwrap_or(600));
   conf.raw_conf.get_logs_filter_max_limit = js_config.get_logs_filter_max_limit.map(|n| n as usize);
 
-  conf
+  Ok(conf)
 }
 
 fn write_secrets_to_file(

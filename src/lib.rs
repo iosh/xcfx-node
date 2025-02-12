@@ -22,7 +22,7 @@ mod config;
 mod error;
 use error::{NodeError, Result};
 
-fn setup_env(
+fn setup_node_configuration(
   config: config::ConfluxConfig,
   data_dir: &std::path::Path,
 ) -> Result<client::common::Configuration> {
@@ -41,7 +41,7 @@ fn setup_env(
       .map_err(|e| NodeError::Configuration(format!("Failed to initialize logging: {}", e)))?;
   };
 
-  Ok(convert_config(config, data_dir))
+  convert_config(config, data_dir)
 }
 
 #[napi]
@@ -92,7 +92,7 @@ impl ConfluxNode {
       }
     };
 
-    let conf = match setup_env(config, &data_dir) {
+    let conf = match setup_node_configuration(config, &data_dir) {
       Ok(conf) => conf,
       Err(e) => {
         Self::handle_error(e, &js_callback);
