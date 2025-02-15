@@ -110,7 +110,7 @@ log_conf="log.yaml"
 
 # `tcp_port` is the TCP port that the process listens for P2P messages. The default is 32323.
 #
-# tcp_port=32323
+tcp_port=32343
 
 # `public_tcp_port` is the public TCP port that other nodes should connect to. It might be different from
 # the tcp_port in case the machine is behind a NAT. The default is as same as `tcp_port`.
@@ -120,7 +120,7 @@ log_conf="log.yaml"
 # `udp_port` is the UDP port used for node discovery.
 # If not set, it will be the same as `port`.
 #
-# udp_port=32323
+udp_port=32343
 
 # `jsonrpc_http_threads` is used to control how many threads to process HTTP rpc requests.
 #
@@ -144,13 +144,13 @@ log_conf="log.yaml"
 # Note that to serve transaction-related RPCs, `persist_tx_index` should also be set to `true` or
 # the node will only be able to handle very recent transactions.
 #
-jsonrpc_ws_port=12535
+# jsonrpc_ws_port=12535
 # jsonrpc_tcp_port=12536
 jsonrpc_http_port=12537
 # jsonrpc_local_tcp_port=12538
-jsonrpc_local_http_port=12539
+# jsonrpc_local_http_port=12539
 # jsonrpc_local_ws_port=12540
-jsonrpc_http_eth_port=8545
+# jsonrpc_http_eth_port=8545
 # jsonrpc_ws_eth_port=8546
 
 # Specify the APIs available through the public JSON-RPC interfaces (HTTP, TCP, WebSocket)
