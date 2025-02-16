@@ -2,6 +2,7 @@ import path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
 import type { ConfluxConfig } from "./conflux";
+import exitHook from "exit-hook";
 
 // Type definitions
 export interface Config extends ConfluxConfig {
@@ -140,6 +141,10 @@ class ConfluxInstance {
       this.nodeProcess = fork(path.join(__dirname, "node.js"));
       this.setupProcessListeners(resolve, reject);
       this.nodeProcess.send({ type: "start", config: this.config });
+
+      exitHook(() => {
+        this.nodeProcess?.kill("SIGKILL");
+      });
     });
 
     // Wait for node synchronization if RPC ports are configured
