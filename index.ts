@@ -2,8 +2,6 @@ import path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
 import type { ConfluxConfig } from "./conflux";
-import exitHook from "exit-hook";
-
 // Type definitions
 export interface Config extends ConfluxConfig {
   /** Whether to show conflux node logs */
@@ -142,9 +140,9 @@ class ConfluxInstance {
       this.setupProcessListeners(resolve, reject);
       this.nodeProcess.send({ type: "start", config: this.config });
 
-      exitHook(() => {
-        this.nodeProcess?.kill("SIGKILL");
-      });
+      process.once("exit", this.killProcess);
+      process.once("SIGINT", this.killProcess);
+      process.once("SIGTERM", this.killProcess);
     });
 
     // Wait for node synchronization if RPC ports are configured
@@ -181,6 +179,11 @@ class ConfluxInstance {
     };
 
     await retryGetCurrentSyncPhase(config);
+  }
+
+  private killProcess = () => {
+    if (!this.nodeProcess) return;
+    this.nodeProcess.kill("SIGKILL");
   }
 }
 

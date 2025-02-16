@@ -10,7 +10,10 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": ["conflux", "conflux-client"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
   "files": [
     "index.d.ts",
     "index.js",
@@ -51,8 +54,7 @@
     "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
   "dependencies": {
-    "cive": "0.8.1",
-    "exit-hook": "^4.0.0"
+    "cive": "0.8.1"
   },
   "devDependencies": {
     "@biomejs/biome": "1.8.3",

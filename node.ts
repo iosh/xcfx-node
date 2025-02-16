@@ -7,6 +7,7 @@ class NodeManager {
   constructor() {
     this.setupMessageHandlers();
     this.setupErrorHandlers();
+    this.setupSignalHandlers();
   }
 
   private setupMessageHandlers = () => {
@@ -15,6 +16,16 @@ class NodeManager {
 
   private setupErrorHandlers = () => {
     process.on("uncaughtException", this.handleError);
+  };
+
+  private setupSignalHandlers = () => {
+    process.on("SIGTERM", () => {
+      this.exit(0);
+    });
+
+    process.on("SIGINT", () => {
+      this.exit(0);
+    });
   };
 
   private handleMessage = (message: {
