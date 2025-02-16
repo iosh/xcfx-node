@@ -184,7 +184,7 @@ class ConfluxInstance {
   private killProcess = () => {
     if (!this.nodeProcess) return;
     this.nodeProcess.kill("SIGKILL");
-  }
+  };
 }
 
 /**
