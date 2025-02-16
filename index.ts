@@ -2,7 +2,7 @@ import path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
 import type { ConfluxConfig } from "./conflux";
-// Type definitions
+
 export interface Config extends ConfluxConfig {
   /** Whether to show conflux node logs */
   log?: boolean;
@@ -52,11 +52,11 @@ class ConfluxInstance {
     this.config = {
       posConfigPath: path.join(
         __dirname,
-        "./configs/pos_config/pos_config.yaml",
+        "./configs/pos_config/pos_config.yaml"
       ),
       posInitialNodesPath: path.join(
         __dirname,
-        "./configs/pos_config/initial_nodes.json",
+        "./configs/pos_config/initial_nodes.json"
       ),
       logConf: finalConfig.log
         ? path.join(__dirname, "./configs/log.yaml")
@@ -67,7 +67,7 @@ class ConfluxInstance {
 
   private setupProcessListeners = (
     resolve: () => void,
-    reject: (error: Error) => void,
+    reject: (error: Error) => void
   ) => {
     if (!this.nodeProcess) return;
 
@@ -101,7 +101,7 @@ class ConfluxInstance {
 
   private setupStopListeners = (
     resolve: () => void,
-    reject: (error: Error) => void,
+    reject: (error: Error) => void
   ) => {
     if (!this.nodeProcess) {
       resolve();
@@ -121,17 +121,17 @@ class ConfluxInstance {
       }
     };
 
-    this.nodeProcess.on("message", handleMessage);
+    this.nodeProcess.once("message", handleMessage);
   };
 
   /**
    * Starts the Conflux node instance
    * @throws {Error} If the instance is already started
    */
-  async start(): Promise<void> {
+  start = async () => {
     if (this.isServiceStarted) {
       throw new Error(
-        "This instance has already been started, you can't start it again",
+        "This instance has already been started, you can't start it again"
       );
     }
 
@@ -151,7 +151,7 @@ class ConfluxInstance {
     }
 
     this.isServiceStarted = true;
-  }
+  };
 
   /**
    * Stops the Conflux node instance
@@ -170,7 +170,7 @@ class ConfluxInstance {
    * Waits for the node to reach normal sync phase
    * @throws {Error} If sync phase check times out
    */
-  private async waitForSyncPhase(): Promise<void> {
+  private waitForSyncPhase = async () => {
     const config: SyncPhaseConfig = {
       httpPort: this.config.jsonrpcHttpPort,
       wsPort: this.config.jsonrpcWsPort,
@@ -179,12 +179,12 @@ class ConfluxInstance {
     };
 
     await retryGetCurrentSyncPhase(config);
-  }
+  };
 
   private killProcess = () => {
     if (!this.nodeProcess) return;
     this.nodeProcess.kill("SIGKILL");
-  }
+  };
 }
 
 /**
@@ -193,7 +193,7 @@ class ConfluxInstance {
  * @returns Object with start and stop methods
  */
 export const createServer = async (
-  config: Config = {},
+  config: Config = {}
 ): Promise<CreateServerReturnType> => {
   const instance = new ConfluxInstance(config);
   return {
