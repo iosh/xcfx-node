@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       cive:
-        specifier: 0.8.0
-        version: 0.8.0(typescript@5.7.2)
+        specifier: 0.8.1
+        version: 0.8.1(typescript@5.7.2)
       exit-hook:
         specifier: ^4.0.0
         version: 4.0.0
@@ -1015,8 +1015,8 @@ packages:
     resolution: {integrity: sha512-NIxF55hv4nSqQswkAeiOi1r83xy8JldOFDTWiug55KBu9Jnblncd2U6ViHmYgHf01TPZS77NJBhBMKdWj9HQMQ==}
     engines: {node: '>=8'}
 
-  cive@0.8.0:
-    resolution: {integrity: sha512-k+uMzfH5XRoJCrY1S92dEWYzgh2O45VWlH2XHMZdTeKS2xJA8LSFERv22hW8vOHnYvUq6FOqDQPaU9e8XKifgg==}
+  cive@0.8.1:
+    resolution: {integrity: sha512-P7Ll9gFTCt6jHsC13VRRAgvEefQSapRMMJSKFvGcEUmtmaNXl/g2jwxcWDNYSGoZhf1HjufEeO1wjlt26AIMQw==}
 
   cli-width@4.1.0:
     resolution: {integrity: sha512-ouuZd4/dm2Sw5Gmqy6bGyNNNe1qt9RpmxveLSO7KcgsTnU7RXfsw+/bukWGo1abgBiMAic068rclZsO4IWmmxQ==}
@@ -2481,7 +2481,7 @@ snapshots:
 
   ci-info@3.9.0: {}
 
-  cive@0.8.0(typescript@5.7.2):
+  cive@0.8.1(typescript@5.7.2):
     dependencies:
       '@noble/curves': 1.7.0
       '@noble/hashes': 1.6.1

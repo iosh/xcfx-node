@@ -51,7 +51,7 @@
     "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
   "dependencies": {
-    "cive": "0.8.0",
+    "cive": "0.8.1",
     "exit-hook": "^4.0.0"
   },
   "devDependencies": {
