@@ -1,8 +1,8 @@
 import path from "node:path";
-import { http, createTestClient, webSocket } from "cive";
 import type { ConfluxConfig } from "./conflux";
-import { Config, DEFAULT_CONFIG, SyncPhaseConfig } from "./lib/types";
+import { Config, DEFAULT_CONFIG, NodeRequestOptions } from "./lib/types";
 import { ProcessManager } from "./lib/process/manager";
+import { waitForNodeRPCReady } from "./lib/node/sync";
 
 export interface CreateServerReturnType {
   start: () => Promise<void>;
@@ -79,14 +79,14 @@ class ConfluxInstance {
    * @throws {Error} If sync phase check times out
    */
   private waitForSyncPhase = async () => {
-    const config: SyncPhaseConfig = {
+    const config: NodeRequestOptions = {
       httpPort: this.config.jsonrpcHttpPort,
       wsPort: this.config.jsonrpcWsPort,
       timeout: this.timeout,
       retryInterval: this.retryInterval,
     };
 
-    await retryGetCurrentSyncPhase(config);
+    await waitForNodeRPCReady(config);
   };
 }
 
@@ -103,44 +103,4 @@ export const createServer = async (
     start: () => instance.start(),
     stop: () => instance.stop(),
   };
-};
-
-/**
- * Retries getting the current sync phase until it reaches normal state or times out
- * @param config - Sync phase configuration
- * @throws {Error} If the operation times out
- */
-const retryGetCurrentSyncPhase = async ({
-  httpPort,
-  wsPort,
-  timeout,
-  retryInterval,
-}: SyncPhaseConfig): Promise<void> => {
-  if (!httpPort && !wsPort) return;
-
-  const transport = httpPort
-    ? http(`http://127.0.0.1:${httpPort}`)
-    : webSocket(`ws://127.0.0.1:${wsPort}`);
-
-  const testClient = createTestClient({ transport });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    while (!controller.signal.aborted) {
-      const phase = await testClient.getCurrentSyncPhase();
-      if (phase === "NormalSyncPhase") {
-        clearTimeout(timeoutId);
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, retryInterval));
-    }
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error("Get node sync phase timeout");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
 };

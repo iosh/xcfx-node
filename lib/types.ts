@@ -9,7 +9,7 @@ export interface Config extends ConfluxConfig {
   retryInterval?: number;
 }
 
-export interface SyncPhaseConfig {
+export interface NodeRequestOptions {
   httpPort?: number;
   wsPort?: number;
   timeout: number;
