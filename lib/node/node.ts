@@ -1,4 +1,4 @@
-import { ConfluxNode, type ConfluxConfig } from "./conflux";
+import { ConfluxNode, type ConfluxConfig } from "../../conflux";
 
 class NodeManager {
   private node: ConfluxNode | null = null;

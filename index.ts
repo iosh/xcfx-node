@@ -1,47 +1,19 @@
 import path from "node:path";
-import { fork, type ChildProcess } from "node:child_process";
 import { http, createTestClient, webSocket } from "cive";
 import type { ConfluxConfig } from "./conflux";
-
-export interface Config extends ConfluxConfig {
-  /** Whether to show conflux node logs */
-  log?: boolean;
-  /** Timeout in milliseconds */
-  timeout?: number;
-  /** Retry interval in milliseconds */
-  retryInterval?: number;
-}
+import { Config, DEFAULT_CONFIG, SyncPhaseConfig } from "./lib/types";
+import { ProcessManager } from "./lib/process/manager";
 
 export interface CreateServerReturnType {
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
-
-interface NodeMessage {
-  type: string;
-  error?: string;
-}
-
-interface SyncPhaseConfig {
-  httpPort?: number;
-  wsPort?: number;
-  timeout: number;
-  retryInterval: number;
-}
-
-// Default configuration
-const DEFAULT_CONFIG = {
-  timeout: 20000,
-  retryInterval: 300,
-  log: false,
-};
-
 class ConfluxInstance {
-  private nodeProcess: ChildProcess | null = null;
   private isServiceStarted = false;
   private readonly config: ConfluxConfig;
   private readonly timeout: number;
   private readonly retryInterval: number;
+  private processManager: ProcessManager;
 
   constructor(config: Config) {
     const finalConfig = { ...DEFAULT_CONFIG, ...config };
@@ -63,66 +35,16 @@ class ConfluxInstance {
         : undefined,
       ...config,
     };
+
+    this.processManager = new ProcessManager({
+      onStart: () => {
+        this.isServiceStarted = true;
+      },
+      onStop: () => {
+        this.isServiceStarted = false;
+      },
+    });
   }
-
-  private setupProcessListeners = (
-    resolve: () => void,
-    reject: (error: Error) => void
-  ) => {
-    if (!this.nodeProcess) return;
-
-    const handleMessage = (message: NodeMessage) => {
-      switch (message.type) {
-        case "started":
-          resolve();
-          break;
-        case "error":
-          reject(new Error(message.error));
-          break;
-      }
-    };
-
-    const handleError = (err: Error) => {
-      reject(err);
-    };
-
-    const handleExit = (code: number) => {
-      if (code !== 0 && !this.isServiceStarted) {
-        reject(new Error(`Worker process exited with code ${code}`));
-      }
-      this.isServiceStarted = false;
-      this.nodeProcess = null;
-    };
-
-    this.nodeProcess.on("message", handleMessage);
-    this.nodeProcess.on("error", handleError);
-    this.nodeProcess.on("exit", handleExit);
-  };
-
-  private setupStopListeners = (
-    resolve: () => void,
-    reject: (error: Error) => void
-  ) => {
-    if (!this.nodeProcess) {
-      resolve();
-      return;
-    }
-
-    const handleMessage = (message: NodeMessage) => {
-      switch (message.type) {
-        case "stopped":
-          this.nodeProcess = null;
-          this.isServiceStarted = false;
-          resolve();
-          break;
-        case "error":
-          reject(new Error(message.error));
-          break;
-      }
-    };
-
-    this.nodeProcess.once("message", handleMessage);
-  };
 
   /**
    * Starts the Conflux node instance
@@ -135,16 +57,7 @@ class ConfluxInstance {
       );
     }
 
-    await new Promise<void>((resolve, reject) => {
-      this.nodeProcess = fork(path.join(__dirname, "node.js"));
-      this.setupProcessListeners(resolve, reject);
-      this.nodeProcess.send({ type: "start", config: this.config });
-
-      process.once("exit", this.killProcess);
-      process.once("SIGINT", this.killProcess);
-      process.once("SIGTERM", this.killProcess);
-    });
-
+    await this.processManager.start(this.config);
     // Wait for node synchronization if RPC ports are configured
     if (this.config.jsonrpcHttpPort || this.config.jsonrpcWsPort) {
       await this.waitForSyncPhase();
@@ -158,12 +71,7 @@ class ConfluxInstance {
    * @returns Promise that resolves when the node is stopped
    */
   async stop(): Promise<void> {
-    if (!this.nodeProcess) return;
-
-    await new Promise<void>((resolve, reject) => {
-      this.setupStopListeners(resolve, reject);
-      this.nodeProcess?.send({ type: "stop" });
-    });
+    await this.processManager.stop();
   }
 
   /**
@@ -179,11 +87,6 @@ class ConfluxInstance {
     };
 
     await retryGetCurrentSyncPhase(config);
-  };
-
-  private killProcess = () => {
-    if (!this.nodeProcess) return;
-    this.nodeProcess.kill("SIGKILL");
   };
 }
 
