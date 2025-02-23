@@ -20,8 +20,7 @@
     "conflux.js",
     "conflux.d.ts",
     "configs",
-    "node.js",
-    "node.d.ts"
+    "lib"
   ],
   "napi": {
     "binaryName": "node",
@@ -40,6 +39,7 @@
     "access": "public"
   },
   "scripts": {
+    "clean": "rm -rf ./*.js ./lib/*.js ./lib/**/*.js ./*.d.ts ./lib/*.d.ts ./lib/**/*.d.ts",
     "artifacts": "napi artifacts",
     "build:ts": "tsc",
     "build": "napi build --dts conflux.d.ts --js conflux.js --platform --release",
