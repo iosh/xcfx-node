@@ -1,8 +1,8 @@
-import path from "node:path";
 import type { ConfluxConfig } from "./conflux";
 import { Config, DEFAULT_CONFIG, NodeRequestOptions } from "./lib/types";
 import { ProcessManager } from "./lib/process/manager";
 import { waitForNodeRPCReady } from "./lib/node/sync";
+import { buildConfig } from "./lib/configs";
 
 export interface CreateServerReturnType {
   start: () => Promise<void>;
@@ -16,25 +16,11 @@ class ConfluxInstance {
   private processManager: ProcessManager;
 
   constructor(config: Config) {
-    const finalConfig = { ...DEFAULT_CONFIG, ...config };
-    this.timeout = finalConfig.timeout;
-    this.retryInterval = finalConfig.retryInterval;
+    this.timeout = config.timeout || DEFAULT_CONFIG.timeout;
+    this.retryInterval = config.retryInterval || DEFAULT_CONFIG.retryInterval;
 
     // Build base configuration
-    this.config = {
-      posConfigPath: path.join(
-        __dirname,
-        "./configs/pos_config/pos_config.yaml"
-      ),
-      posInitialNodesPath: path.join(
-        __dirname,
-        "./configs/pos_config/initial_nodes.json"
-      ),
-      logConf: finalConfig.log
-        ? path.join(__dirname, "./configs/log.yaml")
-        : undefined,
-      ...config,
-    };
+    this.config = buildConfig(config);
 
     this.processManager = new ProcessManager({
       onStart: () => {
