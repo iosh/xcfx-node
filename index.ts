@@ -1,4 +1,4 @@
-import { Config, } from "./lib/types";
+import { Config } from "./lib/types";
 import { ConfluxInstance } from "./lib/conflux-instance";
 export interface CreateServerReturnType {
   start: () => Promise<void>;
@@ -11,7 +11,7 @@ export interface CreateServerReturnType {
  * @returns Object with start and stop methods
  */
 export const createServer = async (
-  config: Config = {}
+  config: Config = {},
 ): Promise<CreateServerReturnType> => {
   const instance = new ConfluxInstance(config);
   return {

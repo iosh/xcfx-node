@@ -35,7 +35,7 @@ export class ConfluxInstance {
   start = async () => {
     if (this.isServiceStarted) {
       throw new Error(
-        "This instance has already been started, you can't start it again"
+        "This instance has already been started, you can't start it again",
       );
     }
 
@@ -52,9 +52,9 @@ export class ConfluxInstance {
    * Stops the Conflux node instance
    * @returns Promise that resolves when the node is stopped
    */
-   stop = async () => {
+  stop = async () => {
     await this.processManager.stop();
-  }
+  };
 
   /**
    * Waits for the node to reach normal sync phase

@@ -95,7 +95,6 @@ describe("Data Directory", () => {
       devPackTxImmediately: true,
     });
 
-
     await server2.start();
     const epochNumber2 = await client.getEpochNumber();
 
