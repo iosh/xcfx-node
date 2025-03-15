@@ -15,7 +15,7 @@ export interface CreateServerReturnType {
  * @returns Object with start and stop methods
  */
 export const createServer = async (
-  config: Config = {}
+  config: Config = {},
 ): Promise<CreateServerReturnType> => {
   const instance = new ConfluxInstance(config);
   return {
