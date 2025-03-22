@@ -40,7 +40,7 @@ jobs:
             target: x86_64-pc-windows-msvc
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target x86_64-unknown-linux-gnu --use-cross
+            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target x86_64-unknown-linux-gnu
             setup: cargo install cross --git https://github.com/cross-rs/cross
           - host: macos-15
             target: aarch64-apple-darwin
