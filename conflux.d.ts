@@ -209,4 +209,3 @@ export interface ConfluxConfig {
   /** if `get_logs_filter_max_limit` is configured but the query would return more logs */
   getLogsFilterMaxLimit?: number
 }
-

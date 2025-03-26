@@ -8,14 +8,14 @@ version = "0.1.0"
 
 [lib]
 crate-type = ["cdylib"]
-
+  
 [dependencies]
-napi = { version = "3.0.0-alpha.21", features = ['napi8', 'async'] }
-napi-derive = "3.0.0-alpha.20"
+napi = { version = "3.0.0-alpha.33", features = ['napi8', 'async'] }
+napi-derive = "3.0.0-alpha.29"
 
-cfxcore = { git = "https://github.com/iosh/conflux-rust", branch = "v2.4.1" }
-primitives = { git = "https://github.com/iosh/conflux-rust", branch = "v2.4.1" }
-client = { git = "https://github.com/iosh/conflux-rust", branch = "v2.4.1" }
+cfxcore = { git = "https://github.com/iosh/conflux-rust", branch = "v2.5.0" }
+primitives = { git = "https://github.com/iosh/conflux-rust", branch = "v2.5.0" }
+client = { git = "https://github.com/iosh/conflux-rust", branch = "v2.5.0" }
 
 
 
