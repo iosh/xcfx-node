@@ -6,3 +6,9 @@
 # rustflags = ["-C", "target-feature=+crt-static"]
 # [term]     # whether cargo output is quiet
 # verbose = true
+
+[target.'cfg(target_os = "linux")'.env]
+CC = 'clang-18'
+CXX = 'clang++-18'
+CXXFLAGS = "-std=c++11 -stdlib=libc++ -fPIC"
+LDFLAGS = "-stdlib=libc++"
