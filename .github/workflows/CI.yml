@@ -116,11 +116,13 @@ jobs:
         if: ${{contains(matrix.settings.host, 'ubuntu')}}
         run: |
           # Remove libzstd-dev to avoid liblibrocksdb_sys build error
-          sudo apt remove  libzstd-dev
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
+          sudo apt-get remove libzstd-dev
+
           sudo wget https://apt.llvm.org/llvm.sh && sudo chmod u+x llvm.sh && sudo ./llvm.sh 18
 
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev pkg-config libssl-dev cmake libc++-18-dev
+   
       - name: Install dependencies
         run: pnpm install
       - name: Build
