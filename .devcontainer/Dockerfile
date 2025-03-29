@@ -40,3 +40,7 @@ ENV CC=clang-18
 ENV CXX=clang++-18
 ENV CXXFLAGS="-std=c++11 -stdlib=libc++"
 ENV LDFLAGS="-stdlib=libc++"
+
+# ENV OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu
+# ENV OPENSSL_INCLUDE_DIR=/usr/include/openssl
+# ENV OPENSSL_STATIC=yes
