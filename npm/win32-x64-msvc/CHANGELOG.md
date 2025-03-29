@@ -1,5 +1,11 @@
 # @xcfx/node-win32-x64-msvc
 
+## 0.6.0
+
+### Minor Changes
+
+- 058782e: Bump conflux-rust version to v2.5.0
+
 ## 0.5.0
 
 ### Minor Changes
