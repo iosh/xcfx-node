@@ -115,6 +115,7 @@ jobs:
       - name: Install Linux dependencies
         if: ${{contains(matrix.settings.host, 'ubuntu')}}
         run: |
+          sudo apt list --installed
           # Remove libzstd-dev to avoid liblibrocksdb_sys build error
           sudo apt-get remove libzstd-dev
 
