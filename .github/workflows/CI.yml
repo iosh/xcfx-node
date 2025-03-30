@@ -42,16 +42,16 @@ jobs:
 
           - host: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            build: pnpm build --target x86_64-unknown-linux-gnu
+            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target x86_64-unknown-linux-gnu
 
           - host: macos-15
             target: aarch64-apple-darwin
             build: RUSTFLAGS="-L $(brew --prefix bzip2)/lib -l bz2" pnpm build --target aarch64-apple-darwin
 
-          # - host: ubuntu-22.04-arm
-          #   target: aarch64-unknown-linux-gnu
-          #   build: pnpm build --target aarch64-unknown-linux-gnu --use-cross
-          #   setup: cargo install cross --git https://github.com/cross-rs/cross
+          - host: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target aarch64-unknown-linux-gnu
+ 
 
           # - host: windows-latest
           #   target: aarch64-pc-windows-msvc
@@ -183,7 +183,7 @@ jobs:
       matrix:
         target:
           - x86_64-unknown-linux-gnu
-          # - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
         node:
           - "20"
           - "22"
