@@ -2,7 +2,7 @@ import net from "node:net";
 import { privateKeyToAccount } from "cive/accounts";
 import { defineChain } from "cive/utils";
 import path from "node:path";
-import fs from "node:fs/promises"
+import fs from "node:fs/promises";
 import os from "node:os";
 
 // Default test data directory in system temp folder
@@ -83,14 +83,11 @@ export const InternalContractsABI = {adminControl:[{inputs:[{internalType:"addre
  * @param maxAttempts - Maximum number of retry attempts
  * @returns Promise<boolean> - Whether deletion was successful
  */
-export const retryDelete = async (
-  filePath: string,
-  maxAttempts = 5,
-) => {
+export const retryDelete = async (filePath: string, maxAttempts = 5) => {
   await fs.rm(filePath, {
-    recursive:true,
+    recursive: true,
     maxRetries: maxAttempts,
-    force:true,
-    retryDelay: 300
-    });
+    force: true,
+    retryDelay: 300,
+  });
 };
