@@ -30,7 +30,7 @@ describe("Data Directory", () => {
   // Cleanup after each test
   afterEach(async () => {
     if (fs.existsSync(TEST_DATA_DIR)) {
-      await retryDelete(TEST_DATA_DIR, true);
+      await retryDelete(TEST_DATA_DIR);
     }
   });
 

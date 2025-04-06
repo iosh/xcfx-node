@@ -14,7 +14,7 @@ describe("Logging", () => {
 
   afterAll(async () => {
     if (fs.existsSync(WORK_DIR)) {
-      await retryDelete(WORK_DIR, true);
+      await retryDelete(WORK_DIR);
     }
   });
 
