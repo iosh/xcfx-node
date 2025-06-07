@@ -203,7 +203,7 @@ export interface ConfluxConfig {
    * If set, the following RPC methods will be enabled:
    * - `cfx_newFilter` `cfx_newBlockFilter` `cfx_newPendingTransactionFilter` `cfx_getFilterChanges` `cfx_getFilterLogs` `cfx_uninstallFilter`.
    * - `eth_newFilter` `eth_newBlockFilter` `eth_newPendingTransactionFilter` eth_getFilterChanges eth_getFilterLogs eth_uninstallFilter
-   * @default: 60
+   * @default: 600
    */
   pollLifetimeInSeconds?: number
   /** if `get_logs_filter_max_limit` is configured but the query would return more logs */

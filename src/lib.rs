@@ -1,6 +1,4 @@
 #![deny(clippy::all)]
-
-use config::convert_config;
 use log::info;
 use napi::{
   bindgen_prelude::*,
@@ -41,7 +39,9 @@ fn setup_node_configuration(
       .map_err(|e| NodeError::Configuration(format!("Failed to initialize logging: {}", e)))?;
   };
 
-  convert_config(config, data_dir)
+  config
+    .to_configuration(data_dir)
+    .map_err(|e| NodeError::Configuration(format!("Failed to convert config: {}", e)))
 }
 
 #[napi]

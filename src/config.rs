@@ -207,183 +207,194 @@ pub struct ConfluxConfig {
   /// If set, the following RPC methods will be enabled:
   /// - `cfx_newFilter` `cfx_newBlockFilter` `cfx_newPendingTransactionFilter` `cfx_getFilterChanges` `cfx_getFilterLogs` `cfx_uninstallFilter`.
   /// - `eth_newFilter` `eth_newBlockFilter` `eth_newPendingTransactionFilter` eth_getFilterChanges eth_getFilterLogs eth_uninstallFilter
-  /// @default: 60
+  /// @default: 600
   pub poll_lifetime_in_seconds: Option<u32>,
 
   /// if `get_logs_filter_max_limit` is configured but the query would return more logs
   pub get_logs_filter_max_limit: Option<u32>,
 }
 
-pub fn convert_config(
-  js_config: ConfluxConfig,
-  temp_dir_path: &Path,
-) -> Result<Configuration, NodeError> {
-  if let Some(config_file) = js_config.config_file {
-    let mut conf = Configuration {
-      raw_conf: RawConfiguration::from_file(&config_file).map_err(|e| NodeError::Configuration(e))?,
-    };
+impl ConfluxConfig {
+  pub fn to_configuration(&self, temp_dir_path: &Path) -> Result<Configuration, NodeError> {
+    if let Some(config_file) = &self.config_file {
+      let conf = Configuration {
+        raw_conf: RawConfiguration::from_file(config_file)
+          .map_err(|e| NodeError::Configuration(e))?,
+      };
 
-    if conf.raw_conf.node_type.is_none() {
-      conf.raw_conf.node_type = Some(NodeType::Full);
+      if CIP112_TRANSITION_HEIGHT.get().is_none() {
+        CIP112_TRANSITION_HEIGHT
+          .set(conf.raw_conf.cip112_transition_height.unwrap_or(u64::MAX))
+          .map_err(|_| NodeError::Configuration("CIP112_TRANSITION_HEIGHT already set".into()))?;
+      }
+      return Ok(conf);
     }
 
-    CIP112_TRANSITION_HEIGHT
-      .set(conf.raw_conf.cip112_transition_height.unwrap_or(u64::MAX))
-      .expect("called once");
+    let mut conf = Configuration::default();
 
-    return Ok(conf);
-  };
+    self.apply_to_raw_config(&mut conf.raw_conf, temp_dir_path)?;
 
-  let mut conf = Configuration::default();
+    if CIP112_TRANSITION_HEIGHT.get().is_none() {
+      CIP112_TRANSITION_HEIGHT
+        .set(conf.raw_conf.cip112_transition_height.unwrap_or(u64::MAX))
+        .map_err(|_| NodeError::Configuration("CIP112_TRANSITION_HEIGHT already set".into()))?;
+    }
 
-  // ============= Node Configuration =============
-  let node_type = match js_config.node_type.as_deref() {
-    Some("archive") => NodeType::Archive,
-    Some("light") => NodeType::Light,
-    _ => NodeType::Full,
-  };
-  conf.raw_conf.node_type = Some(node_type);
-
-  conf.raw_conf.block_db_type = js_config.block_db_type.unwrap_or("sqlite".to_string());
-
-  let conflux_data_dir = js_config
-    .conflux_data_dir
-    .unwrap_or(String::from(temp_dir_path.to_str().unwrap()));
-
-  conf.raw_conf.conflux_data_dir = conflux_data_dir.clone();
-  conf.raw_conf.block_db_dir = Some(format!("{}/blockchain_db", conflux_data_dir.clone()));
-  conf.raw_conf.netconf_dir = Some(format!("{}/net_config", conflux_data_dir.clone()));
-
-  // ============= Chain Configuration =============
-  conf.raw_conf.chain_id = Some(js_config.chain_id.unwrap_or(1234));
-  conf.raw_conf.evm_chain_id = Some(js_config.evm_chain_id.unwrap_or(1235));
-  conf.raw_conf.bootnodes = js_config.bootnodes;
-
-  // ============= Mining Configuration =============
-  conf.raw_conf.mining_author = js_config.mining_author;
-  conf.raw_conf.stratum_listen_address = js_config
-    .stratum_listen_address
-    .unwrap_or("127.0.0.1".to_string());
-  conf.raw_conf.mining_type = js_config.mining_type;
-  conf.raw_conf.stratum_port = js_config.stratum_port.unwrap_or(32525);
-  conf.raw_conf.stratum_secret = js_config.stratum_secret;
-  conf.raw_conf.pow_problem_window_size = js_config.pow_problem_window_size.unwrap_or(1) as usize;
-
-  // ============= Development Mode Configuration =============
-  conf.raw_conf.mode = Some("dev".to_string());
-  conf.raw_conf.dev_block_interval_ms = js_config.dev_block_interval_ms.map(|n| n as u64);
-
-  conf.raw_conf.dev_pack_tx_immediately = js_config.dev_pack_tx_immediately;
-
-  if let Some(pk) = js_config.genesis_secrets {
-    conf.raw_conf.genesis_secrets = write_secrets_to_file(pk, "genesis_secrets.txt", temp_dir_path);
-  }
-  if let Some(pk) = js_config.genesis_evm_secrets {
-    conf.raw_conf.genesis_evm_secrets =
-      write_secrets_to_file(pk, "genesis_evm_secrets.txt", temp_dir_path);
+    Ok(conf)
   }
 
-  // ============= Network Configuration =============
-  conf.raw_conf.tcp_port = js_config.tcp_port.unwrap_or(32323);
-  conf.raw_conf.udp_port = js_config.udp_port.or(Some(32323));
-
-  // ============= JSON-RPC Configuration =============
-  let default_rpc_apis = ApiSet::from_str("all").unwrap();
-  conf.raw_conf.public_rpc_apis = js_config
-    .public_rpc_apis
-    .map_or(default_rpc_apis.clone(), |s| {
-      ApiSet::from_str(&s).unwrap_or(default_rpc_apis)
-    });
-
-  let default_evm_apis = ApiSet::from_str("evm,ethdebug").unwrap();
-  conf.raw_conf.public_evm_rpc_apis = js_config
-    .public_evm_rpc_apis
-    .map_or(default_evm_apis.clone(), |s| {
-      ApiSet::from_str(&s).unwrap_or(default_evm_apis)
-    });
-
-  conf.raw_conf.jsonrpc_ws_port = js_config.jsonrpc_ws_port;
-  conf.raw_conf.jsonrpc_http_port = js_config.jsonrpc_http_port;
-  conf.raw_conf.jsonrpc_tcp_port = js_config.jsonrpc_tcp_port;
-  conf.raw_conf.jsonrpc_http_eth_port = js_config.jsonrpc_http_eth_port;
-  conf.raw_conf.jsonrpc_ws_eth_port = js_config.jsonrpc_ws_eth_port;
-  conf.raw_conf.jsonrpc_local_tcp_port = js_config.jsonrpc_local_tcp_port;
-  conf.raw_conf.jsonrpc_local_http_port = js_config.jsonrpc_local_http_port;
-  conf.raw_conf.jsonrpc_local_ws_port = js_config.jsonrpc_local_ws_port;
-  conf.raw_conf.jsonrpc_http_keep_alive = js_config.jsonrpc_http_keep_alive.unwrap_or(false);
-
-  // ============= PoS Configuration =============
-  conf.raw_conf.dev_pos_private_key_encryption_password = Some(
-    js_config
-      .dev_pos_private_key_encryption_password
-      .unwrap_or("123456".to_string()),
-  );
-  conf.raw_conf.pos_reference_enable_height =
-    js_config.pos_reference_enable_height.unwrap_or(0) as u64;
-  conf.raw_conf.pos_config_path = js_config
-    .pos_config_path
-    .or(Some("./pos_config/pos_config.yaml".to_string()));
-  conf.raw_conf.pos_initial_nodes_path = js_config
-    .pos_initial_nodes_path
-    .unwrap_or("./pos_config/initial_nodes.json".to_string());
-  conf.raw_conf.pos_private_key_path = js_config
-    .pos_private_key_path
-    .unwrap_or("./pos_config/pos_key".to_string());
-
-  // ============= Protocol Upgrade Configuration =============
-  conf.raw_conf.default_transition_time =
-    Some(js_config.default_transition_time.unwrap_or(1) as u64);
-  conf.raw_conf.cip1559_transition_height =
-    Some(js_config.cip1559_transition_height.unwrap_or(1) as u64);
-  conf.raw_conf.hydra_transition_number =
-    Some(js_config.hydra_transition_number.unwrap_or(1) as u64);
-  conf.raw_conf.hydra_transition_height =
-    Some(js_config.hydra_transition_height.unwrap_or(1) as u64);
-
-  // the transition height of CIP112, default it set in the `Configuration::parse` function, we don't use it here so we set it here
-  conf.raw_conf.cip112_transition_height =
-    Some(js_config.cip112_transition_height.unwrap_or(1) as u64);
-  if CIP112_TRANSITION_HEIGHT.get().is_none() {
-    CIP112_TRANSITION_HEIGHT
-      .set(js_config.cip112_transition_height.unwrap_or(1) as u64)
-      .expect("called once");
-  }
-
-  // ============= Logging Configuration =============
-  conf.raw_conf.log_conf = js_config.log_conf;
-  conf.raw_conf.print_memory_usage_period_s =
-    js_config.print_memory_usage_period_s.map(|x| x as u64);
-
-  // ============= Filter and Poll Configuration =============
-  conf.raw_conf.poll_lifetime_in_seconds = Some(js_config.poll_lifetime_in_seconds.unwrap_or(600));
-  conf.raw_conf.get_logs_filter_max_limit = js_config.get_logs_filter_max_limit.map(|n| n as usize);
-
-  Ok(conf)
-}
-
-fn write_secrets_to_file(
-  secrets: Vec<String>,
-  filename: &str,
-  temp_dir_path: &Path,
-) -> Option<std::string::String> {
-  let f = File::create(temp_dir_path.join(filename)).unwrap();
-  let mut w = BufWriter::new(f);
-
-  for secret in secrets {
-    let pk = if let Some(stripped) = secret.strip_prefix("0x") {
-      stripped
-    } else {
-      &secret
+  pub fn apply_to_raw_config(
+    &self,
+    raw_conf: &mut RawConfiguration,
+    temp_dir_path: &Path,
+  ) -> Result<(), NodeError> {
+    raw_conf.node_type = match self.node_type.as_deref() {
+      Some("archive") => Some(NodeType::Archive),
+      Some("light") => Some(NodeType::Light),
+      _ => Some(NodeType::Full),
     };
-    writeln!(w, "{}", pk).unwrap();
-  }
-  w.flush().unwrap();
 
-  Some(
-    temp_dir_path
-      .join(filename)
-      .into_os_string()
-      .into_string()
-      .unwrap(),
-  )
+    raw_conf.block_db_type = self
+      .block_db_type
+      .clone()
+      .unwrap_or_else(|| "sqlite".to_string());
+
+    // Directory configuration
+
+    let data_dir = self
+      .conflux_data_dir
+      .clone()
+      .unwrap_or_else(|| temp_dir_path.to_string_lossy().to_string());
+
+    raw_conf.conflux_data_dir = data_dir.clone();
+    raw_conf.block_db_dir = Some(format!("{}/blockchain_db", &data_dir));
+    raw_conf.netconf_dir = Some(format!("{}/net_config", &data_dir));
+
+    // Chain Configuration
+    raw_conf.chain_id = Some(self.chain_id.unwrap_or(1234));
+    raw_conf.evm_chain_id = Some(self.evm_chain_id.unwrap_or(1235));
+    raw_conf.bootnodes = self.bootnodes.clone();
+
+    // Mining Configuration
+    raw_conf.mining_author = self.mining_author.clone();
+    raw_conf.stratum_listen_address = self
+      .stratum_listen_address
+      .clone()
+      .unwrap_or_else(|| "127.0.0.1".to_string());
+    raw_conf.mining_type = self.mining_type.clone();
+    raw_conf.stratum_port = self.stratum_port.unwrap_or(32525);
+    raw_conf.stratum_secret = self.stratum_secret.clone();
+    raw_conf.pow_problem_window_size = self.pow_problem_window_size.unwrap_or(1) as usize;
+
+    // Development Mode
+    raw_conf.mode = Some("dev".to_string());
+    raw_conf.dev_block_interval_ms = self.dev_block_interval_ms.map(|n| n as u64);
+    raw_conf.dev_pack_tx_immediately = self.dev_pack_tx_immediately;
+
+    // Handle genesis secrets
+    if let Some(secrets) = &self.genesis_secrets {
+      raw_conf.genesis_secrets =
+        Some(self.write_secrets_to_file(secrets.clone(), "genesis_secrets.txt", temp_dir_path)?);
+    }
+    if let Some(secrets) = &self.genesis_evm_secrets {
+      raw_conf.genesis_evm_secrets = Some(self.write_secrets_to_file(
+        secrets.clone(),
+        "genesis_evm_secrets.txt",
+        temp_dir_path,
+      )?);
+    }
+
+    // Network Configuration
+    raw_conf.tcp_port = self.tcp_port.unwrap_or(32323);
+    raw_conf.udp_port = self.udp_port.or(Some(32323));
+
+    // JSON-RPC Configuration
+    let default_rpc_apis = ApiSet::from_str("all").unwrap();
+    raw_conf.public_rpc_apis = self
+      .public_rpc_apis
+      .as_ref()
+      .map_or(default_rpc_apis.clone(), |s| {
+        ApiSet::from_str(s).unwrap_or(default_rpc_apis)
+      });
+
+    let default_evm_apis = ApiSet::from_str("evm,ethdebug").unwrap();
+    raw_conf.public_evm_rpc_apis = self
+      .public_evm_rpc_apis
+      .as_ref()
+      .map_or(default_evm_apis.clone(), |s| {
+        ApiSet::from_str(s).unwrap_or(default_evm_apis)
+      });
+
+    raw_conf.jsonrpc_ws_port = self.jsonrpc_ws_port;
+    raw_conf.jsonrpc_http_port = self.jsonrpc_http_port;
+    raw_conf.jsonrpc_tcp_port = self.jsonrpc_tcp_port;
+    raw_conf.jsonrpc_http_eth_port = self.jsonrpc_http_eth_port;
+    raw_conf.jsonrpc_ws_eth_port = self.jsonrpc_ws_eth_port;
+    raw_conf.jsonrpc_local_tcp_port = self.jsonrpc_local_tcp_port;
+    raw_conf.jsonrpc_local_http_port = self.jsonrpc_local_http_port;
+    raw_conf.jsonrpc_local_ws_port = self.jsonrpc_local_ws_port;
+    raw_conf.jsonrpc_http_keep_alive = self.jsonrpc_http_keep_alive.unwrap_or(false);
+    // PoS Configuration
+    raw_conf.dev_pos_private_key_encryption_password = Some(
+      self
+        .dev_pos_private_key_encryption_password
+        .clone()
+        .unwrap_or("123456".to_string()),
+    );
+    raw_conf.pos_reference_enable_height = self.pos_reference_enable_height.unwrap_or(0) as u64;
+    raw_conf.pos_config_path = self
+      .pos_config_path
+      .clone()
+      .or(Some("./pos_config/pos_config.yaml".to_string()));
+    raw_conf.pos_initial_nodes_path = self
+      .pos_initial_nodes_path
+      .clone()
+      .unwrap_or("./pos_config/initial_nodes.json".to_string());
+    raw_conf.pos_private_key_path = self
+      .pos_private_key_path
+      .clone()
+      .unwrap_or("./pos_config/pos_key".to_string());
+    // Protocol Upgrade Configuration
+    raw_conf.default_transition_time = Some(self.default_transition_time.unwrap_or(1) as u64);
+    raw_conf.cip1559_transition_height = Some(self.cip1559_transition_height.unwrap_or(1) as u64);
+    raw_conf.hydra_transition_number = Some(self.hydra_transition_number.unwrap_or(1) as u64);
+    raw_conf.hydra_transition_height = Some(self.hydra_transition_height.unwrap_or(1) as u64);
+    raw_conf.cip112_transition_height = Some(self.cip112_transition_height.unwrap_or(1) as u64);
+
+    // Logging Configuration
+    raw_conf.log_conf = self.log_conf.clone();
+    raw_conf.print_memory_usage_period_s = self.print_memory_usage_period_s.map(|x| x as u64);
+
+    // Filter and Poll Configuration
+    raw_conf.poll_lifetime_in_seconds = Some(self.poll_lifetime_in_seconds.unwrap_or(600));
+    raw_conf.get_logs_filter_max_limit = self.get_logs_filter_max_limit.map(|n| n as usize);
+
+    Ok(())
+  }
+
+  fn write_secrets_to_file(
+    &self,
+    secrets: Vec<String>,
+    filename: &str,
+    dir_path: &Path,
+  ) -> Result<String, NodeError> {
+    let file_path = dir_path.join(filename);
+    let f = File::create(&file_path).map_err(|e| {
+      NodeError::Configuration(format!("Failed to create file {}: {}", filename, e))
+    })?;
+    let mut writer = BufWriter::new(f);
+
+    for secret in secrets {
+      let pk = secret.strip_prefix("0x").unwrap_or(&secret);
+      writeln!(writer, "{}", pk).map_err(|e| {
+        NodeError::Configuration(format!("Failed to write to file {}: {}", filename, e))
+      })?;
+    }
+
+    writer
+      .flush()
+      .map_err(|e| NodeError::Configuration(format!("Failed to flush file {}: {}", filename, e)))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+  }
 }

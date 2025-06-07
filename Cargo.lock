@@ -5239,30 +5239,33 @@ dependencies = [
 
 [[package]]
 name = "napi"
-version = "3.0.0-alpha.33"
+version = "3.0.0-beta.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c857a2b38c994db8bec785554ab4216d45ad63469832070c86a992be0b5491ad"
+checksum = "738f7ddf53c70b9bbddaf876317c985640a2c89061035fa87ff171fd93193e37"
 dependencies = [
  "bitflags 2.8.0",
  "ctor",
  "napi-build",
  "napi-sys",
+ "nohash-hasher",
+ "rustc-hash 2.1.1",
  "tokio 1.43.0",
 ]
 
 [[package]]
 name = "napi-build"
-version = "2.1.4"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db836caddef23662b94e16bf1f26c40eceb09d6aee5d5b06a7ac199320b69b19"
+checksum = "44e0e3177307063d3e7e55b7dd7b648cca9d7f46daa35422c0d98cc2bf48c2c1"
 
 [[package]]
 name = "napi-derive"
-version = "3.0.0-alpha.29"
+version = "3.0.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7165d931d54f68115e651330d5fe0ae0081133d3f4ee3ab55b0b808f0c23f71"
+checksum = "1c48e8ab579e603cb66e0f9048303d25fca9f4275f421c0af150a40080bd299d"
 dependencies = [
  "convert_case 0.8.0",
+ "ctor",
  "napi-derive-backend",
  "proc-macro2 1.0.93",
  "quote 1.0.38",
@@ -5271,9 +5274,9 @@ dependencies = [
 
 [[package]]
 name = "napi-derive-backend"
-version = "2.0.0-alpha.28"
+version = "2.0.0-beta.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3f36354262054df8e1c3a73bdcd36ea13f130feb1e4d86b67cab9e10d6ef6d"
+checksum = "0a767a2d3aa9fe20f7032b9e90912e8061224dc48fcfd5a3e8716dbef8ba39a5"
 dependencies = [
  "convert_case 0.8.0",
  "proc-macro2 1.0.93",
@@ -5284,9 +5287,9 @@ dependencies = [
 
 [[package]]
 name = "napi-sys"
-version = "3.0.0-alpha.1"
+version = "3.0.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cc061b99c514ad4b7abc99d4db1ca24b9542b7ff48b4760bd9f82b24611534d"
+checksum = "c4401c63f866b42d673a8b213d5662c84a0701b0f6c3acff7e2b9fc439f1675d"
 dependencies = [
  "libloading 0.8.6",
 ]
@@ -5370,6 +5373,12 @@ dependencies = [
  "thiserror 1.0.69",
  "throttling",
 ]
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
