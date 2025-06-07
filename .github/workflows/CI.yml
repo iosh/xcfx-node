@@ -3,7 +3,6 @@ env:
   DEBUG: napi:*
   APP_NAME: node
   MACOSX_DEPLOYMENT_TARGET: "10.13"
-  CARGO_INCREMENTAL: "1"
   OPENSSL_STATIC: 1
 permissions:
   contents: write
