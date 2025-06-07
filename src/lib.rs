@@ -1,8 +1,8 @@
 #![deny(clippy::all)]
-use log::info;
-use napi::{
-  bindgen_prelude::*,
-  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+use log::{info, warn};
+use napi::tokio::{
+  sync::{oneshot, Mutex as TokioMutex},
+  task,
 };
 use napi_derive::napi;
 
@@ -14,7 +14,7 @@ use client::{
   light::LightClient,
 };
 use parking_lot::{Condvar, Mutex};
-use std::{env, fs, sync::Arc};
+use std::{env, fs, sync::Arc, thread};
 use tempfile::{tempdir, TempDir};
 mod config;
 mod error;
@@ -44,11 +44,17 @@ fn setup_node_configuration(
     .map_err(|e| NodeError::Configuration(format!("Failed to convert config: {}", e)))
 }
 
+struct NodeState {
+  is_running: bool,
+  shutdown_sender: Option<oneshot::Sender<()>>,
+  thread_handle: Option<thread::JoinHandle<()>>,
+}
+
 #[napi]
 pub struct ConfluxNode {
-  client_handle: Option<Box<dyn ClientTrait>>,
+  state: Arc<TokioMutex<NodeState>>,
+  temp_dir_handle: Arc<TokioMutex<Option<TempDir>>>,
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
-  temp_dir_handle: Option<TempDir>,
 }
 
 #[napi]
@@ -56,88 +62,163 @@ impl ConfluxNode {
   #[napi(constructor)]
   pub fn new() -> Self {
     ConfluxNode {
-      client_handle: None,
+      state: Arc::new(TokioMutex::new(NodeState {
+        is_running: false,
+        shutdown_sender: None,
+        thread_handle: None,
+      })),
+      temp_dir_handle: Arc::new(TokioMutex::new(None)),
       exit_sign: Arc::new((Mutex::new(false), Condvar::new())),
-      temp_dir_handle: None,
-    }
-  }
-
-  fn handle_error(error: NodeError, js_callback: &ThreadsafeFunction<Null>) {
-    js_callback.call(Err(error.into()), ThreadsafeFunctionCallMode::NonBlocking);
-  }
-
-  #[napi]
-  pub fn start_node(
-    &mut self,
-    config: config::ConfluxConfig,
-    js_callback: ThreadsafeFunction<Null>,
-  ) {
-    // if conflux_data_dir is not set, use temp dir
-    let data_dir = match config.conflux_data_dir.as_ref().map_or_else(
-      || {
-        tempdir().map(|dir| {
-          self.temp_dir_handle = Some(dir);
-          self.temp_dir_handle.as_ref().unwrap().path().to_path_buf()
-        })
-      },
-      |dir| Ok(std::path::PathBuf::from(dir)),
-    ) {
-      Ok(dir) => dir,
-      Err(e) => {
-        Self::handle_error(
-          NodeError::Initialization(format!("Failed to create directory: {}", e)),
-          &js_callback,
-        );
-        return;
-      }
-    };
-
-    let conf = match setup_node_configuration(config, &data_dir) {
-      Ok(conf) => conf,
-      Err(e) => {
-        Self::handle_error(e, &js_callback);
-        return;
-      }
-    };
-
-    let client_handle: Result<Box<dyn ClientTrait>> = match conf.node_type() {
-      NodeType::Archive => ArchiveClient::start(conf, self.exit_sign.clone())
-        .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::Runtime(format!("Failed to start Archive node: {}", e))),
-      NodeType::Full => FullClient::start(conf, self.exit_sign.clone())
-        .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::Runtime(format!("Failed to start Full node: {}", e))),
-      NodeType::Light => LightClient::start(conf, self.exit_sign.clone())
-        .map(|client| client as Box<dyn ClientTrait>)
-        .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
-      NodeType::Unknown => Err(NodeError::Configuration("Unknown node type".to_string())),
-    };
-
-    match client_handle {
-      Ok(handle) => {
-        self.client_handle = Some(handle);
-        js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-      }
-      Err(e) => {
-        Self::handle_error(e, &js_callback);
-      }
     }
   }
 
   #[napi]
-  pub fn stop_node(&mut self, js_callback: ThreadsafeFunction<Null>) {
+  pub async fn start_node(&self, config: config::ConfluxConfig) -> Result<()> {
+    let mut state = self.state.lock().await;
+    if state.is_running {
+      return Err(NodeError::Runtime("Node is already running".to_string()));
+    }
+
+    let data_dir = match config.conflux_data_dir.as_ref() {
+      Some(dir) => std::path::PathBuf::from(dir),
+      None => {
+        let temp_dir = tempdir().map_err(|e| {
+          NodeError::Initialization(format!("Failed to create temp directory: {}", e))
+        })?;
+        let path = temp_dir.path().to_path_buf();
+        *self.temp_dir_handle.lock().await = Some(temp_dir);
+        path
+      }
+    };
+
+    let conf = setup_node_configuration(config, &data_dir).map_err(|e| {
+      NodeError::Configuration(format!("Failed to setup node configuration: {}", e))
+    })?;
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let exit_sign = self.exit_sign.clone();
+    let node_type = conf.node_type();
+
+    let (startup_status_tx, startup_status_rx) =
+      oneshot::channel::<std::result::Result<(), NodeError>>();
+
+    let thread_handle = thread::spawn(move || {
+      let client_result: Result<Box<dyn ClientTrait>> = match node_type {
+        NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
+          .map(|client| client as Box<dyn ClientTrait>)
+          .map_err(|e| NodeError::Runtime(format!("Failed to start Archive node: {}", e))),
+        NodeType::Full => FullClient::start(conf, exit_sign.clone())
+          .map(|client| client as Box<dyn ClientTrait>)
+          .map_err(|e| NodeError::Runtime(format!("Failed to start Full node: {}", e))),
+        NodeType::Light => LightClient::start(conf, exit_sign.clone())
+          .map(|client| client as Box<dyn ClientTrait>)
+          .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
+        NodeType::Unknown => Err(NodeError::Configuration("Unknown node type".to_string())),
+      };
+
+      match client_result {
+        Ok(client) => {
+          if startup_status_tx.send(Ok(())).is_err() {
+            warn!("Failed to send successful startup signal to start_node; main task might have been cancelled. Shutting down node.");
+            shutdown(client);
+            return;
+          }
+
+          // Wait for shutdown signal
+          let _ = shutdown_rx.blocking_recv();
+
+          info!("Node is shutting down");
+          shutdown(client);
+          info!("Node shutdown complete");
+        }
+        Err(e) => {
+          if startup_status_tx.send(Err(e)).is_err() {
+            warn!("Failed to send startup error signal to start_node; error may not be propagated to caller.");
+          }
+        }
+      }
+    });
+
+    match startup_status_rx.await {
+      Ok(Ok(())) => {
+        info!("Node started successfully");
+        state.thread_handle = Some(thread_handle);
+        state.shutdown_sender = Some(shutdown_tx);
+        state.is_running = true;
+        Ok(())
+      }
+      Ok(Err(e)) => {
+        drop(state);
+        let _ = shutdown_tx.send(());
+
+        if let Err(join_err) = task::spawn_blocking(move || thread_handle.join()).await {
+          warn!("Failed to join thread after startup failure: {}", join_err);
+        }
+        Err(e)
+      }
+      Err(_) => {
+        let _ = shutdown_tx.send(());
+        drop(state);
+
+        match task::spawn_blocking(move || thread_handle.join()).await {
+          Ok(Ok(_)) => Err(NodeError::Runtime(
+            "Node thread exited prematurely without reporting startup status".to_string(),
+          )),
+          Ok(Err(panic_payload)) => Err(NodeError::Runtime(format!(
+            "Node thread panicked: {:?}",
+            panic_payload
+          ))),
+          Err(join_err) => Err(NodeError::Runtime(format!(
+            "Failed to wait for node thread: {}",
+            join_err
+          ))),
+        }
+      }
+    }
+  }
+
+  #[napi]
+  pub async fn stop_node(&self) -> Result<()> {
+    let mut state = self.state.lock().await;
+
+    if !state.is_running {
+      return Err(NodeError::Runtime("Node is not running".to_string()));
+    }
+
     *self.exit_sign.0.lock() = true;
     self.exit_sign.1.notify_all();
 
-    if let Some(client_handle) = self.client_handle.take() {
-      shutdown(client_handle);
-      self.temp_dir_handle = None;
-      js_callback.call(Ok(Null), ThreadsafeFunctionCallMode::NonBlocking);
-    } else {
-      js_callback.call(
-        Err(NodeError::Runtime("Node is not running".to_string()).into()),
-        ThreadsafeFunctionCallMode::NonBlocking,
-      );
+    if let Some(sender) = state.shutdown_sender.take() {
+      let _ = sender.send(());
     }
+
+    let thread_handle = state.thread_handle.take();
+    state.is_running = false;
+
+    drop(state);
+
+    if let Some(handle) = thread_handle {
+      match task::spawn_blocking(move || handle.join()).await {
+        Ok(Ok(_)) => {
+          info!("Node thread completed successfully");
+        }
+        Ok(Err(panic_payload)) => {
+          return Err(NodeError::Shutdown(format!(
+            "Node thread panicked during shutdown: {:?}",
+            panic_payload
+          )));
+        }
+        Err(join_err) => {
+          return Err(NodeError::Shutdown(format!(
+            "Failed to wait for node thread: {}",
+            join_err
+          )));
+        }
+      }
+    }
+    *self.temp_dir_handle.lock().await = None;
+
+    Ok(())
   }
 }

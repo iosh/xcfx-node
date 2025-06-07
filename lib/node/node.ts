@@ -2,7 +2,7 @@ import { ConfluxNode, type ConfluxConfig } from "../../conflux";
 
 class NodeManager {
   private node: ConfluxNode | null = null;
-  private isStarted: boolean = false;
+  private isStarted = false;
 
   constructor() {
     this.setupMessageHandlers();
@@ -61,14 +61,15 @@ class NodeManager {
       this.node = new ConfluxNode();
     }
 
-    this.node.startNode(config, (err) => {
-      if (err) {
-        this.sendError(err.message);
-      } else {
+    this.node
+      .startNode(config)
+      .then(() => {
         this.isStarted = true;
         this.sendMessage("started");
-      }
-    });
+      })
+      .catch((e: Error) => {
+        this.sendError(e.message);
+      });
   };
 
   private handleStop = () => {
@@ -78,16 +79,18 @@ class NodeManager {
       return;
     }
 
-    this.node.stopNode((err) => {
-      if (err) {
-        this.sendError(err.message);
-      } else {
+    this.node
+      .stopNode()
+      .then(() => {
         this.isStarted = false;
         this.node = null;
         this.sendMessage("stopped");
         this.exit(0);
-      }
-    });
+      })
+      .catch((e: Error) => {
+        this.sendError(e.message);
+        this.exit(1);
+      });
   };
 
   private handleError = (err: Error) => {

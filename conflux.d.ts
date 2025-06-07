@@ -2,8 +2,8 @@
 /* eslint-disable */
 export declare class ConfluxNode {
   constructor()
-  startNode(config: ConfluxConfig, jsCallback: ((err: Error | null, arg: null) => any)): void
-  stopNode(jsCallback: ((err: Error | null, arg: null) => any)): void
+  startNode(config: ConfluxConfig): Promise<void>
+  stopNode(): Promise<void>
 }
 
 export interface ConfluxConfig {
