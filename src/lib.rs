@@ -9,51 +9,60 @@ use napi_derive::napi;
 use cfxcore::NodeType;
 use client::{
   archive::ArchiveClient,
-  common::{shutdown_handler::shutdown, ClientTrait},
+  common::{shutdown_handler::shutdown, ClientTrait, Configuration},
   full::FullClient,
   light::LightClient,
 };
 use parking_lot::{Condvar, Mutex};
-use std::{env, fs, sync::Arc, thread};
+use std::{env, fs, path::Path, sync::Arc};
 use tempfile::{tempdir, TempDir};
 mod config;
 mod error;
 use error::{NodeError, Result};
 
-fn setup_node_configuration(
-  config: config::ConfluxConfig,
-  data_dir: &std::path::Path,
-) -> Result<client::common::Configuration> {
-  info!("Node working directory: {:?}", data_dir);
-
-  // ensure directory exists
-  fs::create_dir_all(data_dir)
-    .map_err(|e| NodeError::Initialization(format!("Failed to create data directory: {}", e)))?;
-
-  // set working directory， some file use relative path
-  env::set_current_dir(data_dir)
-    .map_err(|e| NodeError::Initialization(format!("Failed to set working directory: {}", e)))?;
-
-  if let Some(ref log_conf) = config.log_conf {
-    log4rs::init_file(log_conf, Default::default())
-      .map_err(|e| NodeError::Configuration(format!("Failed to initialize logging: {}", e)))?;
-  };
-
-  config
-    .to_configuration(data_dir)
-    .map_err(|e| NodeError::Configuration(format!("Failed to convert config: {}", e)))
+struct NodeLifecycle {
+  thread_handle: task::JoinHandle<()>,
+  shutdown_sender: oneshot::Sender<()>,
+  _temp_dir: Option<TempDir>,
 }
 
-struct NodeState {
-  is_running: bool,
-  shutdown_sender: Option<oneshot::Sender<()>>,
-  thread_handle: Option<thread::JoinHandle<()>>,
+impl NodeLifecycle {
+  fn new(
+    thread_handle: task::JoinHandle<()>,
+    shutdown_sender: oneshot::Sender<()>,
+    _temp_dir: Option<TempDir>,
+  ) -> Self {
+    NodeLifecycle {
+      thread_handle,
+      shutdown_sender,
+      _temp_dir,
+    }
+  }
+
+  async fn shutdown(self) -> Result<()> {
+    let _ = self.shutdown_sender.send(());
+
+    match self.thread_handle.await {
+      Ok(_) => {
+        info!("Node thread completed successfully");
+        Ok(())
+      }
+      Err(e) if e.is_cancelled() => Ok(()),
+      Err(e) if e.is_panic() => {
+        warn!("Node thread panicked: {:?}", e);
+        Err(NodeError::Shutdown("Node thread panicked".to_string()))
+      }
+      Err(e) => Err(NodeError::Shutdown(format!(
+        "Failed to wait for node thread: {}",
+        e
+      ))),
+    }
+  }
 }
 
 #[napi]
 pub struct ConfluxNode {
-  state: Arc<TokioMutex<NodeState>>,
-  temp_dir_handle: Arc<TokioMutex<Option<TempDir>>>,
+  lifecycle: Arc<TokioMutex<Option<NodeLifecycle>>>,
   exit_sign: Arc<(Mutex<bool>, Condvar)>,
 }
 
@@ -62,60 +71,63 @@ impl ConfluxNode {
   #[napi(constructor)]
   pub fn new() -> Self {
     ConfluxNode {
-      state: Arc::new(TokioMutex::new(NodeState {
-        is_running: false,
-        shutdown_sender: None,
-        thread_handle: None,
-      })),
-      temp_dir_handle: Arc::new(TokioMutex::new(None)),
+      lifecycle: Arc::new(TokioMutex::new(None)),
       exit_sign: Arc::new((Mutex::new(false), Condvar::new())),
     }
   }
 
   #[napi]
   pub async fn start_node(&self, config: config::ConfluxConfig) -> Result<()> {
-    let mut state = self.state.lock().await;
-    if state.is_running {
+    let mut lifecycle_guard = self.lifecycle.lock().await;
+
+    if lifecycle_guard.is_some() {
       return Err(NodeError::Runtime("Node is already running".to_string()));
     }
 
-    let data_dir = match config.conflux_data_dir.as_ref() {
-      Some(dir) => std::path::PathBuf::from(dir),
-      None => {
-        let temp_dir = tempdir().map_err(|e| {
-          NodeError::Initialization(format!("Failed to create temp directory: {}", e))
-        })?;
-        let path = temp_dir.path().to_path_buf();
-        *self.temp_dir_handle.lock().await = Some(temp_dir);
-        path
+    let (data_dir, temp_dir) = self.prepare_data_directory(&config)?;
+
+    let conf = self.setup_configuration(&config, &data_dir)?;
+
+    let lifecycle = self.spawn_node_async(conf, temp_dir).await?;
+    *lifecycle_guard = Some(lifecycle);
+
+    info!("Node started successfully");
+
+    Ok(())
+  }
+
+  #[napi]
+  pub async fn stop_node(&self) -> Result<()> {
+    let lifecycle = {
+      let mut lifecycle_guard = self.lifecycle.lock().await;
+      match lifecycle_guard.take() {
+        Some(lifecycle) => lifecycle,
+        None => return Err(NodeError::Runtime("Node is not running".to_string())),
       }
     };
 
-    let conf = setup_node_configuration(config, &data_dir).map_err(|e| {
-      NodeError::Configuration(format!("Failed to setup node configuration: {}", e))
-    })?;
+    *self.exit_sign.0.lock() = true;
+    self.exit_sign.1.notify_all();
 
+    lifecycle.shutdown().await?;
+    info!("Node shutdown complete");
+
+    Ok(())
+  }
+
+  async fn spawn_node_async(
+    &self,
+    conf: Configuration,
+    temp_dir: Option<TempDir>,
+  ) -> Result<NodeLifecycle> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let exit_sign = self.exit_sign.clone();
-    let node_type = conf.node_type();
-
     let (startup_status_tx, startup_status_rx) =
       oneshot::channel::<std::result::Result<(), NodeError>>();
 
-    let thread_handle = thread::spawn(move || {
-      let client_result: Result<Box<dyn ClientTrait>> = match node_type {
-        NodeType::Archive => ArchiveClient::start(conf, exit_sign.clone())
-          .map(|client| client as Box<dyn ClientTrait>)
-          .map_err(|e| NodeError::Runtime(format!("Failed to start Archive node: {}", e))),
-        NodeType::Full => FullClient::start(conf, exit_sign.clone())
-          .map(|client| client as Box<dyn ClientTrait>)
-          .map_err(|e| NodeError::Runtime(format!("Failed to start Full node: {}", e))),
-        NodeType::Light => LightClient::start(conf, exit_sign.clone())
-          .map(|client| client as Box<dyn ClientTrait>)
-          .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
-        NodeType::Unknown => Err(NodeError::Configuration("Unknown node type".to_string())),
-      };
+    let exit_sign = self.exit_sign.clone();
+
+    let join_handle = task::spawn_blocking(move || {
+      let client_result = ConfluxNode::create_client(conf, exit_sign);
 
       match client_result {
         Ok(client) => {
@@ -142,83 +154,78 @@ impl ConfluxNode {
 
     match startup_status_rx.await {
       Ok(Ok(())) => {
-        info!("Node started successfully");
-        state.thread_handle = Some(thread_handle);
-        state.shutdown_sender = Some(shutdown_tx);
-        state.is_running = true;
-        Ok(())
+        let thread_handle = join_handle;
+        Ok(NodeLifecycle::new(thread_handle, shutdown_tx, temp_dir))
       }
       Ok(Err(e)) => {
-        drop(state);
-        let _ = shutdown_tx.send(());
-
-        if let Err(join_err) = task::spawn_blocking(move || thread_handle.join()).await {
-          warn!("Failed to join thread after startup failure: {}", join_err);
-        }
+        join_handle.abort();
         Err(e)
       }
       Err(_) => {
-        let _ = shutdown_tx.send(());
-        drop(state);
-
-        match task::spawn_blocking(move || thread_handle.join()).await {
-          Ok(Ok(_)) => Err(NodeError::Runtime(
-            "Node thread exited prematurely without reporting startup status".to_string(),
-          )),
-          Ok(Err(panic_payload)) => Err(NodeError::Runtime(format!(
-            "Node thread panicked: {:?}",
-            panic_payload
-          ))),
-          Err(join_err) => Err(NodeError::Runtime(format!(
-            "Failed to wait for node thread: {}",
-            join_err
-          ))),
-        }
+        join_handle.abort();
+        Err(NodeError::Runtime(
+          "Node startup communication failed".to_string(),
+        ))
       }
     }
   }
 
-  #[napi]
-  pub async fn stop_node(&self) -> Result<()> {
-    let mut state = self.state.lock().await;
-
-    if !state.is_running {
-      return Err(NodeError::Runtime("Node is not running".to_string()));
+  fn create_client(
+    conf: Configuration,
+    exit_sign: Arc<(Mutex<bool>, Condvar)>,
+  ) -> Result<Box<dyn ClientTrait>> {
+    match conf.node_type() {
+      NodeType::Archive => ArchiveClient::start(conf, exit_sign)
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Archive node: {}", e))),
+      NodeType::Full => FullClient::start(conf, exit_sign)
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Full node: {}", e))),
+      NodeType::Light => LightClient::start(conf, exit_sign)
+        .map(|client| client as Box<dyn ClientTrait>)
+        .map_err(|e| NodeError::Runtime(format!("Failed to start Light node: {}", e))),
+      NodeType::Unknown => Err(NodeError::Configuration("Unknown node type".to_string())),
     }
+  }
 
-    *self.exit_sign.0.lock() = true;
-    self.exit_sign.1.notify_all();
+  fn setup_configuration(
+    &self,
+    config: &config::ConfluxConfig,
+    data_dir: &Path,
+  ) -> Result<Configuration> {
+    info!("Node working directory: {:?}", data_dir);
 
-    if let Some(sender) = state.shutdown_sender.take() {
-      let _ = sender.send(());
-    }
+    // ensure directory exists
+    fs::create_dir_all(data_dir)
+      .map_err(|e| NodeError::Initialization(format!("Failed to create data directory: {}", e)))?;
 
-    let thread_handle = state.thread_handle.take();
-    state.is_running = false;
+    // set working directory， some file use relative path
+    env::set_current_dir(data_dir)
+      .map_err(|e| NodeError::Initialization(format!("Failed to set working directory: {}", e)))?;
 
-    drop(state);
+    if let Some(ref log_conf) = config.log_conf {
+      log4rs::init_file(log_conf, Default::default())
+        .map_err(|e| NodeError::Configuration(format!("Failed to initialize logging: {}", e)))?;
+    };
 
-    if let Some(handle) = thread_handle {
-      match task::spawn_blocking(move || handle.join()).await {
-        Ok(Ok(_)) => {
-          info!("Node thread completed successfully");
-        }
-        Ok(Err(panic_payload)) => {
-          return Err(NodeError::Shutdown(format!(
-            "Node thread panicked during shutdown: {:?}",
-            panic_payload
-          )));
-        }
-        Err(join_err) => {
-          return Err(NodeError::Shutdown(format!(
-            "Failed to wait for node thread: {}",
-            join_err
-          )));
-        }
+    config
+      .to_configuration(data_dir)
+      .map_err(|e| NodeError::Configuration(format!("Failed to convert config: {}", e)))
+  }
+
+  fn prepare_data_directory(
+    &self,
+    config: &config::ConfluxConfig,
+  ) -> Result<(std::path::PathBuf, Option<TempDir>)> {
+    match config.conflux_data_dir.as_ref() {
+      Some(dir) => Ok((std::path::PathBuf::from(dir), None)),
+      None => {
+        let temp_dir = tempdir().map_err(|e| {
+          NodeError::Initialization(format!("Failed to create temp directory: {}", e))
+        })?;
+        let path = temp_dir.path().to_path_buf();
+        Ok((path, Some(temp_dir)))
       }
     }
-    *self.temp_dir_handle.lock().await = None;
-
-    Ok(())
   }
 }
