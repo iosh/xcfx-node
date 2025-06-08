@@ -248,6 +248,21 @@ impl ConfluxConfig {
     raw_conf: &mut RawConfiguration,
     temp_dir_path: &Path,
   ) -> Result<(), NodeError> {
+    self.apply_node_config(raw_conf);
+    self.apply_directory_config(raw_conf, temp_dir_path)?;
+    self.apply_chain_config(raw_conf);
+    self.apply_mining_config(raw_conf);
+    self.apply_dev_config(raw_conf, temp_dir_path)?;
+    self.apply_network_config(raw_conf);
+    self.apply_rpc_config(raw_conf);
+    self.apply_pos_config(raw_conf);
+    self.apply_cip_config(raw_conf);
+    self.apply_logging_config(raw_conf);
+    self.apply_filter_poll_config(raw_conf);
+    Ok(())
+  }
+
+  fn apply_node_config(&self, raw_conf: &mut RawConfiguration) {
     raw_conf.node_type = match self.node_type.as_deref() {
       Some("archive") => Some(NodeType::Archive),
       Some("light") => Some(NodeType::Light),
@@ -258,7 +273,13 @@ impl ConfluxConfig {
       .block_db_type
       .clone()
       .unwrap_or_else(|| "sqlite".to_string());
+  }
 
+  fn apply_directory_config(
+    &self,
+    raw_conf: &mut RawConfiguration,
+    temp_dir_path: &Path,
+  ) -> Result<(), NodeError> {
     // Directory configuration
 
     let data_dir = self
@@ -269,12 +290,17 @@ impl ConfluxConfig {
     raw_conf.conflux_data_dir = data_dir.clone();
     raw_conf.block_db_dir = Some(format!("{}/blockchain_db", &data_dir));
     raw_conf.netconf_dir = Some(format!("{}/net_config", &data_dir));
+    Ok(())
+  }
 
+  fn apply_chain_config(&self, raw_conf: &mut RawConfiguration) {
     // Chain Configuration
     raw_conf.chain_id = Some(self.chain_id.unwrap_or(1234));
     raw_conf.evm_chain_id = Some(self.evm_chain_id.unwrap_or(1235));
     raw_conf.bootnodes = self.bootnodes.clone();
+  }
 
+  fn apply_mining_config(&self, raw_conf: &mut RawConfiguration) {
     // Mining Configuration
     raw_conf.mining_author = self.mining_author.clone();
     raw_conf.stratum_listen_address = self
@@ -285,12 +311,17 @@ impl ConfluxConfig {
     raw_conf.stratum_port = self.stratum_port.unwrap_or(32525);
     raw_conf.stratum_secret = self.stratum_secret.clone();
     raw_conf.pow_problem_window_size = self.pow_problem_window_size.unwrap_or(1) as usize;
+  }
 
+  fn apply_dev_config(
+    &self,
+    raw_conf: &mut RawConfiguration,
+    temp_dir_path: &Path,
+  ) -> Result<(), NodeError> {
     // Development Mode
     raw_conf.mode = Some("dev".to_string());
     raw_conf.dev_block_interval_ms = self.dev_block_interval_ms.map(|n| n as u64);
     raw_conf.dev_pack_tx_immediately = self.dev_pack_tx_immediately;
-
     // Handle genesis secrets
     if let Some(secrets) = &self.genesis_secrets {
       raw_conf.genesis_secrets =
@@ -304,10 +335,17 @@ impl ConfluxConfig {
       )?);
     }
 
+    Ok(())
+  }
+
+  fn apply_network_config(&self, raw_conf: &mut RawConfiguration) {
     // Network Configuration
     raw_conf.tcp_port = self.tcp_port.unwrap_or(32323);
     raw_conf.udp_port = self.udp_port.or(Some(32323));
+    raw_conf.public_address = self.public_address.clone();
+  }
 
+  fn apply_rpc_config(&self, raw_conf: &mut RawConfiguration) {
     // JSON-RPC Configuration
     let default_rpc_apis = ApiSet::from_str("all").unwrap();
     raw_conf.public_rpc_apis = self
@@ -334,7 +372,9 @@ impl ConfluxConfig {
     raw_conf.jsonrpc_local_http_port = self.jsonrpc_local_http_port;
     raw_conf.jsonrpc_local_ws_port = self.jsonrpc_local_ws_port;
     raw_conf.jsonrpc_http_keep_alive = self.jsonrpc_http_keep_alive.unwrap_or(false);
-    // PoS Configuration
+  }
+
+  fn apply_pos_config(&self, raw_conf: &mut RawConfiguration) {
     raw_conf.dev_pos_private_key_encryption_password = Some(
       self
         .dev_pos_private_key_encryption_password
@@ -354,22 +394,25 @@ impl ConfluxConfig {
       .pos_private_key_path
       .clone()
       .unwrap_or("./pos_config/pos_key".to_string());
-    // Protocol Upgrade Configuration
+  }
+
+  fn apply_cip_config(&self, raw_conf: &mut RawConfiguration) {
     raw_conf.default_transition_time = Some(self.default_transition_time.unwrap_or(1) as u64);
     raw_conf.cip1559_transition_height = Some(self.cip1559_transition_height.unwrap_or(1) as u64);
     raw_conf.hydra_transition_number = Some(self.hydra_transition_number.unwrap_or(1) as u64);
     raw_conf.hydra_transition_height = Some(self.hydra_transition_height.unwrap_or(1) as u64);
     raw_conf.cip112_transition_height = Some(self.cip112_transition_height.unwrap_or(1) as u64);
+  }
 
-    // Logging Configuration
+  fn apply_logging_config(&self, raw_conf: &mut RawConfiguration) {
     raw_conf.log_conf = self.log_conf.clone();
     raw_conf.print_memory_usage_period_s = self.print_memory_usage_period_s.map(|x| x as u64);
+  }
 
+  fn apply_filter_poll_config(&self, raw_conf: &mut RawConfiguration) {
     // Filter and Poll Configuration
     raw_conf.poll_lifetime_in_seconds = Some(self.poll_lifetime_in_seconds.unwrap_or(600));
     raw_conf.get_logs_filter_max_limit = self.get_logs_filter_max_limit.map(|n| n as usize);
-
-    Ok(())
   }
 
   fn write_secrets_to_file(
