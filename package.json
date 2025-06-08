@@ -1,6 +1,6 @@
 {
   "name": "@xcfx/node",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "",
   "main": "index.js",
   "types": "index.d.ts",
@@ -10,10 +10,7 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": [
-    "conflux",
-    "conflux-client"
-  ],
+  "keywords": ["conflux", "conflux-client"],
   "files": [
     "index.d.ts",
     "index.js",
