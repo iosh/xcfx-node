@@ -1,4 +1,4 @@
-import { ConfluxConfig } from "../conflux";
+import type { ConfluxConfig } from "../conflux";
 
 export interface Config extends ConfluxConfig {
   /** Whether to show conflux node logs */
@@ -23,22 +23,40 @@ export const DEFAULT_CONFIG = {
   log: false,
 };
 
-export type MessageType = "start" | "started" | "stop" | "stopped" | "error";
-
-export interface NodeMessage {
-  type: MessageType;
-  error?: string;
-  config?: ConfluxConfig;
+export interface StartWorkerMessage {
+  type: "start";
+  config: ConfluxConfig;
 }
 
-export interface ProcessEvents {
+export interface StopWorkerMessage {
+  type: "stop";
+}
+
+export type MessageToWorker = StartWorkerMessage | StopWorkerMessage;
+
+export interface StartedMainMessage {
+  type: "started";
+}
+
+export interface StoppedMainMessage {
+  type: "stopped";
+}
+
+export interface ErrorMainMessage {
+  type: "error";
+  error: string;
+  stack?: string;
+}
+
+export type MessageFromWorker =
+  | StartedMainMessage
+  | StoppedMainMessage
+  | ErrorMainMessage;
+
+// Worker 事件回调
+export interface WorkerEvents {
   onStart?: () => void;
   onStop?: () => void;
   onError?: (error: Error) => void;
-  onExit?: (code: number) => void;
-}
-
-export interface PromiseHandlers {
-  resolve: () => void;
-  reject: (error: Error) => void;
+  onExit?: (code: number | null, signal: string | null) => void;
 }

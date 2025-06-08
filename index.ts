@@ -1,4 +1,4 @@
-import { Config } from "./lib/types";
+import type { Config } from "./lib/types";
 import { ConfluxInstance } from "./lib/conflux-instance";
 
 export { Config } from "./lib/types";

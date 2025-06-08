@@ -1,5 +1,5 @@
 import { createTestClient, http, webSocket } from "cive";
-import { NodeRequestOptions } from "../types";
+import type { NodeRequestOptions } from "./types";
 
 export const waitForNodeRPCReady = async (config: NodeRequestOptions) => {
   // if no ports are provided, return because there is no rpc to setup
