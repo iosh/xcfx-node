@@ -45,7 +45,7 @@ export class ConfluxInstance {
   start = async () => {
     if (this.isServiceStarted) {
       throw new Error(
-        "This instance has already been started, you can't start it again"
+        "This instance has already been started, you can't start it again",
       );
     }
 
@@ -66,7 +66,7 @@ export class ConfluxInstance {
   stop = async () => {
     if (!this.worker || !this.isServiceStarted) {
       throw new Error(
-        "This instance has not been started or is already stopped"
+        "This instance has not been started or is already stopped",
       );
     }
 
@@ -100,7 +100,7 @@ export class ConfluxInstance {
 
   private setupWorkerListeners = (
     resolve: () => void,
-    reject: (error: Error) => void
+    reject: (error: Error) => void,
   ) => {
     if (!this.worker) return;
 
