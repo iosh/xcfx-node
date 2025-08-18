@@ -10,7 +10,10 @@
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
   "license": "MIT",
-  "keywords": ["conflux", "conflux-client"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
   "files": [
     "index.d.ts",
     "index.js",
@@ -55,9 +58,9 @@
     "cive": "0.8.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.9.4",
+    "@biomejs/biome": "2.2.0",
     "@changesets/cli": "^2.29.4",
-    "@napi-rs/cli": "3.0.0-alpha.87",
+    "@napi-rs/cli": "3.1.5",
     "@types/node": "^22.15.30",
     "cross-env": "^7.0.3",
     "typescript": "^5.8.3",
@@ -70,5 +73,5 @@
     "@xcfx/node-linux-x64-gnu": "workspace:*",
     "@xcfx/node-win32-x64-msvc": "workspace:*"
   },
-  "packageManager": "pnpm@9.11.0"
+  "packageManager": "pnpm@10.14.0"
 }
