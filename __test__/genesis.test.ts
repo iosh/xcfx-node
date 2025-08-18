@@ -1,9 +1,9 @@
-import { http, createPublicClient } from "cive";
+import { createPublicClient, http } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
 import { base32AddressToHex } from "cive/utils";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
-import { TEST_NETWORK_ID, TEST_PRIVATE_KEYS, getFreePorts } from "./help";
+import { getFreePorts, TEST_NETWORK_ID, TEST_PRIVATE_KEYS } from "./help";
 
 /**
  * Test genesis configuration

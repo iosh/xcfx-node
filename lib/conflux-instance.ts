@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { type ChildProcess, fork } from "node:child_process";
 import path from "node:path";
 import type { ConfluxConfig } from "../conflux";
 import { buildConfig } from "./configs";
@@ -6,9 +6,9 @@ import { waitForNodeRPCReady } from "./sync";
 import {
   type Config,
   DEFAULT_CONFIG,
-  type NodeRequestOptions,
-  type MessageToWorker,
   type MessageFromWorker,
+  type MessageToWorker,
+  type NodeRequestOptions,
   type WorkerEvents,
 } from "./types";
 

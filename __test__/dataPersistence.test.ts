@@ -1,14 +1,3 @@
-import { describe, expect, test, afterEach } from "vitest";
-import { createServer } from "../index";
-import {
-  getFreePorts,
-  localChain,
-  retryDelete,
-  sleep,
-  TEST_NETWORK_ID,
-  TEST_PRIVATE_KEYS,
-  TEST_TEMP_DATA_DIR,
-} from "./help";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -19,6 +8,17 @@ import {
   parseCFX,
 } from "cive";
 import { privateKeyToAccount } from "cive/accounts";
+import { afterEach, describe, expect, test } from "vitest";
+import { createServer } from "../index";
+import {
+  getFreePorts,
+  localChain,
+  retryDelete,
+  sleep,
+  TEST_NETWORK_ID,
+  TEST_PRIVATE_KEYS,
+  TEST_TEMP_DATA_DIR,
+} from "./help";
 
 /**
  * Test data directory configuration

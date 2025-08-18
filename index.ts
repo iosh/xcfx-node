@@ -1,8 +1,8 @@
-import type { Config } from "./lib/types";
 import { ConfluxInstance } from "./lib/conflux-instance";
+import type { Config } from "./lib/types";
 
-export { Config } from "./lib/types";
 export { ConfluxConfig } from "./conflux";
+export { Config } from "./lib/types";
 
 export interface CreateServerReturnType {
   start: () => Promise<void>;

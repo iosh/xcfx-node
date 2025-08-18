@@ -1,5 +1,5 @@
-import { ConfluxNode, type ConfluxConfig } from "../conflux";
-import type { MessageToWorker, MessageFromWorker } from "./types";
+import { type ConfluxConfig, ConfluxNode } from "../conflux";
+import type { MessageFromWorker, MessageToWorker } from "./types";
 
 class WorkerManager {
   private node: ConfluxNode | null = null;

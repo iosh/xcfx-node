@@ -1,11 +1,18 @@
 {
   "name": "@xcfx/node-darwin-x64",
   "version": "0.6.0",
-  "cpu": ["x64"],
+  "cpu": [
+    "x64"
+  ],
   "main": "node.darwin-x64.node",
-  "files": ["node.darwin-x64.node"],
+  "files": [
+    "node.darwin-x64.node"
+  ],
   "description": "",
-  "keywords": ["conflux", "conflux-client"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
@@ -18,5 +25,7 @@
     "type": "git",
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
-  "os": ["darwin"]
+  "os": [
+    "darwin"
+  ]
 }

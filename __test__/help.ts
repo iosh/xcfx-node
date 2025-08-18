@@ -1,9 +1,9 @@
+import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { privateKeyToAccount } from "cive/accounts";
 import { defineChain } from "cive/utils";
-import path from "node:path";
-import fs from "node:fs/promises";
-import os from "node:os";
 
 // Default test data directory in system temp folder
 export const TEST_TEMP_DATA_DIR = process.env.TEST_TEMP_DIR

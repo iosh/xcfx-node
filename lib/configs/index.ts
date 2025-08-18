@@ -1,6 +1,6 @@
 import path from "path";
-import { ConfluxConfig } from "../../conflux";
-import { Config, DEFAULT_CONFIG } from "../types";
+import type { ConfluxConfig } from "../../conflux";
+import { type Config, DEFAULT_CONFIG } from "../types";
 
 export const buildConfig = (config: Config): ConfluxConfig => {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };

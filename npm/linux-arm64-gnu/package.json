@@ -1,11 +1,18 @@
 {
   "name": "@xcfx/node-linux-arm64-gnu",
   "version": "0.6.0",
-  "cpu": ["arm64"],
+  "cpu": [
+    "arm64"
+  ],
   "main": "node.linux-arm64-gnu.node",
-  "files": ["node.linux-arm64-gnu.node"],
+  "files": [
+    "node.linux-arm64-gnu.node"
+  ],
   "description": "",
-  "keywords": ["conflux", "conflux-client"],
+  "keywords": [
+    "conflux",
+    "conflux-client"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
@@ -18,6 +25,10 @@
     "type": "git",
     "url": "git+https://github.com/iosh/xcfx-node.git"
   },
-  "os": ["linux"],
-  "libc": ["glibc"]
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
 }

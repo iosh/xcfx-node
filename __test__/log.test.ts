@@ -1,8 +1,8 @@
-import { describe, expect, test, afterAll } from "vitest";
-import { createServer } from "../index";
-import { getFreePorts, TEST_TEMP_DATA_DIR, retryDelete } from "./help";
 import fs from "node:fs";
 import path from "node:path";
+import { afterAll, describe, expect, test } from "vitest";
+import { createServer } from "../index";
+import { getFreePorts, retryDelete, TEST_TEMP_DATA_DIR } from "./help";
 
 /**
  * Test log configuration
