@@ -6,10 +6,11 @@ use napi::tokio::{
 };
 use napi_derive::napi;
 
+use cfx_config::Configuration;
 use cfxcore::NodeType;
 use client::{
   archive::ArchiveClient,
-  common::{shutdown_handler::shutdown, ClientTrait, Configuration},
+  common::{shutdown_handler::shutdown, ClientTrait},
   full::FullClient,
   light::LightClient,
 };

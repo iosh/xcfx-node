@@ -1,5 +1,9 @@
+use crate::error::NodeError;
+use cfx_config::Configuration;
+use cfx_rpc_builder::RpcModuleSelection;
+use cfx_rpc_cfx_types::apis::ApiSet;
 use cfxcore::NodeType;
-use client::{common::Configuration, configuration::RawConfiguration, rpc::rpc_apis::ApiSet};
+use client::configuration::RawConfiguration;
 use napi_derive::napi;
 use primitives::block_header::CIP112_TRANSITION_HEIGHT;
 use std::{
@@ -8,9 +12,6 @@ use std::{
   path::Path,
   str::FromStr,
 };
-
-use crate::error::NodeError;
-
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConfluxConfig {
@@ -355,12 +356,12 @@ impl ConfluxConfig {
         ApiSet::from_str(s).unwrap_or(default_rpc_apis)
       });
 
-    let default_evm_apis = ApiSet::from_str("evm,ethdebug").unwrap();
+    let default_evm_apis = RpcModuleSelection::from_str("evm,ethdebug").unwrap();
     raw_conf.public_evm_rpc_apis = self
       .public_evm_rpc_apis
       .as_ref()
       .map_or(default_evm_apis.clone(), |s| {
-        ApiSet::from_str(s).unwrap_or(default_evm_apis)
+        RpcModuleSelection::from_str(s).unwrap_or(default_evm_apis)
       });
 
     raw_conf.jsonrpc_ws_port = self.jsonrpc_ws_port;
