@@ -99,7 +99,7 @@ jobs:
       - name: Install windows dependencies
         if: ${{contains(matrix.settings.host, 'windows')}}
         run: |
-          choco install llvm visualstudio-installer visualstudio2017-workload-vctools visualstudio2017buildtools-y
+          choco install llvm -y
           echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
           vcpkg install openssl:x64-windows-static-md
 
