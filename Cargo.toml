@@ -13,13 +13,13 @@ crate-type = ["cdylib"]
 napi = { version = "3.2.4", features = ['napi8', 'async'] }
 napi-derive = "3.2.4"
 
-# v3.0.1 branch
-cfxcore = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
-primitives = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
-client = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
-cfx-config = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
-cfx-rpc-cfx-types = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
-cfx-rpc-builder = { git = "https://github.com/iosh/conflux-rust", rev = "995dceaa5207b48c0d60418c9d2b93fc87106af6" }
+# v3.0.2 branch
+cfxcore = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
+primitives = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
+client = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
+cfx-config = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
+cfx-rpc-cfx-types = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
+cfx-rpc-builder = { git = "https://github.com/iosh/conflux-rust", rev = "fd68efe029b2e728998f34740244661a836e4506" }
 chrono = "0.4"
 parking_lot = "0.12"
 log = "0.4"
