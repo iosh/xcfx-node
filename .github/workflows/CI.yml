@@ -33,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: windows-latest
+          - host: windows-2022
             build: pnpm build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
 
@@ -49,7 +49,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             build: CC=clang-18 CXX=clang++-18 CXXFLAGS="-std=c++11 -stdlib=libc++" LDFLAGS="-stdlib=libc++" pnpm build --target aarch64-unknown-linux-gnu
 
-          # - host: windows-latest
+          # - host: windows-2022
           #   target: aarch64-pc-windows-msvc
           #   build: pnpm build --target aarch64-pc-windows-msvc
     name: stable - ${{ matrix.settings.target }} - node@20
