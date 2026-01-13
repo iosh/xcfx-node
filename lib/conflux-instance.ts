@@ -19,10 +19,12 @@ export class ConfluxInstance {
   private readonly retryInterval: number;
   private worker: ChildProcess | null = null;
   private events: WorkerEvents;
+  private readonly stopTimeout: number;
 
   constructor(config: Config) {
     this.timeout = config.timeout || DEFAULT_CONFIG.timeout;
     this.retryInterval = config.retryInterval || DEFAULT_CONFIG.retryInterval;
+    this.stopTimeout = config.timeout || DEFAULT_CONFIG.timeout;
 
     this.config = buildConfig(config);
 
@@ -70,31 +72,76 @@ export class ConfluxInstance {
       );
     }
 
-    return new Promise<void>((resolve, reject) => {
-      if (!this.worker) {
-        return;
-      }
+    const worker = this.worker;
 
-      const handleMessage = (message: MessageFromWorker) => {
-        if (message.type === "stopped") {
-          this.events.onStop?.();
-          resolve();
-        } else if (message.type === "error") {
-          const error = new Error(message.error);
-          this.events.onError?.(error);
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let stopped = false;
+      const stopTimer = setTimeout(() => {
+        if (settled) return;
+        if (!worker.killed && worker.exitCode === null) {
+          worker.kill();
+        }
+      }, this.stopTimeout);
+
+      const cleanupStopListeners = () => {
+        clearTimeout(stopTimer);
+        worker.removeListener("message", handleMessage);
+        worker.removeListener("error", handleError);
+        worker.removeListener("exit", handleExit);
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanupStopListeners();
+        if (error) {
           reject(error);
+        } else {
+          resolve();
         }
       };
 
-      const handleExit = (code: number | null, signal: string | null) => {
-        this.events.onExit?.(code, signal);
-        this.cleanup();
-        resolve();
+      const handleMessage = (message: MessageFromWorker) => {
+        if (message.type === "stopped") {
+          stopped = true;
+          this.events.onStop?.();
+          return;
+        }
+        if (message.type === "error") {
+          const error = new Error(message.error);
+          this.events.onError?.(error);
+          finish(error);
+        }
       };
 
-      this.worker.on("message", handleMessage);
-      this.worker.on("exit", handleExit);
-      this.worker.send({ type: "stop" } as MessageToWorker);
+      const handleError = (error: Error) => {
+        this.events.onError?.(error);
+        finish(error);
+      };
+
+      const handleExit = (code: number | null, signal: string | null) => {
+        if (!stopped) {
+          this.events.onStop?.();
+        }
+        this.events.onExit?.(code, signal);
+        this.cleanup();
+        if (code !== 0 && code !== null) {
+          finish(new Error(`Worker process exited with code ${code}`));
+          return;
+        }
+        finish();
+      };
+
+      if (worker.exitCode !== null) {
+        handleExit(worker.exitCode, null);
+        return;
+      }
+
+      worker.on("message", handleMessage);
+      worker.on("error", handleError);
+      worker.on("exit", handleExit);
+      worker.send({ type: "stop" } as MessageToWorker);
     });
   };
 

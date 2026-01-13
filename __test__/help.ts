@@ -84,10 +84,32 @@ export const InternalContractsABI = {adminControl:[{inputs:[{internalType:"addre
  * @returns Promise<boolean> - Whether deletion was successful
  */
 export const retryDelete = async (filePath: string, maxAttempts = 5) => {
-  await fs.rm(filePath, {
-    recursive: true,
-    maxRetries: maxAttempts,
-    force: true,
-    retryDelay: 300,
-  });
+  const isWindows = process.platform === "win32";
+  const attempts = isWindows ? Math.max(maxAttempts, 30) : maxAttempts;
+
+  let delayMs = 150;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await fs.rm(filePath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? (error as any).code
+          : undefined;
+
+      const retryable =
+        code === "EBUSY" ||
+        code === "EPERM" ||
+        code === "ENOTEMPTY" ||
+        code === "EACCES";
+
+      if (!retryable || attempt === attempts) {
+        throw error;
+      }
+
+      await wait(delayMs);
+      delayMs = Math.min(delayMs * 2, 1500);
+    }
+  }
 };
