@@ -1,5 +1,15 @@
 # @xcfx/node-win32-x64-msvc
 
+## 0.8.0
+
+### Minor Changes
+
+- f0877b0: Drop Intel macOS (darwin-x64 / x86_64-apple-darwin) support. Only Apple Silicon (arm64) macOS builds are provided.
+
+### Patch Changes
+
+- 227e208: Bump conflux-rust version to v3.0.2
+
 ## 0.7.0
 
 ### Minor Changes
