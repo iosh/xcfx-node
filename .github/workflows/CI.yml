@@ -74,6 +74,11 @@ jobs:
         if: ${{ matrix.settings.setup }}
         shell: bash
 
+      - name: Set CMake policy minimum (macOS)
+        if: runner.os == 'macOS'
+        run: echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Install macos dependencies
         if: ${{contains(matrix.settings.host, 'macos')}}
         run: |
