@@ -15,7 +15,7 @@ Run a Conflux-Rust node in Node.js for development and testing purposes. Perfect
 ## Supported Platforms
 
 - Linux (x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu)
-- MacOS (aarch64-apple-darwin, x86_64-apple-darwin)
+- MacOS (aarch64-apple-darwin)
 - Windows (x86_64-pc-windows-msvc)
 
 ## Installation

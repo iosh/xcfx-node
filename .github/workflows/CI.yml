@@ -2,7 +2,7 @@ name: CI
 env:
   DEBUG: napi:*
   APP_NAME: node
-  MACOSX_DEPLOYMENT_TARGET: "10.13"
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
   OPENSSL_STATIC: 1
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
@@ -33,10 +33,6 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-13
-            target: x86_64-apple-darwin
-            build: RUSTFLAGS="-L $(brew --prefix bzip2)/lib -l bz2" pnpm build --target x86_64-apple-darwin
-
           - host: windows-latest
             build: pnpm build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
@@ -136,9 +132,6 @@ jobs:
         settings:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
-            architecture: x64
-          - host: macos-13
-            target: x86_64-apple-darwin
             architecture: x64
           - host: macos-latest
             target: aarch64-apple-darwin
