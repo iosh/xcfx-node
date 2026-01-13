@@ -34,7 +34,7 @@ describe("Server Lifecycle", () => {
 
     // Check node version
     const version = await client.getClientVersion();
-    expect(version).toContain("conflux-rust/v3.0.1");
+    expect(version).toContain("conflux-rust/v3.0.2");
 
     // Test server shutdown
     await server.stop();
