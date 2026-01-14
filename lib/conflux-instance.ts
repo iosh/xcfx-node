@@ -53,14 +53,74 @@ export class ConfluxInstance {
 
     return new Promise<void>((resolve, reject) => {
       const workerPath = path.join(__dirname, "./worker.js");
-      this.worker = fork(workerPath);
+      this.worker = fork(workerPath, {
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
 
-      this.setupWorkerListeners(resolve, reject);
+      // Always drain stdout/stderr so the worker can't block on a full pipe.
+      this.worker.stdout?.resume();
+      this.worker.stderr?.resume();
+
+      let settled = false;
+      const cleanupStartListeners = () => {
+        if (!this.worker) return;
+        this.worker.removeListener("message", handleStartMessage);
+        this.worker.removeListener("error", handleError);
+        // Keep the exit handler installed so we still cleanup if the worker exits later.
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanupStartListeners();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
 
       const startMessage: MessageToWorker = {
         type: "start",
         config: this.config,
       };
+
+      const handleStartMessage = (message: MessageFromWorker) => {
+        if (message.type === "started") {
+          this.events.onStart?.();
+          this.waitForRPCReady().then(() => finish()).catch(finish);
+          return;
+        }
+        if (message.type === "error") {
+          const error = new Error(message.error);
+          if (message.stack) {
+            error.stack = message.stack;
+          }
+          this.events.onError?.(error);
+          finish(error);
+        }
+      };
+
+      const handleError = (error: Error) => {
+        this.events.onError?.(error);
+        finish(error);
+      };
+
+      const handleExit = (code: number | null, signal: string | null) => {
+        this.events.onExit?.(code, signal);
+        finish(
+          new Error(
+            code === null
+              ? `Worker process exited with signal ${signal ?? "unknown"}`
+              : `Worker process exited with code ${code}`,
+          ),
+        );
+      };
+
+      this.worker.on("message", handleStartMessage);
+      this.worker.on("error", handleError);
+      this.worker.on("exit", handleExit);
+
       this.worker.send(startMessage);
     });
   };
@@ -143,44 +203,6 @@ export class ConfluxInstance {
       worker.on("exit", handleExit);
       worker.send({ type: "stop" } as MessageToWorker);
     });
-  };
-
-  private setupWorkerListeners = (
-    resolve: () => void,
-    reject: (error: Error) => void,
-  ) => {
-    if (!this.worker) return;
-
-    const handleStartMessage = (message: MessageFromWorker) => {
-      if (message.type === "started") {
-        this.events.onStart?.();
-        this.waitForRPCReady().then(resolve).catch(reject);
-      } else if (message.type === "error") {
-        const error = new Error(message.error);
-        if (message.stack) {
-          error.stack = message.stack;
-        }
-        this.events.onError?.(error);
-        reject(error);
-      }
-    };
-
-    const handleError = (error: Error) => {
-      this.events.onError?.(error);
-      reject(error);
-    };
-
-    const handleExit = (code: number | null, signal: string | null) => {
-      this.events.onExit?.(code, signal);
-      this.cleanup();
-      if (code !== 0 && code !== null) {
-        reject(new Error(`Worker process exited with code ${code}`));
-      }
-    };
-
-    this.worker.on("message", handleStartMessage);
-    this.worker.on("error", handleError);
-    this.worker.on("exit", handleExit);
   };
 
   private waitForRPCReady = async (): Promise<void> => {
