@@ -88,7 +88,9 @@ export class ConfluxInstance {
       const handleStartMessage = (message: MessageFromWorker) => {
         if (message.type === "started") {
           this.events.onStart?.();
-          this.waitForRPCReady().then(() => finish()).catch(finish);
+          this.waitForRPCReady()
+            .then(() => finish())
+            .catch(finish);
           return;
         }
         if (message.type === "error") {

@@ -52,7 +52,10 @@ export const waitForNodeRPCReady = async (config: NodeRequestOptions) => {
     }
 
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(config.retryInterval, deadline - Date.now())),
+      setTimeout(
+        resolve,
+        Math.min(config.retryInterval, deadline - Date.now()),
+      ),
     );
   }
 
