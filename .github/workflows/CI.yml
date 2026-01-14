@@ -59,7 +59,7 @@ jobs:
       - name: setup pnpm
         uses: pnpm/action-setup@v4
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
       - name: Install
@@ -150,7 +150,7 @@ jobs:
       - name: setup pnpm
         uses: pnpm/action-setup@v4
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           architecture: ${{ matrix.settings.architecture }}
@@ -183,7 +183,7 @@ jobs:
       - name: setup pnpm
         uses: pnpm/action-setup@v4
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
       - name: Output docker params
@@ -242,9 +242,9 @@ jobs:
       - name: setup pnpm
         uses: pnpm/action-setup@v4
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
       - name: Install dependencies
         run: pnpm install
       - name: Download all artifacts
