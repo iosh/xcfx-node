@@ -1,4 +1,4 @@
-import path from "path";
+import path from "node:path";
 import type { ConfluxConfig } from "../../conflux";
 import { type Config, DEFAULT_CONFIG } from "../types";
 

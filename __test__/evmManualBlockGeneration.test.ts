@@ -1,4 +1,4 @@
-import { createPublicClient, createTestClient, http as civeHttp } from "cive";
+import { http as civeHttp, createPublicClient, createTestClient } from "cive";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
 import {

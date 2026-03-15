@@ -57,13 +57,13 @@
     "cive": "0.8.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.2.0",
+    "@biomejs/biome": "2.4.7",
     "@changesets/cli": "^2.29.4",
-    "@napi-rs/cli": "3.1.5",
+    "@napi-rs/cli": "3.5.1",
     "@types/node": "^22.15.30",
-    "cross-env": "^7.0.3",
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.2"
+    "cross-env": "10.1.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.0"
   },
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "workspace:*",

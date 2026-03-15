@@ -21,10 +21,10 @@ export async function getPort(): Promise<number> {
 
       if (typeof AddressInfo === "object") {
         if (typeof AddressInfo?.port === "number") {
-          return srv.close((err) => resolve(AddressInfo?.port));
+          return srv.close((_err) => resolve(AddressInfo?.port));
         }
       }
-      srv.close((err) => reject("get port error"));
+      srv.close((_err) => reject("get port error"));
     });
   });
 }
@@ -95,7 +95,7 @@ export const retryDelete = async (filePath: string, maxAttempts = 5) => {
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error
-          ? (error as any).code
+          ? (error as NodeJS.ErrnoException).code
           : undefined;
 
       const retryable =

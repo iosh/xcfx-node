@@ -1,6 +1,19 @@
 import { type ConfluxConfig, ConfluxNode } from "../conflux";
 import type { MessageFromWorker, MessageToWorker } from "./types";
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isStartMessage = (
+  message: unknown,
+): message is Extract<MessageToWorker, { type: "start" }> =>
+  isObject(message) && message.type === "start" && "config" in message;
+
+const isStopMessage = (
+  message: unknown,
+): message is Extract<MessageToWorker, { type: "stop" }> =>
+  isObject(message) && message.type === "stop";
+
 class WorkerManager {
   private node: ConfluxNode | null = null;
   private isStarted = false;
@@ -16,8 +29,8 @@ class WorkerManager {
   };
 
   private setupErrorHandlers = () => {
-    process.on("uncaughtException", this.handleError);
-    process.on("unhandledRejection", this.handleError);
+    process.on("uncaughtException", (error) => this.handleError(error));
+    process.on("unhandledRejection", (reason) => this.handleError(reason));
   };
 
   private setupSignalHandlers = () => {
@@ -30,19 +43,22 @@ class WorkerManager {
     });
   };
 
-  private handleMessage = (message: MessageToWorker) => {
+  private handleMessage = (message: unknown) => {
     if (!process.send) return;
 
-    switch (message.type) {
-      case "start":
-        this.handleStart(message.config);
-        break;
-      case "stop":
-        this.handleStop();
-        break;
-      default:
-        this.sendError(`Unknown message type: ${(message as any).type}`);
+    if (isStartMessage(message)) {
+      this.handleStart(message.config);
+      return;
     }
+
+    if (isStopMessage(message)) {
+      this.handleStop();
+      return;
+    }
+
+    const messageType =
+      isObject(message) && "type" in message ? String(message.type) : "unknown";
+    this.sendError(`Unknown message type: ${messageType}`);
   };
 
   private handleStart = async (config: ConfluxConfig) => {
@@ -83,13 +99,16 @@ class WorkerManager {
     }
   };
 
-  private handleError = (error: Error) => {
-    this.sendError(error.message, error.stack);
+  private handleError = (error: unknown) => {
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+    this.sendError(normalizedError.message, normalizedError.stack);
     this.exit(1);
   };
 
-  private sendMessage = (type: MessageFromWorker["type"], error = "") => {
-    const message: MessageFromWorker = { type, error };
+  private sendMessage = (type: "started" | "stopped") => {
+    const message: MessageFromWorker =
+      type === "started" ? { type: "started" } : { type: "stopped" };
     process.send?.(message);
   };
 

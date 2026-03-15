@@ -14,7 +14,6 @@ import {
   getFreePorts,
   localChain,
   retryDelete,
-  sleep,
   TEST_NETWORK_ID,
   TEST_PRIVATE_KEYS,
   TEST_TEMP_DATA_DIR,

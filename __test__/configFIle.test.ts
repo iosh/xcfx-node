@@ -1,5 +1,5 @@
+import { join } from "node:path";
 import { createPublicClient, http } from "cive";
-import { join } from "path";
 import { describe, expect, test } from "vitest";
 import { createServer } from "../index";
 
