@@ -1,8 +1,0 @@
-# conflux rust is not supported static link
-# [target.x86_64-pc-windows-msvc]
-# rustflags = ["-C", "target-feature=+crt-static"]
-
-# [target.i686-pc-windows-msvc]
-# rustflags = ["-C", "target-feature=+crt-static"]
-# [term]     # whether cargo output is quiet
-# verbose = true
