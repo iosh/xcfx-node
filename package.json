@@ -2,9 +2,15 @@
   "name": "@xcfx/node",
   "version": "0.8.0",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "browser": "browser.js",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/iosh/xcfx-node.git"
@@ -15,12 +21,10 @@
     "conflux-client"
   ],
   "files": [
-    "index.d.ts",
     "index.js",
-    "conflux.js",
-    "conflux.d.ts",
-    "configs",
-    "lib"
+    "index.d.ts",
+    "binding.js",
+    "binding.d.ts"
   ],
   "napi": {
     "binaryName": "node",
@@ -32,38 +36,33 @@
     ]
   },
   "engines": {
-    "node": ">= 10"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
   "scripts": {
-    "clean": "rm -rf $(find ./lib -type f \\( -name '*.js' -o -name '*.d.ts' \\))",
     "artifacts": "napi artifacts",
     "build:ts": "tsc",
-    "build": "napi build --dts conflux.d.ts --js conflux.js --platform --release",
-    "build:debug": "napi build --dts conflux.d.ts --js conflux.js --platform ",
+    "build": "napi build --dts binding.d.ts --js binding.js --platform --esm --release",
+    "build:debug": "napi build --dts binding.d.ts --js binding.js --platform --esm",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
-    "test": "pnpm run build:ts && cross-env NODE_OPTIONS=--max-old-space-size=32768 vitest run",
-    "format": "biome format --write",
-    "lint": "biome check --fix",
-    "changeset:version": "changeset version && pnpm install --lockfile-only  && pnpm format",
+    "test": "pnpm run build:ts && vitest run",
+    "format": "biome format --write .",
+    "lint": "biome check --write .",
+    "changeset:version": "changeset version && pnpm install --lockfile-only && pnpm format",
     "changeset:prepublish": "pnpm build:ts",
     "changeset:publish": "pnpm changeset:prepublish && changeset publish"
   },
-  "dependencies": {
-    "cive": "0.8.1"
-  },
   "devDependencies": {
-    "@biomejs/biome": "2.4.7",
-    "@changesets/cli": "^2.29.4",
-    "@napi-rs/cli": "3.5.1",
-    "@types/node": "^22.15.30",
-    "cross-env": "10.1.0",
-    "typescript": "5.9.3",
-    "vitest": "4.1.0"
+    "@biomejs/biome": "2.5.7",
+    "@changesets/cli": "2.31.1",
+    "@napi-rs/cli": "3.8.3",
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
   },
   "optionalDependencies": {
     "@xcfx/node-darwin-arm64": "workspace:*",
@@ -71,5 +70,5 @@
     "@xcfx/node-linux-x64-gnu": "workspace:*",
     "@xcfx/node-win32-x64-msvc": "workspace:*"
   },
-  "packageManager": "pnpm@10.14.0"
+  "packageManager": "pnpm@11.21.0"
 }

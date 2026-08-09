@@ -1,16 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
     "strict": true,
-    "moduleResolution": "node",
-    "module": "CommonJS",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmitOnError": true,
     "declaration": true
   },
-  "include": ["./*.ts", "lib"],
-  "exclude": ["node_modules", "benchmark", "__test__", "target", "pos_config", "vitest.config.mts"]
+  "include": ["*.ts"],
+  "exclude": ["node_modules", "__test__", "target", "vitest.config.ts"]
 }
