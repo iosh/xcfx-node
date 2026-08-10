@@ -3,12 +3,12 @@
   "version": "0.8.0",
   "description": "",
   "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "binding.js",
+  "types": "binding.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "import": "./index.js"
+      "types": "./binding.d.ts",
+      "import": "./binding.js"
     }
   },
   "repository": {
@@ -21,8 +21,6 @@
     "conflux-client"
   ],
   "files": [
-    "index.js",
-    "index.d.ts",
     "binding.js",
     "binding.d.ts"
   ],
@@ -45,8 +43,8 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "build:ts": "tsc",
-    "build": "napi build --dts binding.d.ts --js binding.js --platform --esm --release",
-    "build:debug": "napi build --dts binding.d.ts --js binding.js --platform --esm",
+    "build": "napi build --package xcfx-node-napi --output-dir . --dts binding.d.ts --js binding.js --platform --esm --release",
+    "build:debug": "napi build --package xcfx-node-napi --output-dir . --dts binding.d.ts --js binding.js --platform --esm",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "test": "pnpm run build:ts && vitest run",
