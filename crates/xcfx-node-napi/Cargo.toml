@@ -1,0 +1,25 @@
+[package]
+name = "xcfx-node-napi"
+description = "Node-API bindings for xcfx-node"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "=3.12.1", default-features = false, features = [
+    "napi9",
+    "async",
+    "dyn-symbols",
+] }
+napi-derive = "=3.6.3"
+xcfx-node = { path = "../xcfx-node" }
+
+[build-dependencies]
+napi-build = "=2.4.1"
