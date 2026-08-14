@@ -3,7 +3,11 @@
 use std::{collections::BTreeMap, ops::Range};
 
 use cfx_mpt::{
-  CompressedPathRaw, CompressedPathTrait, TrieNodeTrait, VanillaChildrenTable, VanillaTrieNode, children_table::CHILDREN_COUNT, merkle::compute_merkle, walk::{GetChildTrait, WalkStop, walk},
+  CompressedPathRaw, CompressedPathTrait, TrieNodeTrait, TrieProof, TrieProofNode,
+  VanillaChildrenTable, VanillaTrieNode,
+  children_table::CHILDREN_COUNT,
+  merkle::compute_merkle,
+  walk::{GetChildTrait, WalkStop, walk},
 };
 
 use cfx_storage_types::access_mode;
@@ -51,6 +55,69 @@ impl CurrentDeltaEntries {
 
       (key.as_slice(), value)
     })
+  }
+}
+
+/// One physical current-delta change relative to an immutable parent.
+enum CurrentDeltaChange {
+  Remove,
+  Set(CurrentDeltaValue),
+}
+
+#[derive(Default)]
+pub(crate) struct CurrentDeltaChanges {
+  changes: BTreeMap<Vec<u8>, CurrentDeltaChange>,
+}
+
+impl CurrentDeltaChanges {
+  pub(crate) fn set_value(&mut self, key: Vec<u8>, value: Box<[u8]>) {
+    self.changes.insert(
+      key,
+      CurrentDeltaChange::Set(CurrentDeltaValue::Present(value)),
+    );
+  }
+
+  pub(crate) fn set_tombstone(&mut self, key: Vec<u8>) {
+    self
+      .changes
+      .insert(key, CurrentDeltaChange::Set(CurrentDeltaValue::Tombstone));
+  }
+
+  /// Makes the key physically absent from the resulting current delta.
+  pub(crate) fn remove_entry(&mut self, key: Vec<u8>) {
+    self.changes.insert(key, CurrentDeltaChange::Remove);
+  }
+
+  pub(crate) fn get<'state>(
+    &'state self,
+    parent: &'state CurrentDeltaEntries,
+    key: &[u8],
+  ) -> MptValue<&'state [u8]> {
+    match self.changes.get(key) {
+      None => parent.get(key),
+      Some(CurrentDeltaChange::Remove) => MptValue::None,
+      Some(CurrentDeltaChange::Set(CurrentDeltaValue::Tombstone)) => MptValue::TombStone,
+      Some(CurrentDeltaChange::Set(CurrentDeltaValue::Present(value))) => {
+        MptValue::Some(value.as_ref())
+      }
+    }
+  }
+
+  pub(crate) fn materialize(&self, parent: &CurrentDeltaEntries) -> CurrentDeltaEntries {
+    let mut result = parent.clone();
+
+    for (key, change) in &self.changes {
+      match change {
+        CurrentDeltaChange::Remove => {
+          result.entries.remove(key);
+        }
+        CurrentDeltaChange::Set(value) => {
+          result.entries.insert(key.clone(), value.clone());
+        }
+      }
+    }
+
+    result
   }
 }
 
@@ -126,6 +193,19 @@ impl StoredNode {
       .iter()
       .find(|link| link.child_index == child_index)
       .map(|link| link.node_id)
+  }
+
+  fn proof_node(&self, path_without_first_nibble: bool) -> TrieProofNode {
+    TrieProofNode::new(
+      self.protocol_node.get_children_table_ref().clone(),
+      self
+        .protocol_node
+        .value_as_slice()
+        .into_option()
+        .map(|value| value.into()),
+      self.protocol_node.compressed_path_ref().into(),
+      path_without_first_nibble,
+    )
   }
 }
 
@@ -211,6 +291,45 @@ impl CurrentDeltaMpt {
         }
       }
     }
+  }
+
+  pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
+    if self.merkle_root() == MERKLE_NULL_NODE {
+      return TrieProof::default();
+    }
+
+    let mut proof_nodes = Vec::new();
+    let mut node_id = self.root;
+    let mut key_remaining = key;
+    let mut path_without_first_nibble = false;
+
+    loop {
+      let node = self.arena.node(node_id);
+      let stop = walk::<access_mode::Read, _>(
+        key_remaining,
+        &node.protocol_node.compressed_path_ref(),
+        node,
+      );
+
+      proof_nodes.push(node.proof_node(path_without_first_nibble));
+
+      match stop {
+        WalkStop::Arrived | WalkStop::PathDiverted { .. } | WalkStop::ChildNotFound { .. } => break,
+        WalkStop::Descent {
+          key_remaining: remaining,
+          child_node,
+          ..
+        } => {
+          path_without_first_nibble = CompressedPathRaw::has_second_nibble(
+            node.protocol_node.compressed_path_ref().path_mask(),
+          );
+          node_id = child_node;
+          key_remaining = remaining;
+        }
+      }
+    }
+    TrieProof::new(proof_nodes)
+      .expect("nodes collected from a canonical trie path form a valid proof")
   }
 }
 
@@ -386,7 +505,7 @@ mod tests {
   }
 
   #[test]
-  fn builder_matches_conflux_root_and_read_fixtures() {
+  fn builder_matches_conflux_root_read_and_proof_fixtures() {
     let empty = CurrentDeltaMpt::build(&CurrentDeltaEntries::default());
     assert_eq!(empty.merkle_root(), MERKLE_NULL_NODE);
 
@@ -405,5 +524,45 @@ mod tests {
     assert_eq!(mpt.get(&[0x12, 0x40]), MptValue::TombStone);
     assert_eq!(mpt.get(&[0x12, 0x50]), MptValue::None);
     assert_eq!(mpt.get(&[0x13, 0x30]), MptValue::None);
+
+    let empty_proof = empty.proof(&[0x00]);
+    assert!(empty_proof.is_valid_kv(&[0x00], None, &MERKLE_NULL_NODE,));
+
+    let value_proof = mpt.proof(&[0x12, 0x30]);
+    assert_eq!(value_proof.get_merkle_root(), &expected);
+    assert!(value_proof.is_valid_kv(&[0x12, 0x30], Some(&[0xaa]), &expected,));
+
+    let tombstone_proof = mpt.proof(&[0x12, 0x40]);
+    assert!(tombstone_proof.is_valid_node_merkle(&[0x12, 0x40], &MptValue::TombStone, &expected,));
+
+    let missing_proof = mpt.proof(&[0x12, 0x50]);
+    assert!(missing_proof.is_valid_kv(&[0x12, 0x50], None, &expected,));
+  }
+  
+  #[test]
+  fn changes_materialize_an_isolated_current_delta_mpt() {
+    let mut parent = CurrentDeltaEntries::default();
+    parent.set_value(vec![0x10], vec![0xaa].into_boxed_slice());
+    parent.set_value(vec![0x20], vec![0xbb].into_boxed_slice());
+    parent.set_value(vec![0x40], vec![0xdd].into_boxed_slice());
+
+    let mut changes = CurrentDeltaChanges::default();
+    changes.set_value(vec![0x10], vec![0xcc].into_boxed_slice());
+    changes.remove_entry(vec![0x20]);
+    changes.set_tombstone(vec![0x30]);
+
+    assert_eq!(changes.get(&parent, &[0x10]), MptValue::Some(&[0xcc][..]));
+    assert_eq!(changes.get(&parent, &[0x20]), MptValue::None);
+    assert_eq!(changes.get(&parent, &[0x30]), MptValue::TombStone);
+    assert_eq!(changes.get(&parent, &[0x40]), MptValue::Some(&[0xdd][..]));
+
+    let materialized = changes.materialize(&parent);
+    let child = CurrentDeltaMpt::build(&materialized);
+
+    assert_eq!(parent.get(&[0x10]), MptValue::Some(&[0xaa][..]));
+    assert_eq!(parent.get(&[0x20]), MptValue::Some(&[0xbb][..]));
+    assert_eq!(child.get(&[0x10]), MptValue::Some(&[0xcc][..]));
+    assert_eq!(child.get(&[0x20]), MptValue::None);
+    assert_eq!(child.get(&[0x30]), MptValue::TombStone);
   }
 }
