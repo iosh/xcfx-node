@@ -7,3 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[dependencies]
+cfx-mpt.workspace = true
+cfx-storage-types.workspace = true
+primitives.workspace = true
+thiserror.workspace = true

@@ -1,3 +1,5 @@
+mod state;
+
 /// Identifies the Rust product code included in the current build.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildInfo {
