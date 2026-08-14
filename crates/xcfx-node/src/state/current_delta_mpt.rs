@@ -2,8 +2,13 @@
 
 use std::{collections::BTreeMap, ops::Range};
 
-use cfx_mpt::{CompressedPathRaw, VanillaTrieNode};
-use primitives::{MerkleHash, MptValue};
+use cfx_mpt::{
+  CompressedPathRaw, CompressedPathTrait, TrieNodeTrait, VanillaChildrenTable, VanillaTrieNode, children_table::CHILDREN_COUNT, merkle::compute_merkle, walk::{GetChildTrait, WalkStop, walk},
+};
+
+use cfx_storage_types::access_mode;
+
+use primitives::{MERKLE_NULL_NODE, MerkleHash, MptValue};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CurrentDeltaValue {
@@ -124,6 +129,14 @@ impl StoredNode {
   }
 }
 
+impl<'node> GetChildTrait<'node> for StoredNode {
+  type ChildIdType = NodeId;
+
+  fn get_child(&'node self, child_index: u8) -> Option<Self::ChildIdType> {
+    self.child(child_index)
+  }
+}
+
 /// Owns every node occurrence in one in-memory trie.
 #[derive(Default)]
 struct NodeArena {
@@ -140,6 +153,142 @@ impl NodeArena {
   fn node(&self, node_id: NodeId) -> &StoredNode {
     &self.nodes[node_id.0]
   }
+}
+
+type EntryRef<'a> = (&'a [u8], &'a CurrentDeltaValue);
+
+/// Canonical in-memory MPT built from one complete current-delta entry set.
+pub(crate) struct CurrentDeltaMpt {
+  arena: NodeArena,
+  root: NodeId,
+}
+
+impl CurrentDeltaMpt {
+  pub(crate) fn build(entries: &CurrentDeltaEntries) -> Self {
+    let ordered_entries = entries
+      .entries
+      .iter()
+      .map(|(key, value)| (key.as_slice(), value))
+      .collect::<Vec<_>>();
+
+    let mut arena = NodeArena::default();
+    let root = if ordered_entries.is_empty() {
+      arena.insert(StoredNode::new(VanillaTrieNode::default(), Vec::new()))
+    } else {
+      build_node(&mut arena, &ordered_entries, 0, true).0
+    };
+
+    Self { arena, root }
+  }
+
+  pub(crate) fn merkle_root(&self) -> MerkleHash {
+    *self.arena.node(self.root).protocol_node.get_merkle()
+  }
+
+  pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
+    let mut node_id = self.root;
+    let mut key_remaining = key;
+
+    loop {
+      let node = self.arena.node(node_id);
+
+      match walk::<access_mode::Read, _>(
+        key_remaining,
+        &node.protocol_node.compressed_path_ref(),
+        node,
+      ) {
+        WalkStop::Arrived => return node.protocol_node.value_as_slice(),
+        WalkStop::PathDiverted { .. } | WalkStop::ChildNotFound { .. } => {
+          return MptValue::None;
+        }
+        WalkStop::Descent {
+          key_remaining: remaining,
+          child_node,
+          ..
+        } => {
+          node_id = child_node;
+          key_remaining = remaining;
+        }
+      }
+    }
+  }
+}
+
+/// Builds one canonical node from a non-empty ordered entry range and returns
+/// both its arena identity and protocol Merkle hash.
+
+fn build_node(
+  arena: &mut NodeArena,
+  entries: &[EntryRef<'_>],
+  path_start: usize,
+  is_root: bool,
+) -> (NodeId, MerkleHash) {
+  let path_end = if is_root {
+    path_start
+  } else {
+    common_nibble_prefix_end(entries[0].0, entries[entries.len() - 1].0, path_start)
+  };
+
+  let compressed_path = if is_root {
+    CompressedPathRaw::default()
+  } else {
+    compressed_path_from_key(entries[0].0, path_start..path_end)
+  };
+
+  let mut next_entry = 0;
+  let node_value = if nibble_len(entries[0].0) == path_end {
+    next_entry = 1;
+    Some(match entries[0].1 {
+      CurrentDeltaValue::Tombstone => Box::default(),
+      CurrentDeltaValue::Present(value) => value.clone(),
+    })
+  } else {
+    None
+  };
+
+  let mut child_merkles = [MERKLE_NULL_NODE; CHILDREN_COUNT];
+  let mut child_links = Vec::new();
+
+  while next_entry < entries.len() {
+    let group_start = next_entry;
+    let child_index = nibble_at(entries[group_start].0, path_end);
+
+    next_entry += 1;
+    while next_entry < entries.len() && nibble_at(entries[next_entry].0, path_end) == child_index {
+      next_entry += 1;
+    }
+
+    let (node_id, merkle) = build_node(
+      arena,
+      &entries[group_start..next_entry],
+      path_end + 1,
+      false,
+    );
+
+    child_merkles[usize::from(child_index)] = merkle;
+    child_links.push(ChildLink {
+      child_index,
+      node_id,
+    });
+  }
+
+  let children = (!child_links.is_empty()).then_some(&child_merkles);
+  let merkle = compute_merkle(
+    compressed_path.as_ref(),
+    !path_start.is_multiple_of(2),
+    children,
+    node_value.as_deref(),
+  );
+
+  let node = VanillaTrieNode::new(
+    merkle,
+    VanillaChildrenTable::from(child_merkles),
+    node_value,
+    compressed_path,
+  );
+  let node_id = arena.insert(StoredNode::new(node, child_links));
+
+  (node_id, merkle)
 }
 
 #[cfg(test)]
@@ -234,5 +383,27 @@ mod tests {
       assert_eq!(path.path_mask(), expected_mask);
       assert_eq!(path.path_steps(), expected_steps);
     }
+  }
+
+  #[test]
+  fn builder_matches_conflux_root_and_read_fixtures() {
+    let empty = CurrentDeltaMpt::build(&CurrentDeltaEntries::default());
+    assert_eq!(empty.merkle_root(), MERKLE_NULL_NODE);
+
+    let mut entries = CurrentDeltaEntries::default();
+    entries.set_tombstone(vec![0x12, 0x40]);
+    entries.set_value(vec![0x12, 0x30], vec![0xaa].into_boxed_slice());
+
+    let expected = "0x47d1332d15c79e86487b687395ef41e36cf860597d691e4628b7db37ddf6e6eb"
+      .parse::<MerkleHash>()
+      .expect("fixture root is valid");
+
+    let mpt = CurrentDeltaMpt::build(&entries);
+
+    assert_eq!(mpt.merkle_root(), expected);
+    assert_eq!(mpt.get(&[0x12, 0x30]), MptValue::Some(&[0xaa][..]));
+    assert_eq!(mpt.get(&[0x12, 0x40]), MptValue::TombStone);
+    assert_eq!(mpt.get(&[0x12, 0x50]), MptValue::None);
+    assert_eq!(mpt.get(&[0x13, 0x30]), MptValue::None);
   }
 }
