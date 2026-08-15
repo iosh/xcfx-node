@@ -1,6 +1,6 @@
 //! Construction and access for in-memory Conflux current-delta MPT state.
 
-use std::{collections::BTreeMap, ops::Range};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 use cfx_mpt::{
   CompressedPathRaw, CompressedPathTrait, TrieNodeTrait, TrieProof, TrieProofNode,
@@ -64,12 +64,45 @@ enum CurrentDeltaChange {
   Set(CurrentDeltaValue),
 }
 
-#[derive(Default)]
-pub(crate) struct CurrentDeltaChanges {
+/// One complete, immutable current-delta state version.
+pub(crate) struct CurrentDeltaState {
+  entries: CurrentDeltaEntries,
+  mpt: CurrentDeltaMpt,
+}
+
+impl CurrentDeltaState {
+  pub(crate) fn new(entries: CurrentDeltaEntries) -> Self {
+    let mpt = CurrentDeltaMpt::build(&entries);
+    Self { entries, mpt }
+  }
+
+  pub(crate) fn candidate(self: &Arc<Self>) -> CurrentDeltaCandidate {
+    CurrentDeltaCandidate {
+      parent: Arc::clone(self),
+      changes: BTreeMap::new(),
+    }
+  }
+
+  pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
+    self.mpt.get(key)
+  }
+
+  pub(crate) fn merkle_root(&self) -> MerkleHash {
+    self.mpt.merkle_root()
+  }
+
+  pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
+    self.mpt.proof(key)
+  }
+}
+
+/// Unpublished changes based on one immutable current-delta version.
+pub(crate) struct CurrentDeltaCandidate {
+  parent: Arc<CurrentDeltaState>,
   changes: BTreeMap<Vec<u8>, CurrentDeltaChange>,
 }
 
-impl CurrentDeltaChanges {
+impl CurrentDeltaCandidate {
   pub(crate) fn set_value(&mut self, key: Vec<u8>, value: Box<[u8]>) {
     self.changes.insert(
       key,
@@ -83,18 +116,13 @@ impl CurrentDeltaChanges {
       .insert(key, CurrentDeltaChange::Set(CurrentDeltaValue::Tombstone));
   }
 
-  /// Makes the key physically absent from the resulting current delta.
   pub(crate) fn remove_entry(&mut self, key: Vec<u8>) {
     self.changes.insert(key, CurrentDeltaChange::Remove);
   }
 
-  pub(crate) fn get<'state>(
-    &'state self,
-    parent: &'state CurrentDeltaEntries,
-    key: &[u8],
-  ) -> MptValue<&'state [u8]> {
+  pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
     match self.changes.get(key) {
-      None => parent.get(key),
+      None => self.parent.entries.get(key),
       Some(CurrentDeltaChange::Remove) => MptValue::None,
       Some(CurrentDeltaChange::Set(CurrentDeltaValue::Tombstone)) => MptValue::TombStone,
       Some(CurrentDeltaChange::Set(CurrentDeltaValue::Present(value))) => {
@@ -103,21 +131,21 @@ impl CurrentDeltaChanges {
     }
   }
 
-  pub(crate) fn materialize(&self, parent: &CurrentDeltaEntries) -> CurrentDeltaEntries {
-    let mut result = parent.clone();
+  pub(crate) fn into_state(self) -> CurrentDeltaState {
+    let mut entries = self.parent.entries.clone();
 
-    for (key, change) in &self.changes {
+    for (key, change) in self.changes {
       match change {
         CurrentDeltaChange::Remove => {
-          result.entries.remove(key);
+          entries.entries.remove(&key);
         }
         CurrentDeltaChange::Set(value) => {
-          result.entries.insert(key.clone(), value.clone());
+          entries.entries.insert(key, value);
         }
       }
     }
 
-    result
+    CurrentDeltaState::new(entries)
   }
 }
 
@@ -238,13 +266,13 @@ impl NodeArena {
 type EntryRef<'a> = (&'a [u8], &'a CurrentDeltaValue);
 
 /// Canonical in-memory MPT built from one complete current-delta entry set.
-pub(crate) struct CurrentDeltaMpt {
+struct CurrentDeltaMpt {
   arena: NodeArena,
   root: NodeId,
 }
 
 impl CurrentDeltaMpt {
-  pub(crate) fn build(entries: &CurrentDeltaEntries) -> Self {
+  fn build(entries: &CurrentDeltaEntries) -> Self {
     let ordered_entries = entries
       .entries
       .iter()
@@ -261,11 +289,11 @@ impl CurrentDeltaMpt {
     Self { arena, root }
   }
 
-  pub(crate) fn merkle_root(&self) -> MerkleHash {
+  fn merkle_root(&self) -> MerkleHash {
     *self.arena.node(self.root).protocol_node.get_merkle()
   }
 
-  pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
+  fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
     let mut node_id = self.root;
     let mut key_remaining = key;
 
@@ -293,7 +321,7 @@ impl CurrentDeltaMpt {
     }
   }
 
-  pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
+  fn proof(&self, key: &[u8]) -> TrieProof {
     if self.merkle_root() == MERKLE_NULL_NODE {
       return TrieProof::default();
     }
@@ -538,31 +566,42 @@ mod tests {
     let missing_proof = mpt.proof(&[0x12, 0x50]);
     assert!(missing_proof.is_valid_kv(&[0x12, 0x50], None, &expected,));
   }
-  
+
   #[test]
-  fn changes_materialize_an_isolated_current_delta_mpt() {
-    let mut parent = CurrentDeltaEntries::default();
-    parent.set_value(vec![0x10], vec![0xaa].into_boxed_slice());
-    parent.set_value(vec![0x20], vec![0xbb].into_boxed_slice());
-    parent.set_value(vec![0x40], vec![0xdd].into_boxed_slice());
+  fn candidate_materialization_preserves_parent_and_sibling_isolation() {
+    let mut entries = CurrentDeltaEntries::default();
+    entries.set_value(vec![0x10], vec![0xaa].into_boxed_slice());
+    entries.set_value(vec![0x20], vec![0xbb].into_boxed_slice());
+    entries.set_value(vec![0x40], vec![0xdd].into_boxed_slice());
 
-    let mut changes = CurrentDeltaChanges::default();
-    changes.set_value(vec![0x10], vec![0xcc].into_boxed_slice());
-    changes.remove_entry(vec![0x20]);
-    changes.set_tombstone(vec![0x30]);
+    let parent = Arc::new(CurrentDeltaState::new(entries));
+    let parent_root = parent.merkle_root();
+    let mut candidate = parent.candidate();
+    let mut sibling = parent.candidate();
 
-    assert_eq!(changes.get(&parent, &[0x10]), MptValue::Some(&[0xcc][..]));
-    assert_eq!(changes.get(&parent, &[0x20]), MptValue::None);
-    assert_eq!(changes.get(&parent, &[0x30]), MptValue::TombStone);
-    assert_eq!(changes.get(&parent, &[0x40]), MptValue::Some(&[0xdd][..]));
+    candidate.set_value(vec![0x10], vec![0xcc].into_boxed_slice());
+    candidate.remove_entry(vec![0x20]);
+    candidate.set_tombstone(vec![0x30]);
+    sibling.set_value(vec![0x10], vec![0xee].into_boxed_slice());
 
-    let materialized = changes.materialize(&parent);
-    let child = CurrentDeltaMpt::build(&materialized);
+    assert_eq!(candidate.get(&[0x10]), MptValue::Some(&[0xcc][..]));
+    assert_eq!(candidate.get(&[0x20]), MptValue::None);
+    assert_eq!(candidate.get(&[0x30]), MptValue::TombStone);
+    assert_eq!(candidate.get(&[0x40]), MptValue::Some(&[0xdd][..]));
 
+    let child = candidate.into_state();
+
+    assert_eq!(parent.merkle_root(), parent_root);
     assert_eq!(parent.get(&[0x10]), MptValue::Some(&[0xaa][..]));
     assert_eq!(parent.get(&[0x20]), MptValue::Some(&[0xbb][..]));
+
+    assert_eq!(sibling.get(&[0x10]), MptValue::Some(&[0xee][..]));
+    assert_eq!(sibling.get(&[0x20]), MptValue::Some(&[0xbb][..]));
+
     assert_eq!(child.get(&[0x10]), MptValue::Some(&[0xcc][..]));
     assert_eq!(child.get(&[0x20]), MptValue::None);
     assert_eq!(child.get(&[0x30]), MptValue::TombStone);
+    assert_eq!(child.get(&[0x40]), MptValue::Some(&[0xdd][..]));
+    assert_ne!(child.merkle_root(), parent_root);
   }
 }
