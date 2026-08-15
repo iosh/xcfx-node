@@ -260,8 +260,7 @@ fn build_node(
     let child_index = nibble_at(entries[group_start].key, path_end);
 
     next_entry += 1;
-    while next_entry < entries.len()
-      && nibble_at(entries[next_entry].key, path_end) == child_index
+    while next_entry < entries.len() && nibble_at(entries[next_entry].key, path_end) == child_index
     {
       next_entry += 1;
     }

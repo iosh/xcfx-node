@@ -14,18 +14,23 @@ pub(crate) struct SnapshotMptVersion {
 
 impl SnapshotMptVersion {
   pub(crate) fn new(entries: BTreeMap<Vec<u8>, Box<[u8]>>) -> Self {
-    let mpt = CanonicalMpt::build(
-      entries.iter().map(|(key, value)| MptEntry {
-        key: key.as_slice(),
-        value: value.as_ref(),
-      }),
-    );
+    let mpt = CanonicalMpt::build(entries.iter().map(|(key, value)| MptEntry {
+      key: key.as_slice(),
+      value: value.as_ref(),
+    }));
 
     Self { entries, mpt }
   }
 
   pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
     self.entries.get(key).map(Box::as_ref)
+  }
+
+  pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+    self
+      .entries
+      .iter()
+      .map(|(key, value)| (key.as_slice(), value.as_ref()))
   }
 
   pub(crate) fn merkle_root(&self) -> MerkleHash {

@@ -1,6 +1,6 @@
 //! Layered in-memory Conflux state versions and candidates.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
 use primitives::{
@@ -67,6 +67,53 @@ impl StateVersion {
     }
   }
 
+  /// Rotates the three Conflux state layers at a snapshot boundary.
+  pub(crate) fn rotate_snapshot(&self, parent_epoch_id: EpochId) -> Self {
+    let (snapshot_epoch_id, snapshot) = match &self.intermediate {
+      None => (self.snapshot_epoch_id, Arc::clone(&self.snapshot)),
+      Some(intermediate) => {
+        let mut snapshot_entries = self
+          .snapshot
+          .iter()
+          .map(|(key, value)| (key.to_vec(), value.to_vec().into_boxed_slice()))
+          .collect::<BTreeMap<_, _>>();
+
+        for (delta_key, value) in intermediate.mpt.iter() {
+          let snapshot_key = StorageKeyWithSpace::from_delta_mpt_key(delta_key).to_key_bytes();
+
+          match value {
+            MptValue::None => {
+              unreachable!("stored Delta MPT entries always contain a value or tombstone")
+            }
+            MptValue::TombStone => {
+              snapshot_entries.remove(&snapshot_key);
+            }
+            MptValue::Some(value) => {
+              snapshot_entries.insert(snapshot_key, value.to_vec().into_boxed_slice());
+            }
+          }
+        }
+
+        (
+          intermediate.epoch_id,
+          Arc::new(SnapshotMptVersion::new(snapshot_entries)),
+        )
+      }
+    };
+
+    let intermediate = IntermediateDeltaLayer::new(
+      parent_epoch_id,
+      self.current_key_padding.clone(),
+      Arc::clone(&self.current),
+    );
+
+    Self::new(
+      snapshot_epoch_id,
+      snapshot,
+      Some(intermediate),
+      Arc::new(DeltaMptVersion::empty()),
+    )
+  }
   pub(crate) fn get(&self, key: StorageKeyWithSpace<'_>) -> Option<&[u8]> {
     let current_key = key.to_delta_mpt_key_bytes(&self.current_key_padding);
 
@@ -308,6 +355,103 @@ mod tests {
     assert_ne!(
       child_identity.state_root.delta_root,
       parent_identity.state_root.delta_root
+    );
+  }
+
+  #[test]
+  fn snapshot_rotation_preserves_state_and_migrates_layer_identity() {
+    let updated = [0x61; 20];
+    let deleted = [0x62; 20];
+    let current_only = [0x63; 20];
+
+    let snapshot = Arc::new(SnapshotMptVersion::new(
+      [
+        (account_key(&updated).to_key_bytes(), value(0x10)),
+        (account_key(&deleted).to_key_bytes(), value(0x20)),
+      ]
+      .into_iter()
+      .collect(),
+    ));
+    let snapshot_root = snapshot.merkle_root();
+
+    let intermediate_padding =
+      StorageKeyWithSpace::delta_mpt_padding(&MERKLE_NULL_NODE, &MERKLE_NULL_NODE);
+    let mut intermediate_entries = DeltaMptEntries::default();
+    intermediate_entries.set_value(delta_key(&updated, &intermediate_padding), value(0x11));
+    intermediate_entries.set_tombstone(delta_key(&deleted, &intermediate_padding));
+    let intermediate = Arc::new(DeltaMptVersion::new(intermediate_entries));
+    let intermediate_root = intermediate.merkle_root();
+
+    let current_padding =
+      StorageKeyWithSpace::delta_mpt_padding(&snapshot_root, &intermediate_root);
+    let mut current_entries = DeltaMptEntries::default();
+    current_entries.set_value(delta_key(&updated, &current_padding), value(0x12));
+    current_entries.set_value(delta_key(&current_only, &current_padding), value(0x30));
+    let current = Arc::new(DeltaMptVersion::new(current_entries));
+    let current_root = current.merkle_root();
+
+    let intermediate_epoch_id = EpochId::from([0x71; 32]);
+    let parent = StateVersion::new(
+      EpochId::from([0x70; 32]),
+      snapshot,
+      Some(IntermediateDeltaLayer::new(
+        intermediate_epoch_id,
+        intermediate_padding,
+        intermediate,
+      )),
+      current,
+    );
+
+    let expected_reads: [Option<&[u8]>; 3] = [Some(&[0x12]), None, Some(&[0x30])];
+
+    assert_eq!(
+      [
+        parent.get(account_key(&updated)),
+        parent.get(account_key(&deleted)),
+        parent.get(account_key(&current_only)),
+      ],
+      expected_reads
+    );
+
+    let parent_epoch_id = EpochId::from([0x72; 32]);
+    let rotated = parent.rotate_snapshot(parent_epoch_id);
+
+    assert_eq!(
+      [
+        rotated.get(account_key(&updated)),
+        rotated.get(account_key(&deleted)),
+        rotated.get(account_key(&current_only)),
+      ],
+      expected_reads
+    );
+
+    let expected_snapshot = SnapshotMptVersion::new(
+      [(account_key(&updated).to_key_bytes(), value(0x11))]
+        .into_iter()
+        .collect(),
+    );
+    let expected_snapshot_root = expected_snapshot.merkle_root();
+    let expected_current_padding =
+      StorageKeyWithSpace::delta_mpt_padding(&expected_snapshot_root, &current_root);
+    let expected_state_root = StateRoot {
+      snapshot_root: expected_snapshot_root,
+      intermediate_delta_root: current_root,
+      delta_root: MERKLE_NULL_NODE,
+    };
+    let expected_state_root_hash = expected_state_root.compute_state_root_hash();
+
+    assert_eq!(
+      rotated.root_with_aux_info(),
+      StateRootWithAuxInfo {
+        state_root: expected_state_root,
+        aux_info: StateRootAuxInfo {
+          snapshot_epoch_id: intermediate_epoch_id,
+          intermediate_epoch_id: parent_epoch_id,
+          maybe_intermediate_mpt_key_padding: Some(current_padding),
+          delta_mpt_key_padding: expected_current_padding,
+          state_root_hash: expected_state_root_hash,
+        },
+      }
     );
   }
 }

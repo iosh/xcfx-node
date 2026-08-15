@@ -94,6 +94,14 @@ impl DeltaMptVersion {
     Self { entries, mpt }
   }
 
+  pub(crate) fn empty() -> Self {
+    Self::new(DeltaMptEntries::default())
+  }
+
+  pub(crate) fn iter(&self) -> impl Iterator<Item = (&[u8], MptValue<&[u8]>)> {
+    self.entries.iter()
+  }
+
   pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
     self.mpt.get(key)
   }
