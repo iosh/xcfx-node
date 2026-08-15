@@ -1,4 +1,4 @@
-//! Canonical in-memory Conflux MPT construction and access.
+//! In-memory Conflux MPT construction and access.
 
 use std::ops::Range;
 
@@ -126,20 +126,20 @@ impl NodeArena {
   }
 }
 
-/// One borrowed key-value entry consumed by canonical MPT construction.
-pub(super) struct MptEntry<'a> {
-  pub(super) key: &'a [u8],
-  pub(super) value: &'a [u8],
+/// One borrowed key-value entry consumed by MPT construction.
+pub(crate) struct MptEntry<'a> {
+  pub(crate) key: &'a [u8],
+  pub(crate) value: &'a [u8],
 }
 
-/// Canonical in-memory MPT built from one complete ordered entry set.
-pub(super) struct CanonicalMpt {
+/// In-memory MPT built from one complete ordered entry set.
+pub(crate) struct Mpt {
   arena: NodeArena,
   root: NodeId,
 }
 
-impl CanonicalMpt {
-  pub(super) fn build<'a>(entries: impl IntoIterator<Item = MptEntry<'a>>) -> Self {
+impl Mpt {
+  pub(crate) fn build<'a>(entries: impl IntoIterator<Item = MptEntry<'a>>) -> Self {
     let ordered_entries = entries.into_iter().collect::<Vec<_>>();
 
     let mut arena = NodeArena::default();
@@ -152,11 +152,11 @@ impl CanonicalMpt {
     Self { arena, root }
   }
 
-  pub(super) fn merkle_root(&self) -> MerkleHash {
+  pub(crate) fn merkle_root(&self) -> MerkleHash {
     *self.arena.node(self.root).protocol_node.get_merkle()
   }
 
-  pub(super) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
+  pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
     let mut node_id = self.root;
     let mut key_remaining = key;
 
@@ -184,7 +184,7 @@ impl CanonicalMpt {
     }
   }
 
-  pub(super) fn proof(&self, key: &[u8]) -> TrieProof {
+  pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
     if self.merkle_root() == MERKLE_NULL_NODE {
       return TrieProof::default();
     }
@@ -219,12 +219,74 @@ impl CanonicalMpt {
         }
       }
     }
-    TrieProof::new(proof_nodes)
-      .expect("nodes collected from a canonical trie path form a valid proof")
+    TrieProof::new(proof_nodes).expect("nodes collected from an MPT path form a valid proof")
   }
 }
 
-/// Builds one canonical node from a non-empty ordered entry range and returns
+fn index_key_byte_len(value_count: usize) -> usize {
+  let mut max_index = match value_count {
+    0 => return 0,
+    1 => return 1,
+    _ => value_count - 1,
+  };
+
+  let mut byte_len = 0;
+
+  while max_index != 0 {
+    byte_len += 1;
+    max_index >>= 8;
+  }
+
+  byte_len
+}
+
+/// Computes the Conflux MPT commitment for a complete ordered list.
+///
+/// Values are keyed by their zero-based positions using the minimum
+/// fixed-width big-endian encoding required for the whole list.
+pub(crate) fn indexed_mpt_root<'a>(values: impl ExactSizeIterator<Item = &'a [u8]>) -> MerkleHash {
+  let value_count = values.len();
+
+  if value_count == 0 {
+    return MERKLE_NULL_NODE;
+  }
+
+  let key_byte_len = index_key_byte_len(value_count);
+  let mut key_bytes = Vec::with_capacity(value_count * key_byte_len);
+
+  for index in 0..value_count {
+    let big_endian_bytes = index.to_be_bytes();
+    let key_start = big_endian_bytes.len() - key_byte_len;
+    key_bytes.extend_from_slice(&big_endian_bytes[key_start..]);
+  }
+
+  let mpt = Mpt::build(
+    key_bytes
+      .chunks_exact(key_byte_len)
+      .zip(values)
+      .map(|(key, value)| MptEntry { key, value }),
+  );
+
+  let root = mpt.arena.node(mpt.root);
+
+  // Conflux list commitments omit an explicit root whose only child is zero.
+  if let [only_child] = root.child_links.as_ref() {
+    assert_eq!(
+      only_child.child_index, 0,
+      "an indexed MPT's only root child must have index zero",
+    );
+
+    return *mpt
+      .arena
+      .node(only_child.node_id)
+      .protocol_node
+      .get_merkle();
+  }
+
+  mpt.merkle_root()
+}
+
+/// Builds one node from a non-empty ordered entry range and returns
 /// both its arena identity and protocol Merkle hash.
 fn build_node(
   arena: &mut NodeArena,
@@ -303,6 +365,8 @@ mod tests {
   use super::*;
   use cfx_mpt::{CompressedPathTrait, TrieNodeTrait, VanillaChildrenTable, merkle::compute_merkle};
 
+  use hex_literal::hex;
+
   fn masked_leaf(raw_path: u8) -> VanillaTrieNode<MerkleHash> {
     const VALUE: &[u8] = &[0xaa];
 
@@ -358,7 +422,7 @@ mod tests {
 
   #[test]
   fn builder_matches_conflux_root_read_and_proof_fixtures() {
-    let empty = CanonicalMpt::build(std::iter::empty::<MptEntry<'static>>());
+    let empty = Mpt::build(std::iter::empty::<MptEntry<'static>>());
     assert_eq!(empty.merkle_root(), MERKLE_NULL_NODE);
 
     let value_key = [0x12, 0x30];
@@ -366,11 +430,11 @@ mod tests {
     let tombstone_key = [0x12, 0x40];
     let tombstone: &[u8] = &[];
 
-    let expected = "0x47d1332d15c79e86487b687395ef41e36cf860597d691e4628b7db37ddf6e6eb"
-      .parse::<MerkleHash>()
-      .expect("fixture root is valid");
+    let expected = MerkleHash::from(hex!(
+      "47d1332d15c79e86487b687395ef41e36cf860597d691e4628b7db37ddf6e6eb"
+    ));
 
-    let mpt = CanonicalMpt::build([
+    let mpt = Mpt::build([
       MptEntry {
         key: &value_key,
         value: &value,
@@ -399,5 +463,75 @@ mod tests {
 
     let missing_proof = mpt.proof(&[0x12, 0x50]);
     assert!(missing_proof.is_valid_kv(&[0x12, 0x50], None, &expected,));
+  }
+
+  #[test]
+  fn indexed_mpt_root_matches_protocol_boundaries() {
+    assert_eq!(
+      indexed_mpt_root(std::iter::empty::<&[u8]>()),
+      MERKLE_NULL_NODE,
+    );
+    assert_eq!(index_key_byte_len(256), 1);
+    assert_eq!(index_key_byte_len(257), 2);
+
+    // Conflux general_2 fixture containing 17 transactions.
+    let transaction_hashes = hex!(
+      "7767986b6835cfc530cab984b89d331d9ab0b0758ee7287f8b8b6f52f0c7470b"
+      "3e2846dc2c2795a43716b46c5ea38e597ea4ee095b2b4adc7e0b51fc1ff1d5ce"
+      "fb8cffa9232edbb1130e80e29675d7da8dc4993a1b4c2503c02d67746eabefe3"
+      "3fed13ee913d83344c1b178dbf7531461919e3e2a4db1cd8416322e7eecc3d4f"
+      "c3fcb49723e58b78f3f842ac0c7eb80b11c2eb3563dbb46b271d6ef1dc6e9179"
+      "d48711163ae50de225dbd9f5fdf61f9b85d85b100b2560f01432127b7201c0df"
+      "fad51b86c72bec2208086a059bb99d07599e3ec76c984933fabdf329fa2e8ff6"
+      "3f89b1e16bf54640c341a81cc6703eac6ec34899876ddb9953c7f4760a07796b"
+      "d98e01f94c0c51829508b7e4c7f1a3bd01c9301a5e1128f15b25cdaa26d70eae"
+      "6e883e1ca7b0d4fc1af64e9a3a54cabb4396cb7849675c92f4b5250635764daf"
+      "abf1fc8f37bb8ab9ae430a7d5b905c5ec3acb9ce8d49d73755a8b39553b19b3d"
+      "f488b6681a8ddb8e3656f8310b4ca4798a212747e6dbdb306de516752bff8e35"
+      "c5476cd30d1a9ce9ceee328605ef2ee05e54a2fbe42305aee6aeb46ebffed849"
+      "32d224dd711caa94631f53c7c3177408ecb0809c6bb4ab5b6cee81dcc4792d51"
+      "83e991d743a755020e798c343c61467528e29a9f1b5e21c2902cac550ac5f392"
+      "35931bf46108b6ba81a88ba7290eb9bb2d5f7b3c5d3acca718abc8e5852edbb0"
+      "76eca5387d51b01f4a0a1d5b9f8fbd2b0eb5b6531b24814b684e34e19cf727ee"
+    );
+
+    assert_eq!(
+      indexed_mpt_root(transaction_hashes.chunks_exact(32)),
+      MerkleHash::from(hex!(
+        "afe85264b77b1f814769930ed608a8d47fdd2f8e42496f8284d3ebf6582bccd8"
+      )),
+    );
+  }
+
+  #[test]
+  fn indexed_mpt_root_matches_genesis_commitments() {
+    // Conflux general_2 Genesis transaction hashes.
+    let transaction_hashes = hex!(
+      "a73d49355986057ca810cb256da2c0a4207a0ad35dcc52bda0fc8748771d369b"
+      "11f844dfca244d2b98b626d730c2d62cfe01dd04dd51b3db2448be7bb18b7ed3"
+      "dfd085f9771f9497a003a95be530e11cc596e131d1ec9256992ccf9995363015"
+      "31d27116ac2721bee930e607a72a8874929eea60d3f7ab28ce809e6c169f8a3a"
+      "d1162c03ee724ce6d3fb2165082fb2afbc48b9063ec03333efc1ffd74e320ac9"
+      "8e15cd6668803852ed817dc78eabcdef01a6cdbd03549e8c4856ae77510ce258"
+      "803b6fec1cfc3532b89c4d6d1476cbd988fcb5487be0e52230aaa8a2fe7bd10b"
+      "488133658a149f00eef17650c16c91aaf98cd15ccb17be201839b727c306dbea"
+    );
+
+    assert_eq!(
+      indexed_mpt_root(transaction_hashes.chunks_exact(32)),
+      MerkleHash::from(hex!(
+        "8208dfdbb409f7a3e41386a8eaaa6412ad4df158fc04a09b499c1a004b53d469"
+      )),
+    );
+
+    let empty_block_receipt_root = indexed_mpt_root(std::iter::empty::<&[u8]>());
+    let empty_block_receipt_root_bytes: &[u8] = empty_block_receipt_root.as_bytes();
+
+    assert_eq!(
+      indexed_mpt_root(std::iter::once(empty_block_receipt_root_bytes)),
+      MerkleHash::from(hex!(
+        "09f8709ea9f344a810811a373b30861568f5686e649d6177fd92ea2db7477508"
+      )),
+    );
   }
 }

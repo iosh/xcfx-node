@@ -1,3 +1,4 @@
+mod mpt;
 mod state;
 
 /// Identifies the Rust product code included in the current build.

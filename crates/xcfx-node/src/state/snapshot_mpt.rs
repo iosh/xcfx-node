@@ -6,17 +6,17 @@ use primitives::MerkleHash;
 
 use cfx_mpt::TrieProof;
 
-use super::canonical_mpt::{CanonicalMpt, MptEntry};
+use crate::mpt::{Mpt, MptEntry};
 
 /// One complete, immutable snapshot MPT version.
 pub(crate) struct SnapshotMptVersion {
   entries: BTreeMap<Vec<u8>, Box<[u8]>>,
-  mpt: CanonicalMpt,
+  mpt: Mpt,
 }
 
 impl SnapshotMptVersion {
   pub(crate) fn new(entries: BTreeMap<Vec<u8>, Box<[u8]>>) -> Self {
-    let mpt = CanonicalMpt::build(entries.iter().map(|(key, value)| MptEntry {
+    let mpt = Mpt::build(entries.iter().map(|(key, value)| MptEntry {
       key: key.as_slice(),
       value: value.as_ref(),
     }));

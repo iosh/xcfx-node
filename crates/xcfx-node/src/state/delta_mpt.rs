@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use cfx_mpt::TrieProof;
 use primitives::{MerkleHash, MptValue};
 
-use super::canonical_mpt::{CanonicalMpt, MptEntry};
+use crate::mpt::{Mpt, MptEntry};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DeltaMptValue {
@@ -85,12 +85,12 @@ enum CurrentDeltaChange {
 /// One complete, immutable Delta MPT version.
 pub(crate) struct DeltaMptVersion {
   entries: DeltaMptEntries,
-  mpt: CanonicalMpt,
+  mpt: Mpt,
 }
 
 impl DeltaMptVersion {
   pub(crate) fn new(entries: DeltaMptEntries) -> Self {
-    let mpt = CanonicalMpt::build(entries.encoded_entries());
+    let mpt = Mpt::build(entries.encoded_entries());
     Self { entries, mpt }
   }
 
