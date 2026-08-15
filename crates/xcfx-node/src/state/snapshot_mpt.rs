@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use primitives::MerkleHash;
 
+use cfx_mpt::TrieProof;
+
 use super::canonical_mpt::{CanonicalMpt, MptEntry};
 
 /// One complete, immutable snapshot MPT version.
@@ -31,6 +33,10 @@ impl SnapshotMptVersion {
       .entries
       .iter()
       .map(|(key, value)| (key.as_slice(), value.as_ref()))
+  }
+
+  pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
+    self.mpt.proof(key)
   }
 
   pub(crate) fn merkle_root(&self) -> MerkleHash {

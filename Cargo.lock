@@ -1641,6 +1641,7 @@ dependencies = [
  "cfx-internal-common",
  "cfx-mpt",
  "cfx-storage-types",
+ "hex-literal",
  "primitives",
  "thiserror",
 ]
