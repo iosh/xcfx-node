@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cfx-internal-common.workspace = true
 cfx-mpt.workspace = true
 cfx-storage-types.workspace = true
 primitives.workspace = true

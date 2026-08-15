@@ -1638,6 +1638,7 @@ dependencies = [
 name = "xcfx-node"
 version = "0.8.0"
 dependencies = [
+ "cfx-internal-common",
  "cfx-mpt",
  "cfx-storage-types",
  "primitives",

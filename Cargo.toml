@@ -11,6 +11,7 @@ repository = "https://github.com/iosh/xcfx-node"
 
 
 [workspace.dependencies]
+cfx-internal-common = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-mpt = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-storage-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 primitives = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
