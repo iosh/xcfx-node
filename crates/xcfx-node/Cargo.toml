@@ -9,10 +9,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cfx-executor.workspace = true
 cfx-internal-common.workspace = true
 cfx-mpt.workspace = true
+cfx-parameters.workspace = true
+cfx-statedb.workspace = true
 cfx-storage-types.workspace = true
+cfx-types.workspace = true
+cfx-vm-types.workspace = true
 primitives.workspace = true
+rustc-hex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
