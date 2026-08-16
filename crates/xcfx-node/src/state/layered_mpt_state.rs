@@ -6,18 +6,12 @@ use cfx_internal_common::StateRootWithAuxInfo;
 use cfx_storage_types::{Error, MptKeyValue, Result, StateTrait};
 use primitives::{EpochId, MptValue, SkipInputCheck, StorageKey, StorageKeyWithSpace};
 
-use super::state_version::{StateCandidate, StateVersion};
+use super::state_version::{CommittedStateVersion, StateCandidate, StateVersion};
 
 enum StateLifecycle {
   Writable(StateCandidate),
   Prepared(Arc<StateVersion>),
   Committed,
-}
-
-#[derive(Clone)]
-pub(crate) struct CommittedStateVersion {
-  pub(crate) epoch_id: EpochId,
-  pub(crate) version: Arc<StateVersion>,
 }
 
 pub(crate) struct LayeredMptState {

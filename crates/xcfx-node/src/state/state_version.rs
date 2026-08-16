@@ -285,6 +285,13 @@ impl StateVersion {
   }
 }
 
+/// One immutable state version bound to its committed epoch identity.
+#[derive(Clone)]
+pub(crate) struct CommittedStateVersion {
+  pub(crate) epoch_id: EpochId,
+  pub(crate) version: Arc<StateVersion>,
+}
+
 fn visit_visible_delta_entry<'a>(
   physical_key: &[u8],
   value: MptValue<&'a [u8]>,

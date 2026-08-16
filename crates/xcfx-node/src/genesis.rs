@@ -35,8 +35,8 @@ use thiserror::Error;
 use crate::{
   mpt::indexed_mpt_root,
   state::{
-    layered_mpt_state::{CommittedStateVersion, LayeredMptState},
-    state_version::{StateCandidate, StateVersion},
+    layered_mpt_state::LayeredMptState,
+    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
   },
 };
 
@@ -348,19 +348,13 @@ mod tests {
   use hex_literal::hex;
 
   use super::{GenesisHeaderInput, execute_genesis};
-  use crate::state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::StateCandidate,
-  };
+  use crate::state::{layered_mpt_state::LayeredMptState, state_version::StateCandidate};
 
   fn oracle_machine() -> Arc<Machine> {
     let mut params = CommonParams::default();
     params.chain_id = ChainIdParamsInner::new_simple(AllChainID::new(10, 10));
 
-    Arc::new(Machine::new_with_builtin(
-      params,
-      VmFactory::new(32 * 1024),
-    ))
+    Arc::new(Machine::new_with_builtin(params, VmFactory::new(32 * 1024)))
   }
 
   fn oracle_allocations() -> BTreeMap<AddressWithSpace, U256> {
@@ -431,8 +425,7 @@ mod tests {
       &genesis.committed_state.version,
     )));
     let state = State::new(StateDb::new(Box::new(backend))).unwrap();
-    let allocation_balance =
-      U256::from_dec_str("5000000000000000000000000000000000").unwrap();
+    let allocation_balance = U256::from_dec_str("5000000000000000000000000000000000").unwrap();
 
     assert_eq!(
       (
