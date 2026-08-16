@@ -1,6 +1,9 @@
 //! Immutable in-memory Conflux snapshot MPT versions.
 
-use std::collections::BTreeMap;
+use std::{
+  collections::BTreeMap,
+  ops::Bound::{Included, Unbounded},
+};
 
 use primitives::MerkleHash;
 
@@ -24,6 +27,10 @@ impl SnapshotMptVersion {
     Self { entries, mpt }
   }
 
+  pub(crate) fn empty() -> Self {
+    Self::new(BTreeMap::new())
+  }
+
   pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
     self.entries.get(key).map(Box::as_ref)
   }
@@ -33,6 +40,20 @@ impl SnapshotMptVersion {
       .entries
       .iter()
       .map(|(key, value)| (key.as_slice(), value.as_ref()))
+  }
+
+  pub(crate) fn visit_prefix<'a>(
+    &'a self,
+    prefix: &[u8],
+    mut visitor: impl FnMut(&'a [u8], &'a [u8]),
+  ) {
+    for (key, value) in self.entries.range::<[u8], _>((Included(prefix), Unbounded)) {
+      if !key.starts_with(prefix) {
+        break;
+      }
+
+      visitor(key.as_slice(), value.as_ref());
+    }
   }
 
   pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {

@@ -1,6 +1,11 @@
 //! In-memory Conflux Delta MPT versions and current-delta candidates.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  cmp::Ordering,
+  collections::{BTreeMap, btree_map::Entry},
+  ops::Bound::{Included, Unbounded},
+  sync::Arc,
+};
 
 use cfx_mpt::TrieProof;
 use primitives::{MerkleHash, MptValue};
@@ -102,6 +107,29 @@ impl DeltaMptVersion {
     self.entries.iter()
   }
 
+  pub(crate) fn visit_prefix<'a>(
+    &'a self,
+    prefix: &[u8],
+    mut visitor: impl FnMut(&'a [u8], MptValue<&'a [u8]>),
+  ) {
+    for (key, value) in self
+      .entries
+      .entries
+      .range::<[u8], _>((Included(prefix), Unbounded))
+    {
+      if !key.starts_with(prefix) {
+        break;
+      }
+
+      let value = match value {
+        DeltaMptValue::Tombstone => MptValue::TombStone,
+        DeltaMptValue::Present(value) => MptValue::Some(value.as_ref()),
+      };
+
+      visitor(key.as_slice(), value);
+    }
+  }
+
   pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
     self.mpt.get(key)
   }
@@ -142,8 +170,39 @@ impl CurrentDeltaCandidate {
       .insert(key, CurrentDeltaChange::Set(DeltaMptValue::Tombstone));
   }
 
-  pub(crate) fn remove_entry(&mut self, key: Vec<u8>) {
-    self.changes.insert(key, CurrentDeltaChange::Remove);
+  pub(crate) fn remove_entry(&mut self, key: Vec<u8>) -> MptValue<Box<[u8]>> {
+    match self.changes.entry(key) {
+      Entry::Occupied(mut entry) => {
+        let parent_has_entry = !matches!(self.parent.entries.get(entry.key()), MptValue::None);
+
+        let previous = if parent_has_entry {
+          entry.insert(CurrentDeltaChange::Remove)
+        } else {
+          entry.remove()
+        };
+
+        match previous {
+          CurrentDeltaChange::Remove => MptValue::None,
+          CurrentDeltaChange::Set(DeltaMptValue::Tombstone) => MptValue::TombStone,
+          CurrentDeltaChange::Set(DeltaMptValue::Present(value)) => MptValue::Some(value),
+        }
+      }
+
+      Entry::Vacant(entry) => match self.parent.entries.get(entry.key()) {
+        MptValue::None => MptValue::None,
+
+        MptValue::TombStone => {
+          entry.insert(CurrentDeltaChange::Remove);
+          MptValue::TombStone
+        }
+
+        MptValue::Some(value) => {
+          let value = Box::<[u8]>::from(value);
+          entry.insert(CurrentDeltaChange::Remove);
+          MptValue::Some(value)
+        }
+      },
+    }
   }
 
   pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
@@ -153,6 +212,74 @@ impl CurrentDeltaCandidate {
       Some(CurrentDeltaChange::Set(DeltaMptValue::Tombstone)) => MptValue::TombStone,
       Some(CurrentDeltaChange::Set(DeltaMptValue::Present(value))) => {
         MptValue::Some(value.as_ref())
+      }
+    }
+  }
+
+  pub(crate) fn visit_effective_prefix<'a>(
+    &'a self,
+    prefix: &[u8],
+    mut visitor: impl FnMut(&'a [u8], MptValue<&'a [u8]>),
+  ) {
+    let mut parent_entries = self
+      .parent
+      .entries
+      .entries
+      .range::<[u8], _>((Included(prefix), Unbounded))
+      .take_while(|(key, _)| key.starts_with(prefix))
+      .peekable();
+
+    let mut changes = self
+      .changes
+      .range::<[u8], _>((Included(prefix), Unbounded))
+      .take_while(|(key, _)| key.starts_with(prefix))
+      .peekable();
+
+    loop {
+      let ordering = match (parent_entries.peek(), changes.peek()) {
+        (Some((parent_key, _)), Some((change_key, _))) => {
+          Some(parent_key.as_slice().cmp(change_key.as_slice()))
+        }
+        (Some(_), None) => Some(Ordering::Less),
+        (None, Some(_)) => Some(Ordering::Greater),
+        (None, None) => None,
+      };
+
+      let Some(ordering) = ordering else {
+        break;
+      };
+
+      if ordering == Ordering::Less {
+        let (key, value) = parent_entries
+          .next()
+          .expect("parent entry exists after ordering");
+
+        let value = match value {
+          DeltaMptValue::Tombstone => MptValue::TombStone,
+          DeltaMptValue::Present(value) => MptValue::Some(value.as_ref()),
+        };
+
+        visitor(key.as_slice(), value);
+        continue;
+      }
+
+      if ordering == Ordering::Equal {
+        parent_entries
+          .next()
+          .expect("matching parent entry exists after ordering");
+      }
+
+      let (key, change) = changes
+        .next()
+        .expect("candidate change exists after ordering");
+
+      if let CurrentDeltaChange::Set(value) = change {
+        let value = match value {
+          DeltaMptValue::Tombstone => MptValue::TombStone,
+          DeltaMptValue::Present(value) => MptValue::Some(value.as_ref()),
+        };
+
+        visitor(key.as_slice(), value);
       }
     }
   }
@@ -228,7 +355,12 @@ mod tests {
     let mut sibling = CurrentDeltaCandidate::new(Arc::clone(&parent));
 
     candidate.set_value(vec![0x10], vec![0xcc].into_boxed_slice());
-    candidate.remove_entry(vec![0x20]);
+
+    assert_eq!(
+      candidate.remove_entry(vec![0x20]),
+      MptValue::Some(vec![0xbb].into_boxed_slice())
+    );
+
     candidate.set_tombstone(vec![0x30]);
     sibling.set_value(vec![0x10], vec![0xee].into_boxed_slice());
 

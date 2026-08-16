@@ -1,11 +1,14 @@
 //! Layered in-memory Conflux state versions and candidates.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  collections::{BTreeMap, HashSet},
+  sync::Arc,
+};
 
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
 use primitives::{
-  DeltaMptKeyPadding, EpochId, MERKLE_NULL_NODE, MptValue, NULL_EPOCH, StateRoot,
-  StorageKeyWithSpace,
+  DeltaMptKeyPadding, EpochId, MERKLE_NULL_NODE, MptValue, NULL_EPOCH, SkipInputCheck, StateRoot,
+  StorageKey, StorageKeyWithSpace,
 };
 
 use super::{
@@ -68,6 +71,15 @@ impl StateVersion {
     }
   }
 
+  pub(crate) fn genesis_parent() -> Self {
+    Self::new(
+      NULL_EPOCH,
+      Arc::new(SnapshotMptVersion::empty()),
+      None,
+      Arc::new(DeltaMptVersion::empty()),
+    )
+  }
+
   /// Rotates the three Conflux state layers at a snapshot boundary.
   pub(crate) fn rotate_snapshot(&self, parent_epoch_id: EpochId) -> Self {
     let (snapshot_epoch_id, snapshot) = match &self.intermediate {
@@ -128,6 +140,38 @@ impl StateVersion {
     self.get_below_current(&key)
   }
 
+  pub(crate) fn visit_visible_prefix<'a>(
+    &'a self,
+    access_key_prefix: StorageKeyWithSpace<'_>,
+    mut visitor: impl FnMut(Vec<u8>, &'a [u8]),
+  ) {
+    let logical_prefix = access_key_prefix.to_key_bytes();
+    let needs_logical_filter = matches!(access_key_prefix.key, StorageKey::AddressPrefixKey(_));
+    let mut shadowed = HashSet::new();
+    let current_prefix = access_key_prefix.to_delta_mpt_key_bytes(&self.current_key_padding);
+
+    self
+      .current
+      .visit_prefix(&current_prefix, |physical_key, value| {
+        visit_visible_delta_entry(
+          physical_key,
+          value,
+          &logical_prefix,
+          needs_logical_filter,
+          &mut shadowed,
+          &mut visitor,
+        );
+      });
+
+    self.visit_visible_below_current_prefix(
+      access_key_prefix,
+      &logical_prefix,
+      needs_logical_filter,
+      &mut shadowed,
+      &mut visitor,
+    );
+  }
+
   /// Returns the logical value together with its layered state proof.
   pub(crate) fn get_with_proof(&self, key: StorageKeyWithSpace<'_>) -> (Option<&[u8]>, StateProof) {
     let mut proof = StateProof::default();
@@ -177,6 +221,38 @@ impl StateVersion {
     self.snapshot.get(&key.to_key_bytes())
   }
 
+  fn visit_visible_below_current_prefix<'a>(
+    &'a self,
+    access_key_prefix: StorageKeyWithSpace<'_>,
+    logical_prefix: &[u8],
+    needs_logical_filter: bool,
+    shadowed: &mut HashSet<Vec<u8>>,
+    visitor: &mut impl FnMut(Vec<u8>, &'a [u8]),
+  ) {
+    if let Some(intermediate) = &self.intermediate {
+      let intermediate_prefix = access_key_prefix.to_delta_mpt_key_bytes(&intermediate.key_padding);
+
+      intermediate
+        .mpt
+        .visit_prefix(&intermediate_prefix, |physical_key, value| {
+          visit_visible_delta_entry(
+            physical_key,
+            value,
+            logical_prefix,
+            needs_logical_filter,
+            shadowed,
+            visitor,
+          );
+        });
+    }
+
+    self.snapshot.visit_prefix(logical_prefix, |key, value| {
+      if !shadowed.contains(key) {
+        visitor(key.to_vec(), value);
+      }
+    });
+  }
+
   pub(crate) fn root_with_aux_info(&self) -> StateRootWithAuxInfo {
     let intermediate_root = self
       .intermediate
@@ -209,6 +285,36 @@ impl StateVersion {
   }
 }
 
+fn visit_visible_delta_entry<'a>(
+  physical_key: &[u8],
+  value: MptValue<&'a [u8]>,
+  logical_prefix: &[u8],
+  needs_logical_filter: bool,
+  shadowed: &mut HashSet<Vec<u8>>,
+  visitor: &mut impl FnMut(Vec<u8>, &'a [u8]),
+) {
+  let logical_key = StorageKeyWithSpace::from_delta_mpt_key(physical_key).to_key_bytes();
+
+  if needs_logical_filter && !logical_key.starts_with(logical_prefix) {
+    return;
+  }
+
+  if shadowed.contains(&logical_key) {
+    return;
+  }
+
+  match value {
+    MptValue::None => unreachable!("visited Delta MPT entries are never missing"),
+    MptValue::TombStone => {
+      shadowed.insert(logical_key);
+    }
+    MptValue::Some(value) => {
+      shadowed.insert(logical_key.clone());
+      visitor(logical_key, value);
+    }
+  }
+}
+
 /// Unpublished logical state changes based on one immutable parent version.
 pub(crate) struct StateCandidate {
   parent: Arc<StateVersion>,
@@ -234,6 +340,38 @@ impl StateCandidate {
     self.parent.get_below_current(&key)
   }
 
+  pub(crate) fn visit_visible_prefix<'a>(
+    &'a self,
+    access_key_prefix: StorageKeyWithSpace<'_>,
+    mut visitor: impl FnMut(Vec<u8>, &'a [u8]),
+  ) {
+    let logical_prefix = access_key_prefix.to_key_bytes();
+    let needs_logical_filter = matches!(access_key_prefix.key, StorageKey::AddressPrefixKey(_));
+    let mut shadowed = HashSet::new();
+    let current_prefix = access_key_prefix.to_delta_mpt_key_bytes(&self.parent.current_key_padding);
+
+    self
+      .current
+      .visit_effective_prefix(&current_prefix, |physical_key, value| {
+        visit_visible_delta_entry(
+          physical_key,
+          value,
+          &logical_prefix,
+          needs_logical_filter,
+          &mut shadowed,
+          &mut visitor,
+        );
+      });
+
+    self.parent.visit_visible_below_current_prefix(
+      access_key_prefix,
+      &logical_prefix,
+      needs_logical_filter,
+      &mut shadowed,
+      &mut visitor,
+    );
+  }
+
   pub(crate) fn set(&mut self, key: StorageKeyWithSpace<'_>, value: Box<[u8]>) {
     let current_key = key.to_delta_mpt_key_bytes(&self.parent.current_key_padding);
 
@@ -244,6 +382,140 @@ impl StateCandidate {
     let current_key = key.to_delta_mpt_key_bytes(&self.parent.current_key_padding);
 
     self.current.set_tombstone(current_key);
+  }
+
+  /// Physically removes only the current-delta entry without hiding lower layers.
+  pub(crate) fn remove_current_entry(
+    &mut self,
+    key: StorageKeyWithSpace<'_>,
+  ) -> MptValue<Box<[u8]>> {
+    let current_key = key.to_delta_mpt_key_bytes(&self.parent.current_key_padding);
+
+    self.current.remove_entry(current_key)
+  }
+
+  pub(crate) fn remove_current_prefix(
+    &mut self,
+    access_key_prefix: StorageKeyWithSpace<'_>,
+  ) -> Vec<(Vec<u8>, MptValue<Box<[u8]>>)> {
+    let logical_prefix = access_key_prefix.to_key_bytes();
+    let needs_logical_filter = matches!(access_key_prefix.key, StorageKey::AddressPrefixKey(_));
+    let current_prefix = access_key_prefix.to_delta_mpt_key_bytes(&self.parent.current_key_padding);
+
+    let mut entries_to_remove = Vec::new();
+
+    self
+      .current
+      .visit_effective_prefix(&current_prefix, |physical_key, _| {
+        let logical_key = StorageKeyWithSpace::from_delta_mpt_key(physical_key).to_key_bytes();
+
+        if needs_logical_filter && !logical_key.starts_with(&logical_prefix) {
+          return;
+        }
+
+        entries_to_remove.push((physical_key.to_vec(), logical_key));
+      });
+
+    let mut removed_entries = Vec::with_capacity(entries_to_remove.len());
+
+    for (physical_key, logical_key) in entries_to_remove {
+      let value = match self.current.remove_entry(physical_key) {
+        MptValue::None => {
+          unreachable!("collected current Delta MPT entry disappeared before removal")
+        }
+        value => value,
+      };
+
+      removed_entries.push((logical_key, value));
+    }
+
+    removed_entries
+  }
+
+  /// Deletes every visible value while preserving Conflux's physical layer mutations.
+  pub(crate) fn delete_prefix(
+    &mut self,
+    access_key_prefix: StorageKeyWithSpace<'_>,
+  ) -> Vec<(Vec<u8>, Box<[u8]>)> {
+    let removed_current = self.remove_current_prefix(access_key_prefix);
+    let mut covered_keys = HashSet::with_capacity(removed_current.len());
+    let mut deleted_entries = Vec::with_capacity(removed_current.len());
+
+    for (key, value) in removed_current {
+      match value {
+        MptValue::None => {
+          unreachable!("removed current Delta MPT entries always existed before removal")
+        }
+
+        MptValue::TombStone => {
+          covered_keys.insert(key);
+        }
+
+        MptValue::Some(value) => {
+          covered_keys.insert(key.clone());
+          deleted_entries.push((key, value));
+        }
+      }
+    }
+
+    let logical_prefix = access_key_prefix.to_key_bytes();
+    let needs_logical_filter = matches!(access_key_prefix.key, StorageKey::AddressPrefixKey(_));
+    let mut lower_keys_to_hide = HashSet::new();
+
+    // Production writes current tombstones for intermediate values and every
+    // snapshot entry, including snapshots already hidden by an intermediate tombstone.
+    if let Some(intermediate) = &self.parent.intermediate {
+      let intermediate_prefix = access_key_prefix.to_delta_mpt_key_bytes(&intermediate.key_padding);
+
+      intermediate
+        .mpt
+        .visit_prefix(&intermediate_prefix, |physical_key, value| {
+          let logical_key = StorageKeyWithSpace::from_delta_mpt_key(physical_key).to_key_bytes();
+
+          if needs_logical_filter && !logical_key.starts_with(&logical_prefix) {
+            return;
+          }
+
+          match value {
+            MptValue::None => {
+              unreachable!("visited intermediate Delta MPT entries are never missing")
+            }
+            MptValue::TombStone => {
+              covered_keys.insert(logical_key);
+            }
+            MptValue::Some(value) => {
+              let was_uncovered = covered_keys.insert(logical_key.clone());
+              lower_keys_to_hide.insert(logical_key.clone());
+
+              if was_uncovered {
+                deleted_entries.push((logical_key, Box::<[u8]>::from(value)));
+              }
+            }
+          }
+        });
+    }
+
+    self
+      .parent
+      .snapshot
+      .visit_prefix(&logical_prefix, |key, value| {
+        let was_uncovered = !covered_keys.contains(key);
+        let logical_key = key.to_vec();
+
+        lower_keys_to_hide.insert(logical_key.clone());
+
+        if was_uncovered {
+          deleted_entries.push((logical_key, Box::<[u8]>::from(value)));
+        }
+      });
+
+    for logical_key in lower_keys_to_hide {
+      let key = StorageKeyWithSpace::from_key_bytes::<SkipInputCheck>(&logical_key);
+
+      self.delete(key);
+    }
+
+    deleted_entries
   }
 
   pub(crate) fn into_version(self) -> StateVersion {
@@ -363,7 +635,10 @@ mod tests {
       "bc2469018d337e2dfd3db91a48322a0891b94b33948114cc115aff9a81e0f5df"
     ));
     assert_eq!(actual_state_root, oracle_state_root);
-    assert_eq!(actual_state_root.compute_state_root_hash(), oracle_state_root_hash);
+    assert_eq!(
+      actual_state_root.compute_state_root_hash(),
+      oracle_state_root_hash
+    );
     let parent_identity = parent.root_with_aux_info();
 
     assert_eq!(
