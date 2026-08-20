@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use cfx_executor::{
   executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
-  internal_contract::initialize_internal_contract_accounts,
+  internal_contract::{initialize_internal_contract_accounts, make_staking_events},
   machine::Machine,
   state::State,
 };
@@ -18,12 +18,17 @@ use cfx_parameters::{
     GENESIS_TRANSACTION_CREATE_GENESIS_TOKEN_MANAGER_FOUR_YEAR_UNLOCK,
     GENESIS_TRANSACTION_CREATE_GENESIS_TOKEN_MANAGER_TWO_YEAR_UNLOCK, GENESIS_TRANSACTION_DATA_STR,
   },
+  staking::POS_VOTE_PRICE,
 };
 use cfx_statedb::StateDb;
 use cfx_types::{
-  Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, Space, U256,
+  Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, U256,
   cal_contract_address_with_space,
 };
+use diem_crypto::ValidCryptoMaterial;
+use diem_types::{block_info::PivotBlockDecision, term_state::pos_state_config::PosStateConfig};
+use pow_types::StakingEvent;
+
 use cfx_vm_types::Env;
 use primitives::{
   Action, Block, BlockHeaderBuilder, SignedTransaction,
@@ -34,6 +39,9 @@ use thiserror::Error;
 
 use crate::{
   mpt::indexed_mpt_root,
+  pos::{
+    CommittedPosState, GENESIS_POS_REFERENCE, GenesisPosDefinition, bootstrap_genesis_pos_state,
+  },
   state::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate, StateVersion},
@@ -62,6 +70,11 @@ pub(crate) struct ExecutedGenesis {
   pub(crate) committed_state: CommittedStateVersion,
 }
 
+pub(crate) struct ExecutedGenesisWithPos {
+  pub(crate) execution: ExecutedGenesis,
+  pub(crate) committed_pos_state: CommittedPosState,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum GenesisError {
   #[error(transparent)]
@@ -75,12 +88,50 @@ pub(crate) enum GenesisError {
     contract: &'static str,
     outcome: ExecutionOutcome,
   },
+  #[error("Genesis PoS registration transaction {index} did not finish: {outcome:?}")]
+  PosRegistrationDidNotFinish {
+    index: usize,
+    outcome: ExecutionOutcome,
+  },
 }
 
 pub(crate) fn execute_genesis(
   machine: Arc<Machine>,
   allocations: BTreeMap<AddressWithSpace, U256>,
   header: GenesisHeaderInput,
+) -> Result<ExecutedGenesis, GenesisError> {
+  execute_genesis_inner(machine, allocations, header, None)
+}
+
+pub(crate) fn execute_genesis_with_pos(
+  machine: Arc<Machine>,
+  allocations: BTreeMap<AddressWithSpace, U256>,
+  header: GenesisHeaderInput,
+  definition: &GenesisPosDefinition,
+  pos_config: &PosStateConfig,
+) -> Result<ExecutedGenesisWithPos, GenesisError> {
+  let execution = execute_genesis_inner(machine, allocations, header, Some(definition))?;
+
+  let committed_pos_state = bootstrap_genesis_pos_state(
+    definition,
+    pos_config,
+    PivotBlockDecision {
+      height: 0,
+      block_hash: execution.block.hash(),
+    },
+  );
+
+  Ok(ExecutedGenesisWithPos {
+    execution,
+    committed_pos_state,
+  })
+}
+
+fn execute_genesis_inner(
+  machine: Arc<Machine>,
+  allocations: BTreeMap<AddressWithSpace, U256>,
+  header: GenesisHeaderInput,
+  pos_definition: Option<&GenesisPosDefinition>,
 ) -> Result<ExecutedGenesis, GenesisError> {
   let parent = Arc::new(StateVersion::genesis_parent());
 
@@ -140,6 +191,10 @@ pub(crate) fn execute_genesis(
     state.commit_cache(false);
   }
 
+  if let Some(definition) = pos_definition {
+    execute_genesis_pos(&mut state, machine.as_ref(), definition)?;
+  }
+
   state.genesis_special_remove_account(&genesis_account.address)?;
 
   let prepared_state_root = state.compute_state_root_for_genesis(None)?;
@@ -162,6 +217,7 @@ pub(crate) fn execute_genesis(
       .with_author(header.author)
       .with_difficulty(header.difficulty)
       .with_transactions_root(transactions_root)
+      .with_pos_reference(pos_definition.map(|_| GENESIS_POS_REFERENCE))
       .build(),
     transactions,
   );
@@ -326,6 +382,60 @@ fn execute_genesis_deployment(
   }
 }
 
+fn execute_genesis_pos(
+  state: &mut State,
+  machine: &Machine,
+  definition: &GenesisPosDefinition,
+) -> Result<(), GenesisError> {
+  for (index, node) in definition.initial_nodes.iter().enumerate() {
+    let stake_balance = U256::from(node.voting_power) * *POS_VOTE_PRICE;
+    let account_balance = stake_balance + U256::from(ONE_CFX_IN_DRIP) * U256::from(20);
+    let native_address = node.execution_address.with_native_space();
+    state.add_balance(&native_address, &account_balance)?;
+    state.deposit(&node.execution_address, &stake_balance, 0, false)?;
+    state.commit_cache(false);
+
+    let signed_transaction = node.register_transaction.clone().fake_sign(native_address);
+
+    let environment = Env {
+      transaction_hash: signed_transaction.hash(),
+      ..Default::default()
+    };
+    let mut spec = machine.spec(environment.number, environment.epoch_height);
+    spec.cip43_init = true;
+
+    let outcome = ExecutiveContext::new(state, &environment, machine, &spec)
+      .transact(&signed_transaction, TransactOptions::default())?;
+
+    state.update_state_post_tx_execution(false);
+
+    let executed = match outcome {
+      ExecutionOutcome::Finished(executed) => executed,
+      outcome => {
+        return Err(GenesisError::PosRegistrationDidNotFinish { index, outcome });
+      }
+    };
+
+    let identifier = H256::from_slice(node.node_id.addr.as_ref());
+    let expected_events = vec![
+      StakingEvent::Register(
+        identifier,
+        node.node_id.public_key.to_bytes(),
+        node.node_id.vrf_public_key.to_bytes(),
+      ),
+      StakingEvent::IncreaseStake(identifier, node.voting_power),
+    ];
+
+    assert_eq!(
+      make_staking_events(&executed.logs),
+      expected_events,
+      "Genesis PoS registration transaction {index} emitted unexpected events",
+    );
+  }
+
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use std::{collections::BTreeMap, sync::Arc};
@@ -341,24 +451,100 @@ mod tests {
       DEV_GENESIS_KEY_PAIR, DEV_GENESIS_KEY_PAIR_2, GENESIS_ACCOUNT_ADDRESS,
       genesis_contract_address_two_year,
     },
-    internal_contract_addresses::ADMIN_CONTROL_CONTRACT_ADDRESS,
+    internal_contract_addresses::{ADMIN_CONTROL_CONTRACT_ADDRESS, POS_REGISTER_CONTRACT_ADDRESS},
+    staking::POS_VOTE_PRICE,
   };
   use cfx_statedb::StateDb;
   use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, U256};
   use hex_literal::hex;
 
-  use super::{GenesisHeaderInput, execute_genesis};
-  use crate::state::{layered_mpt_state::LayeredMptState, state_version::StateCandidate};
+  use super::{GenesisHeaderInput, execute_genesis, execute_genesis_with_pos};
+  use crate::state::{
+    layered_mpt_state::LayeredMptState,
+    state_version::{StateCandidate, StateVersion},
+  };
 
-  fn oracle_machine() -> Arc<Machine> {
+  use diem_crypto::ValidCryptoMaterialStringExt;
+  use diem_types::{
+    term_state::{NodeID, pos_state_config::PosStateConfig},
+    validator_config::{ConsensusPublicKey, ConsensusVRFPublicKey},
+  };
+  use primitives::{Action, transaction::native_transaction::NativeTransaction};
+
+  use crate::pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput};
+
+  const CONFLUX_COMPATIBILITY_CHAIN_ID: u32 = 10;
+  const INITIAL_POS_VOTING_POWER: u64 = 2_000;
+  const COMPATIBILITY_ALLOCATION_BALANCE: &str = "5000000000000000000000000000000000";
+
+  const SINGLE_VALIDATOR_REGISTER_CALL_DATA: &[u8] = &hex!(
+    "e335b451b4e1f5b4fe44955f08099a5441d9a0d8b2837dfc9ce69c6c9c86bedc792e847d00000000"
+    "000000000000000000000000000000000000000000000000000007d0000000000000000000000000"
+    "00000000000000000000000000000000000000a00000000000000000000000000000000000000000"
+    "00000000000000000000010000000000000000000000000000000000000000000000000000000000"
+    "000001600000000000000000000000000000000000000000000000000000000000000030b157f238"
+    "403a5b980546fd19ca48f79a2613e3e3a91d14ee69908b8816e4c53665370b2fbd0db62cc4aa0e8c"
+    "aeedc9b5000000000000000000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000210250356d2d32863cc527c457721de856665365949e3b4f977a9ff167"
+    "131ce638d10000000000000000000000000000000000000000000000000000000000000000000000"
+    "00000000000000000000000000000000000000000000000000000040000000000000000000000000"
+    "00000000000000000000000000000000000000a00000000000000000000000000000000000000000"
+    "000000000000000000000030927de16a6b4f669b4c17088271001faf51799496f3d491cb21ce9f5c"
+    "d910b0396b1e520830c15df149438c8eb7e3ddbe0000000000000000000000000000000000000000"
+    "00000000000000000000000000000000000000000000000000000020f4d418316b1d4bc0d2e2e2b7"
+    "192a7a80998f5a83ffb53a6b48ec219f08511939"
+  );
+
+  fn single_validator_genesis_definition() -> GenesisPosDefinition {
+    let bls_key = ConsensusPublicKey::from_encoded_string(
+      "b157f238403a5b980546fd19ca48f79a2613e3e3a91d14ee69908b8816e4c53665370b2fbd0db62cc4aa0e8caeedc9b5",
+    )
+    .unwrap();
+
+    let vrf_key = ConsensusVRFPublicKey::from_encoded_string(
+      "0250356d2d32863cc527c457721de856665365949e3b4f977a9ff167131ce638d1",
+    )
+    .unwrap();
+
+    let node_id = NodeID::new(bls_key, vrf_key);
+    let voting_power = INITIAL_POS_VOTING_POWER;
+
+    GenesisPosDefinition {
+      initial_seed: H256(hex!(
+        "0909090909090909090909090909090909090909090909090909090909090909"
+      )),
+      initial_nodes: vec![GenesisPosNode {
+        execution_address: DEV_GENESIS_KEY_PAIR_2.address(),
+        node_id: node_id.clone(),
+        voting_power,
+        register_transaction: NativeTransaction {
+          nonce: 0.into(),
+          gas_price: 1.into(),
+          gas: 200_000.into(),
+          action: Action::Call(POS_REGISTER_CONTRACT_ADDRESS),
+          value: U256::zero(),
+          storage_limit: 16_000,
+          chain_id: CONFLUX_COMPATIBILITY_CHAIN_ID,
+          data: SINGLE_VALIDATOR_REGISTER_CALL_DATA.to_vec(),
+          ..Default::default()
+        },
+      }],
+      initial_committee: vec![(node_id.addr, voting_power)],
+    }
+  }
+
+  fn conflux_compatibility_machine() -> Arc<Machine> {
     let mut params = CommonParams::default();
-    params.chain_id = ChainIdParamsInner::new_simple(AllChainID::new(10, 10));
+    params.chain_id = ChainIdParamsInner::new_simple(AllChainID::new(
+      CONFLUX_COMPATIBILITY_CHAIN_ID,
+      CONFLUX_COMPATIBILITY_CHAIN_ID,
+    ));
 
     Arc::new(Machine::new_with_builtin(params, VmFactory::new(32 * 1024)))
   }
 
-  fn oracle_allocations() -> BTreeMap<AddressWithSpace, U256> {
-    let balance = U256::from_dec_str("5000000000000000000000000000000000").unwrap();
+  fn conflux_compatibility_allocations() -> BTreeMap<AddressWithSpace, U256> {
+    let balance = U256::from_dec_str(COMPATIBILITY_ALLOCATION_BALANCE).unwrap();
 
     BTreeMap::from([
       (DEV_GENESIS_KEY_PAIR.address().with_native_space(), balance),
@@ -374,108 +560,195 @@ mod tests {
     ])
   }
 
-  #[test]
-  fn matches_conflux_genesis_oracle() {
-    let genesis = execute_genesis(
-      oracle_machine(),
-      oracle_allocations(),
-      GenesisHeaderInput {
-        author: GENESIS_ACCOUNT_ADDRESS,
-        difficulty: U256::zero(),
-      },
-    )
-    .unwrap();
+  fn conflux_compatibility_header() -> GenesisHeaderInput {
+    GenesisHeaderInput {
+      author: GENESIS_ACCOUNT_ADDRESS,
+      difficulty: U256::zero(),
+    }
+  }
 
-    let block_hash = H256(hex!(
+  fn compatibility_state_root() -> StateRootWithAuxInfo {
+    StateRootWithAuxInfo::genesis(&H256(hex!(
+      "58d1e6734e0b05be59871ccd92ad887f0d5a6ea19da7c6a4969a87108394e511"
+    )))
+  }
+
+  fn open_committed_state(version: &Arc<StateVersion>) -> State {
+    let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(version)));
+    State::new(StateDb::new(Box::new(backend))).expect("a committed Genesis state must be readable")
+  }
+
+  #[test]
+  fn conflux_genesis_matches_reference_outputs() {
+    let genesis = execute_genesis(
+      conflux_compatibility_machine(),
+      conflux_compatibility_allocations(),
+      conflux_compatibility_header(),
+    )
+    .expect("the fixed Conflux compatibility Genesis must execute");
+
+    let expected_block_hash = H256(hex!(
       "ca6fce203cc4ae51a008c15367170e036792ab1e007b1265159710526954c944"
     ));
-    let state_root = StateRootWithAuxInfo::genesis(&H256(hex!(
-      "58d1e6734e0b05be59871ccd92ad887f0d5a6ea19da7c6a4969a87108394e511"
-    )));
+    let expected_state_root = compatibility_state_root();
 
+    // The fixed outputs are the compatibility contract for this fixture.
     let header = &genesis.block.block_header;
-    assert_eq!(genesis.block.hash(), block_hash);
     assert_eq!(
-      (
-        genesis.state_root.clone(),
-        *header.transactions_root(),
-        *header.deferred_receipts_root(),
-        *header.deferred_state_root(),
-      ),
-      (
-        state_root.clone(),
-        H256(hex!(
-          "8208dfdbb409f7a3e41386a8eaaa6412ad4df158fc04a09b499c1a004b53d469"
-        )),
-        H256(hex!(
-          "09f8709ea9f344a810811a373b30861568f5686e649d6177fd92ea2db7477508"
-        )),
-        state_root.aux_info.state_root_hash,
-      )
+      genesis.block.hash(),
+      expected_block_hash,
+      "Genesis block hash changed",
     );
     assert_eq!(
-      (
-        genesis.committed_state.epoch_id,
-        genesis.committed_state.version.root_with_aux_info(),
-      ),
-      (block_hash, state_root)
+      genesis.state_root, expected_state_root,
+      "Genesis state root changed",
+    );
+    assert_eq!(
+      *header.transactions_root(),
+      H256(hex!(
+        "8208dfdbb409f7a3e41386a8eaaa6412ad4df158fc04a09b499c1a004b53d469"
+      )),
+      "Genesis transaction root changed",
+    );
+    assert_eq!(
+      *header.deferred_receipts_root(),
+      H256(hex!(
+        "09f8709ea9f344a810811a373b30861568f5686e649d6177fd92ea2db7477508"
+      )),
+      "Genesis receipt root changed",
+    );
+    assert_eq!(
+      *header.deferred_state_root(),
+      expected_state_root.aux_info.state_root_hash,
+      "Genesis deferred state root changed",
     );
 
-    let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(
-      &genesis.committed_state.version,
-    )));
-    let state = State::new(StateDb::new(Box::new(backend))).unwrap();
-    let allocation_balance = U256::from_dec_str("5000000000000000000000000000000000").unwrap();
+    // The committed version must describe the same block and state.
+    assert_eq!(
+      genesis.committed_state.epoch_id, expected_block_hash,
+      "committed Genesis epoch identity changed",
+    );
+    assert_eq!(
+      genesis.committed_state.version.root_with_aux_info(),
+      expected_state_root,
+      "committed Genesis state does not match execution output",
+    );
+
+    // Read representative state through the committed-state boundary.
+    let state = open_committed_state(&genesis.committed_state.version);
+    let allocation_balance = U256::from_dec_str(COMPATIBILITY_ALLOCATION_BALANCE).unwrap();
 
     assert_eq!(
-      (
-        state
-          .balance(&DEV_GENESIS_KEY_PAIR.address().with_native_space())
-          .unwrap(),
-        state
-          .balance(&DEV_GENESIS_KEY_PAIR.evm_address().with_evm_space())
-          .unwrap(),
-      ),
-      (allocation_balance, allocation_balance)
+      state
+        .balance(&DEV_GENESIS_KEY_PAIR.address().with_native_space())
+        .unwrap(),
+      allocation_balance,
+      "Core allocation changed",
+    );
+    assert_eq!(
+      state
+        .balance(&DEV_GENESIS_KEY_PAIR.evm_address().with_evm_space())
+        .unwrap(),
+      allocation_balance,
+      "eSpace allocation changed",
     );
 
     let two_year = genesis_contract_address_two_year();
     assert_eq!(
-      (
-        state.balance(&two_year).unwrap(),
-        state.code_hash(&two_year).unwrap(),
-        state.admin(&two_year.address).unwrap(),
-      ),
-      (
-        U256::from_dec_str("799999975000000000000000000").unwrap(),
-        H256(hex!(
-          "98e7eb536c90167a919e69073b522e94ee174621d9085280ea686c96fe06a36e"
-        )),
-        Address::zero(),
-      )
+      state.balance(&two_year).unwrap(),
+      U256::from_dec_str("799999975000000000000000000").unwrap(),
+      "two-year unlock balance changed",
+    );
+    assert_eq!(
+      state.code_hash(&two_year).unwrap(),
+      H256(hex!(
+        "98e7eb536c90167a919e69073b522e94ee174621d9085280ea686c96fe06a36e"
+      )),
+      "two-year unlock bytecode changed",
+    );
+    assert_eq!(
+      state.admin(&two_year.address).unwrap(),
+      Address::zero(),
+      "two-year unlock admin changed",
     );
     assert!(
       state
         .exists(&ADMIN_CONTROL_CONTRACT_ADDRESS.with_native_space())
-        .unwrap()
+        .unwrap(),
+      "AdminControl must exist after Genesis",
     );
 
     let genesis_account = GENESIS_ACCOUNT_ADDRESS.with_native_space();
+    assert!(
+      state.exists(&genesis_account).unwrap(),
+      "Genesis sentinel account must remain observable",
+    );
     assert_eq!(
-      (
-        state.exists(&genesis_account).unwrap(),
-        state.balance(&genesis_account).unwrap(),
-        state.nonce(&genesis_account).unwrap(),
-        state.code_hash(&genesis_account).unwrap(),
-      ),
-      (
-        true,
-        U256::zero(),
-        U256::zero(),
-        H256(hex!(
-          "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
-        )),
-      )
+      state.balance(&genesis_account).unwrap(),
+      U256::zero(),
+      "Genesis sentinel account balance changed",
+    );
+    assert_eq!(
+      state.nonce(&genesis_account).unwrap(),
+      U256::zero(),
+      "Genesis sentinel account nonce changed",
+    );
+    assert_eq!(
+      state.code_hash(&genesis_account).unwrap(),
+      H256(hex!(
+        "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+      )),
+      "Genesis sentinel account code hash changed",
+    );
+  }
+
+  #[test]
+  fn genesis_commits_initial_pos_state() {
+    let definition = single_validator_genesis_definition();
+    let node = &definition.initial_nodes[0];
+    let expected_staking = U256::from(node.voting_power) * *POS_VOTE_PRICE;
+
+    let genesis = execute_genesis_with_pos(
+      conflux_compatibility_machine(),
+      conflux_compatibility_allocations(),
+      conflux_compatibility_header(),
+      &definition,
+      &PosStateConfig::default(),
+    )
+    .expect("the fixed initial PoS registration must execute");
+
+    let pos_env_input = genesis
+      .execution
+      .block
+      .block_header
+      .pos_reference()
+      .as_ref()
+      .and_then(|reference| genesis.committed_pos_state.env_input(reference));
+
+    assert_eq!(
+      pos_env_input,
+      Some(PosEnvInput {
+        pos_view: 1,
+        finalized_epoch: 0,
+      }),
+      "Genesis PoS reference must provide the first block's PoS environment",
+    );
+
+    let state = open_committed_state(&genesis.execution.committed_state.version);
+    assert_eq!(
+      state.staking_balance(&node.execution_address).unwrap(),
+      expected_staking,
+      "initial PoS deposit was not committed",
+    );
+    assert_eq!(
+      state.pos_locked_staking(&node.execution_address).unwrap(),
+      expected_staking,
+      "initial PoS registration was not committed",
+    );
+    assert_eq!(
+      state.total_pos_staking_tokens(),
+      expected_staking,
+      "global PoS staking total was not updated",
     );
   }
 }
