@@ -22,8 +22,8 @@ use cfx_parameters::{
 };
 use cfx_statedb::StateDb;
 use cfx_types::{
-  Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, U256,
-  cal_contract_address_with_space,
+  Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, SpaceMap,
+  U256, cal_contract_address_with_space,
 };
 use diem_crypto::ValidCryptoMaterial;
 use diem_types::{block_info::PivotBlockDecision, term_state::pos_state_config::PosStateConfig};
@@ -31,7 +31,7 @@ use pow_types::StakingEvent;
 
 use cfx_vm_types::Env;
 use primitives::{
-  Action, Block, BlockHeaderBuilder, SignedTransaction,
+  Action, Block, BlockHeaderBuilder, Cip112TransitionHeight, SignedTransaction,
   transaction::native_transaction::NativeTransaction,
 };
 use rustc_hex::FromHex;
@@ -58,10 +58,12 @@ const GENESIS_CONTRACT_NAMES: [&str; 7] = [
   "COMMUNITY_FUND",
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GenesisHeaderInput {
   pub(crate) author: Address,
   pub(crate) difficulty: U256,
+  pub(crate) custom: Vec<Vec<u8>>,
+  pub(crate) base_price: Option<SpaceMap<U256>>,
 }
 
 pub(crate) struct ExecutedGenesis {
@@ -209,6 +211,9 @@ fn execute_genesis_inner(
   let empty_block_receipts_root = indexed_mpt_root(std::iter::empty::<&[u8]>());
   let receipts_root = indexed_mpt_root(std::iter::once(empty_block_receipts_root.as_bytes()));
 
+  let cip112_transition_height =
+    Cip112TransitionHeight::new(machine.params().transition_heights.cip112);
+
   let mut block = Block::new(
     BlockHeaderBuilder::new()
       .with_deferred_state_root(prepared_state_root.aux_info.state_root_hash)
@@ -217,8 +222,10 @@ fn execute_genesis_inner(
       .with_author(header.author)
       .with_difficulty(header.difficulty)
       .with_transactions_root(transactions_root)
+      .with_custom(header.custom)
       .with_pos_reference(pos_definition.map(|_| GENESIS_POS_REFERENCE))
-      .build(),
+      .with_base_price(header.base_price)
+      .build_with_cip112(cip112_transition_height),
     transactions,
   );
 
@@ -447,6 +454,8 @@ mod tests {
   };
   use cfx_internal_common::{ChainIdParamsInner, StateRootWithAuxInfo};
   use cfx_parameters::{
+    consensus::NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT,
+    consensus_internal::{INITIAL_1559_CORE_BASE_PRICE, INITIAL_1559_ETH_BASE_PRICE},
     genesis::{
       DEV_GENESIS_KEY_PAIR, DEV_GENESIS_KEY_PAIR_2, GENESIS_ACCOUNT_ADDRESS,
       genesis_contract_address_two_year,
@@ -455,7 +464,7 @@ mod tests {
     staking::POS_VOTE_PRICE,
   };
   use cfx_statedb::StateDb;
-  use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, U256};
+  use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, SpaceMap, U256};
   use hex_literal::hex;
 
   use super::{GenesisHeaderInput, execute_genesis, execute_genesis_with_pos};
@@ -533,14 +542,37 @@ mod tests {
     }
   }
 
-  fn conflux_compatibility_machine() -> Arc<Machine> {
+  fn conflux_compatibility_protocol() -> (Arc<Machine>, GenesisHeaderInput) {
     let mut params = CommonParams::default();
     params.chain_id = ChainIdParamsInner::new_simple(AllChainID::new(
       CONFLUX_COMPATIBILITY_CHAIN_ID,
       CONFLUX_COMPATIBILITY_CHAIN_ID,
     ));
+    params.min_base_price = SpaceMap::new(
+      INITIAL_1559_CORE_BASE_PRICE.into(),
+      INITIAL_1559_ETH_BASE_PRICE.into(),
+    );
 
-    Arc::new(Machine::new_with_builtin(params, VmFactory::new(32 * 1024)))
+    let custom = params
+      .custom_prefix(0)
+      .expect("the modern Local rules must define Genesis custom data");
+
+    assert_eq!(
+      custom,
+      vec![NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT.to_vec()],
+    );
+
+    let header = GenesisHeaderInput {
+      author: GENESIS_ACCOUNT_ADDRESS,
+      difficulty: U256::zero(),
+      custom,
+      base_price: Some(params.init_base_price()),
+    };
+
+    (
+      Arc::new(Machine::new_with_builtin(params, VmFactory::new(32 * 1024))),
+      header,
+    )
   }
 
   fn conflux_compatibility_allocations() -> BTreeMap<AddressWithSpace, U256> {
@@ -560,13 +592,6 @@ mod tests {
     ])
   }
 
-  fn conflux_compatibility_header() -> GenesisHeaderInput {
-    GenesisHeaderInput {
-      author: GENESIS_ACCOUNT_ADDRESS,
-      difficulty: U256::zero(),
-    }
-  }
-
   fn compatibility_state_root() -> StateRootWithAuxInfo {
     StateRootWithAuxInfo::genesis(&H256(hex!(
       "58d1e6734e0b05be59871ccd92ad887f0d5a6ea19da7c6a4969a87108394e511"
@@ -580,15 +605,13 @@ mod tests {
 
   #[test]
   fn conflux_genesis_matches_reference_outputs() {
-    let genesis = execute_genesis(
-      conflux_compatibility_machine(),
-      conflux_compatibility_allocations(),
-      conflux_compatibility_header(),
-    )
-    .expect("the fixed Conflux compatibility Genesis must execute");
+    let (machine, header) = conflux_compatibility_protocol();
+
+    let genesis = execute_genesis(machine, conflux_compatibility_allocations(), header)
+      .expect("the fixed Conflux compatibility Genesis must execute");
 
     let expected_block_hash = H256(hex!(
-      "ca6fce203cc4ae51a008c15367170e036792ab1e007b1265159710526954c944"
+      "7845ae760141b70fae492a0c6759dd592eeeb194bba90338f1bf7d7ab4aeb967"
     ));
     let expected_state_root = compatibility_state_root();
 
@@ -708,10 +731,12 @@ mod tests {
     let node = &definition.initial_nodes[0];
     let expected_staking = U256::from(node.voting_power) * *POS_VOTE_PRICE;
 
+    let (machine, header) = conflux_compatibility_protocol();
+
     let genesis = execute_genesis_with_pos(
-      conflux_compatibility_machine(),
+      machine,
       conflux_compatibility_allocations(),
-      conflux_compatibility_header(),
+      header,
       &definition,
       &PosStateConfig::default(),
     )
