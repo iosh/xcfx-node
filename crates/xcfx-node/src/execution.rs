@@ -27,13 +27,30 @@ use crate::{
   },
 };
 
-pub(crate) struct EpochExecutionCandidate {
-  pub(crate) epoch_block: Block,
+pub(crate) struct ExecutedSingleBlockEpoch {
+  pub(crate) block: Block,
   pub(crate) state: CommittedStateVersion,
-  pub(crate) execution_commitment: EpochExecutionCommitment,
+  pub(crate) commitment: EpochExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
   pub(crate) transactions_to_repack: Vec<Arc<SignedTransaction>>,
   pub(crate) accounts_for_txpool: Vec<Account>,
+}
+
+pub(crate) fn compute_epoch_receipts_root(block_receipts: &[Arc<BlockReceipts>]) -> H256 {
+  let block_receipt_roots = block_receipts
+    .iter()
+    .map(|block_receipts| {
+      let encoded_receipts = block_receipts
+        .receipts
+        .iter()
+        .map(Encodable::rlp_bytes)
+        .collect::<Vec<_>>();
+
+      indexed_mpt_root(encoded_receipts.iter().map(|encoded| encoded.as_ref()))
+    })
+    .collect::<Vec<_>>();
+
+  indexed_mpt_root(block_receipt_roots.iter().map(|root| root.as_bytes()))
 }
 
 /// Executes the current single-block epoch path.
@@ -47,7 +64,7 @@ pub(crate) fn execute_single_block_epoch(
   parent_pos_state: &CommittedPosState,
   block_number: BlockNumber,
   epoch_block: Block,
-) -> EpochExecutionCandidate {
+) -> ExecutedSingleBlockEpoch {
   let parent_hash = parent_block.hash();
 
   assert_eq!(
@@ -184,14 +201,7 @@ pub(crate) fn execute_single_block_epoch(
   });
   let block_receipts = vec![block_receipt];
 
-  let encoded_receipts = block_receipts[0]
-    .receipts
-    .iter()
-    .map(Encodable::rlp_bytes)
-    .collect::<Vec<_>>();
-  let block_receipts_root =
-    indexed_mpt_root(encoded_receipts.iter().map(|encoded| encoded.as_ref()));
-  let receipts_root = indexed_mpt_root(std::iter::once(block_receipts_root.as_bytes()));
+  let receipts_root = compute_epoch_receipts_root(&block_receipts);
   let logs_bloom_hash = BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts);
 
   // With a stable PoS reference, the full node's post-epoch PoS distribution
@@ -215,16 +225,16 @@ pub(crate) fn execute_single_block_epoch(
     "committed candidate state must match the executor state root",
   );
 
-  let execution_commitment = EpochExecutionCommitment {
+  let commitment = EpochExecutionCommitment {
     state_root_with_aux_info: commit_result.state_root,
     receipts_root,
     logs_bloom_hash,
   };
 
-  EpochExecutionCandidate {
-    epoch_block,
+  ExecutedSingleBlockEpoch {
+    block: epoch_block,
     state: committed_state,
-    execution_commitment,
+    commitment,
     block_receipts,
     transactions_to_repack,
     accounts_for_txpool: commit_result.accounts_for_txpool,

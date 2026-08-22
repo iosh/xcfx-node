@@ -8,7 +8,7 @@ use cfx_executor::{
   machine::Machine,
   state::State,
 };
-use cfx_internal_common::StateRootWithAuxInfo;
+use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::{
   consensus::{GENESIS_GAS_LIMIT, ONE_CFX_IN_DRIP},
   consensus_internal::{GENESIS_TOKEN_COUNT_IN_CFX, TWO_YEAR_UNLOCK_TOKEN_COUNT_IN_CFX},
@@ -31,13 +31,14 @@ use pow_types::StakingEvent;
 
 use cfx_vm_types::Env;
 use primitives::{
-  Action, Block, BlockHeaderBuilder, Cip112TransitionHeight, SignedTransaction,
+  Action, Block, BlockHeaderBuilder, BlockReceipts, Cip112TransitionHeight, SignedTransaction,
   transaction::native_transaction::NativeTransaction,
 };
 use rustc_hex::FromHex;
 use thiserror::Error;
 
 use crate::{
+  execution::compute_epoch_receipts_root,
   mpt::indexed_mpt_root,
   pos::{
     CommittedPosState, GENESIS_POS_REFERENCE, GenesisPosDefinition, bootstrap_genesis_pos_state,
@@ -68,8 +69,9 @@ pub(crate) struct GenesisHeaderInput {
 
 pub(crate) struct ExecutedGenesis {
   pub(crate) block: Block,
-  pub(crate) state_root: StateRootWithAuxInfo,
   pub(crate) committed_state: CommittedStateVersion,
+  pub(crate) commitment: EpochExecutionCommitment,
+  pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
 }
 
 pub(crate) struct ExecutedGenesisWithPos {
@@ -208,8 +210,14 @@ fn execute_genesis_inner(
 
   let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
 
-  let empty_block_receipts_root = indexed_mpt_root(std::iter::empty::<&[u8]>());
-  let receipts_root = indexed_mpt_root(std::iter::once(empty_block_receipts_root.as_bytes()));
+  let block_receipts = vec![Arc::new(BlockReceipts {
+    receipts: Vec::new(),
+    block_number: 0,
+    secondary_reward: U256::zero(),
+    tx_execution_error_messages: Vec::new(),
+  })];
+  let receipts_root = compute_epoch_receipts_root(&block_receipts);
+  let logs_bloom_hash = BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts);
 
   let cip112_transition_height =
     Cip112TransitionHeight::new(machine.params().transition_heights.cip112);
@@ -218,6 +226,7 @@ fn execute_genesis_inner(
     BlockHeaderBuilder::new()
       .with_deferred_state_root(prepared_state_root.aux_info.state_root_hash)
       .with_deferred_receipts_root(receipts_root)
+      .with_deferred_logs_bloom_hash(logs_bloom_hash)
       .with_gas_limit(GENESIS_GAS_LIMIT.into())
       .with_author(header.author)
       .with_difficulty(header.difficulty)
@@ -250,14 +259,20 @@ fn execute_genesis_inner(
     commit_result.state_root,
     "handed-off Genesis state must match the committed state root",
   );
+  let commitment = EpochExecutionCommitment {
+    state_root_with_aux_info: commit_result.state_root,
+    receipts_root,
+    logs_bloom_hash,
+  };
 
   // This cache is populated only after the committed block hash is fixed.
   block.block_header.pow_hash = Some(Default::default());
 
   Ok(ExecutedGenesis {
     block,
-    state_root: commit_result.state_root,
     committed_state,
+    commitment,
+    block_receipts,
   })
 }
 
@@ -485,9 +500,9 @@ mod tests {
   };
 
   use crate::{
-    execution::execute_single_block_epoch,
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
+    runtime::NodeRuntime,
   };
 
   const CONFLUX_COMPATIBILITY_CHAIN_ID: u32 = 10;
@@ -680,7 +695,7 @@ mod tests {
       "Genesis block hash changed",
     );
     assert_eq!(
-      genesis.state_root, expected_state_root,
+      genesis.commitment.state_root_with_aux_info, expected_state_root,
       "Genesis state root changed",
     );
     assert_eq!(
@@ -859,31 +874,27 @@ mod tests {
     let definition = single_validator_genesis_definition();
     let (machine, header) = conflux_compatibility_protocol();
 
-    let genesis = execute_genesis_with_pos(
+    let mut runtime = NodeRuntime::from_genesis(
       Arc::clone(&machine),
       conflux_compatibility_allocations(),
       header,
-      &definition,
-      &PosStateConfig::default(),
+      definition,
+      PosStateConfig::default(),
     )
     .expect("the fixed PoS Genesis must execute");
 
     let sender = DEV_GENESIS_KEY_PAIR.address().with_native_space();
     let receiver = DEV_GENESIS_KEY_PAIR_2.address().with_native_space();
-    let parent_state = open_committed_state(&genesis.execution.committed_state.version);
+
+    let parent_view = runtime.current_view();
+    let parent_state = open_committed_state(&parent_view.state().version);
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
-    let block = first_core_transfer_block(machine.as_ref(), &genesis.execution.block);
-    let candidate = execute_single_block_epoch(
-      machine.as_ref(),
-      &genesis.execution.block,
-      &genesis.execution.committed_state,
-      &genesis.committed_pos_state,
-      1,
-      block,
-    );
+    let block = first_core_transfer_block(machine.as_ref(), parent_view.epoch().pivot_block());
+    let transaction_pool_updates = runtime.execute_and_commit_single_block_epoch(block);
+    let committed_view = runtime.current_view();
 
-    let receipts = &candidate.block_receipts[0];
+    let receipts = &committed_view.epoch().block_receipts()[0];
     assert_eq!(receipts.receipts.len(), 1);
     assert_eq!(
       receipts.receipts[0].outcome_status,
@@ -894,21 +905,23 @@ mod tests {
       U256::from(21_000),
     );
     assert!(receipts.tx_execution_error_messages[0].is_empty());
-    assert!(candidate.transactions_to_repack.is_empty());
+    assert!(transaction_pool_updates.transactions_to_repack.is_empty());
 
+    let committed_block = committed_view.epoch().pivot_block();
     assert_eq!(
-      candidate.epoch_block.hash(),
+      committed_block.hash(),
       H256(hex!(
         "3a295cd18717ed5f12db90924dd2c18149550525b4a3a935820fb5fe2371fc01"
       )),
     );
     assert_eq!(
-      candidate.epoch_block.transactions[0].hash(),
+      committed_block.transactions[0].hash(),
       H256(hex!(
         "3957d7bdaaee6ff2660ad54681c5f4f0c1fb794c99cd95621b2de7a18e0dfa65"
       )),
     );
-    let commitment = &candidate.execution_commitment;
+
+    let commitment = committed_view.epoch().commitment();
     assert_eq!(
       commitment.receipts_root,
       H256(hex!(
@@ -922,19 +935,16 @@ mod tests {
       )),
     );
     assert_eq!(
-      commitment
-        .state_root_with_aux_info
-        .aux_info
-        .state_root_hash,
+      commitment.state_root_with_aux_info.aux_info.state_root_hash,
       H256(hex!(
         "b783510d8cbe6e6bb27d9402a26a2cae4c51c9920c0d20a7b3af76335a2959ef"
       )),
     );
 
-    let executed_state = open_committed_state(&candidate.state.version);
-    assert_eq!(executed_state.nonce(&sender).unwrap(), U256::one());
+    let committed_state = open_committed_state(&committed_view.state().version);
+    assert_eq!(committed_state.nonce(&sender).unwrap(), U256::one());
     assert_eq!(
-      executed_state.balance(&receiver).unwrap(),
+      committed_state.balance(&receiver).unwrap(),
       parent_receiver_balance + U256::from(ONE_CFX_IN_DRIP),
     );
 
