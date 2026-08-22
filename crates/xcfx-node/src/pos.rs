@@ -52,6 +52,10 @@ impl CommittedPosState {
     H256::from(self.metadata.hash.as_ref())
   }
 
+  pub(crate) fn pivot_decision(&self) -> &PivotBlockDecision {
+    &self.metadata.pivot_decision
+  }
+
   pub(crate) fn env_input(&self, reference: &PosBlockId) -> Option<PosEnvInput> {
     if *reference != self.reference() {
       return None;
@@ -59,7 +63,7 @@ impl CommittedPosState {
 
     Some(PosEnvInput {
       pos_view: self.metadata.view,
-      finalized_epoch: self.metadata.pivot_decision.height,
+      finalized_epoch: self.pivot_decision().height,
     })
   }
 }

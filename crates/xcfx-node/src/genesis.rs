@@ -475,6 +475,7 @@ mod tests {
 
   use diem_crypto::ValidCryptoMaterialStringExt;
   use diem_types::{
+    block_info::PivotBlockDecision,
     term_state::{NodeID, pos_state_config::PosStateConfig},
     validator_config::{ConsensusPublicKey, ConsensusVRFPublicKey},
   };
@@ -749,7 +750,27 @@ mod tests {
       .pos_reference()
       .as_ref()
       .and_then(|reference| genesis.committed_pos_state.env_input(reference));
+    let expected_genesis_hash = H256(hex!(
+      "2c5da3de0eab09b328de0f1efa688002d13327976c70444e932851f1ff70b6d0"
+    ));
 
+    assert_eq!(
+      genesis.execution.block.hash(),
+      expected_genesis_hash,
+      "PoS Genesis block hash changed",
+    );
+    assert_eq!(
+      genesis.execution.committed_state.epoch_id, expected_genesis_hash,
+      "committed execution state must use the PoS Genesis block identity",
+    );
+    assert_eq!(
+      genesis.committed_pos_state.pivot_decision(),
+      &PivotBlockDecision {
+        height: 0,
+        block_hash: expected_genesis_hash,
+      },
+      "committed PoS state must pivot on the PoS Genesis block",
+    );
     assert_eq!(
       pos_env_input,
       Some(PosEnvInput {
