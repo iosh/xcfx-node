@@ -23,6 +23,7 @@ thiserror.workspace = true
 diem-crypto.workspace = true
 diem-types.workspace = true
 pow-types.workspace = true
+rlp.workspace = true
 
 [dev-dependencies]
 hex-literal = "1"

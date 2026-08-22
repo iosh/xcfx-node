@@ -26,3 +26,4 @@ pow-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 
 rustc-hex = "2"
 thiserror = "2"
+rlp = "0.6"

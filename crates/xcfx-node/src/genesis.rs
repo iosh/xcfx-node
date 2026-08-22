@@ -454,7 +454,7 @@ mod tests {
   };
   use cfx_internal_common::{ChainIdParamsInner, StateRootWithAuxInfo};
   use cfx_parameters::{
-    consensus::NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT,
+    consensus::{GENESIS_GAS_LIMIT, NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT, ONE_CFX_IN_DRIP},
     consensus_internal::{INITIAL_1559_CORE_BASE_PRICE, INITIAL_1559_ETH_BASE_PRICE},
     genesis::{
       DEV_GENESIS_KEY_PAIR, DEV_GENESIS_KEY_PAIR_2, GENESIS_ACCOUNT_ADDRESS,
@@ -479,9 +479,16 @@ mod tests {
     term_state::{NodeID, pos_state_config::PosStateConfig},
     validator_config::{ConsensusPublicKey, ConsensusVRFPublicKey},
   };
-  use primitives::{Action, transaction::native_transaction::NativeTransaction};
+  use primitives::{
+    Action, Block, BlockHeaderBuilder, Cip112TransitionHeight, Transaction, TransactionStatus,
+    transaction::native_transaction::NativeTransaction,
+  };
 
-  use crate::pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput};
+  use crate::{
+    execution::execute_single_block_epoch,
+    mpt::indexed_mpt_root,
+    pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
+  };
 
   const CONFLUX_COMPATIBILITY_CHAIN_ID: u32 = 10;
   const INITIAL_POS_VOTING_POWER: u64 = 2_000;
@@ -599,6 +606,55 @@ mod tests {
     )))
   }
 
+  fn first_core_transfer_block(machine: &Machine, genesis_block: &Block) -> Block {
+    let transaction = Arc::new(
+      Transaction::from(NativeTransaction {
+        nonce: U256::zero(),
+        gas_price: U256::from(INITIAL_1559_CORE_BASE_PRICE),
+        gas: U256::from(21_000),
+        action: Action::Call(DEV_GENESIS_KEY_PAIR_2.address()),
+        value: U256::from(ONE_CFX_IN_DRIP),
+        storage_limit: 0,
+        epoch_height: 1,
+        chain_id: CONFLUX_COMPATIBILITY_CHAIN_ID,
+        data: Vec::new(),
+      })
+      .sign(DEV_GENESIS_KEY_PAIR.secret()),
+    );
+
+    let transactions = vec![transaction];
+    let transaction_hashes = transactions
+      .iter()
+      .map(|transaction| transaction.hash())
+      .collect::<Vec<_>>();
+    let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
+
+    let parent_header = &genesis_block.block_header;
+    let custom = machine
+      .params()
+      .custom_prefix(1)
+      .expect("the modern Local rules must define first-block custom data");
+    let cip112 = Cip112TransitionHeight::new(machine.params().transition_heights.cip112);
+
+    Block::new(
+      BlockHeaderBuilder::new()
+        .with_parent_hash(genesis_block.hash())
+        .with_height(1)
+        .with_timestamp(1)
+        .with_author(DEV_GENESIS_KEY_PAIR.address())
+        .with_transactions_root(transactions_root)
+        .with_deferred_state_root(*parent_header.deferred_state_root())
+        .with_deferred_receipts_root(*parent_header.deferred_receipts_root())
+        .with_deferred_logs_bloom_hash(*parent_header.deferred_logs_bloom_hash())
+        .with_difficulty(U256::one())
+        .with_gas_limit(U256::from(GENESIS_GAS_LIMIT))
+        .with_custom(custom)
+        .with_pos_reference(parent_header.pos_reference().to_owned())
+        .with_base_price(Some(machine.params().min_base_price()))
+        .build_with_cip112(cip112),
+      transactions,
+    )
+  }
   fn open_committed_state(version: &Arc<StateVersion>) -> State {
     let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(version)));
     State::new(StateDb::new(Box::new(backend))).expect("a committed Genesis state must be readable")
@@ -795,6 +851,97 @@ mod tests {
       state.total_pos_staking_tokens(),
       expected_staking,
       "global PoS staking total was not updated",
+    );
+  }
+
+  #[test]
+  fn ordered_core_transfer_matches_reference_outputs() {
+    let definition = single_validator_genesis_definition();
+    let (machine, header) = conflux_compatibility_protocol();
+
+    let genesis = execute_genesis_with_pos(
+      Arc::clone(&machine),
+      conflux_compatibility_allocations(),
+      header,
+      &definition,
+      &PosStateConfig::default(),
+    )
+    .expect("the fixed PoS Genesis must execute");
+
+    let sender = DEV_GENESIS_KEY_PAIR.address().with_native_space();
+    let receiver = DEV_GENESIS_KEY_PAIR_2.address().with_native_space();
+    let parent_state = open_committed_state(&genesis.execution.committed_state.version);
+    let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
+
+    let block = first_core_transfer_block(machine.as_ref(), &genesis.execution.block);
+    let candidate = execute_single_block_epoch(
+      machine.as_ref(),
+      &genesis.execution.block,
+      &genesis.execution.committed_state,
+      &genesis.committed_pos_state,
+      1,
+      block,
+    );
+
+    let receipts = &candidate.block_receipts[0];
+    assert_eq!(receipts.receipts.len(), 1);
+    assert_eq!(
+      receipts.receipts[0].outcome_status,
+      TransactionStatus::Success,
+    );
+    assert_eq!(
+      receipts.receipts[0].accumulated_gas_used,
+      U256::from(21_000),
+    );
+    assert!(receipts.tx_execution_error_messages[0].is_empty());
+    assert!(candidate.transactions_to_repack.is_empty());
+
+    assert_eq!(
+      candidate.epoch_block.hash(),
+      H256(hex!(
+        "3a295cd18717ed5f12db90924dd2c18149550525b4a3a935820fb5fe2371fc01"
+      )),
+    );
+    assert_eq!(
+      candidate.epoch_block.transactions[0].hash(),
+      H256(hex!(
+        "3957d7bdaaee6ff2660ad54681c5f4f0c1fb794c99cd95621b2de7a18e0dfa65"
+      )),
+    );
+    let commitment = &candidate.execution_commitment;
+    assert_eq!(
+      commitment.receipts_root,
+      H256(hex!(
+        "b7e75236463af7898471c5c20487d66a45f4e6d163af32d2b44d9225ffad4c75"
+      )),
+    );
+    assert_eq!(
+      commitment.logs_bloom_hash,
+      H256(hex!(
+        "d397b3b043d87fcd6fad1291ff0bfd16401c274896d8c63a923727f077b8e0b5"
+      )),
+    );
+    assert_eq!(
+      commitment
+        .state_root_with_aux_info
+        .aux_info
+        .state_root_hash,
+      H256(hex!(
+        "b783510d8cbe6e6bb27d9402a26a2cae4c51c9920c0d20a7b3af76335a2959ef"
+      )),
+    );
+
+    let executed_state = open_committed_state(&candidate.state.version);
+    assert_eq!(executed_state.nonce(&sender).unwrap(), U256::one());
+    assert_eq!(
+      executed_state.balance(&receiver).unwrap(),
+      parent_receiver_balance + U256::from(ONE_CFX_IN_DRIP),
+    );
+
+    assert_eq!(parent_state.nonce(&sender).unwrap(), U256::zero());
+    assert_eq!(
+      parent_state.balance(&receiver).unwrap(),
+      parent_receiver_balance,
     );
   }
 }
