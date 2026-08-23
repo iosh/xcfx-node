@@ -1,7 +1,8 @@
 use cfx_executor::{
   spec::TransitionsEpochHeight,
   transaction_validation::{
-    LocalValidationMode, ValidationContext, ValidationMode, validate_transaction_common,
+    LocalValidationMode, ValidationContext as ExecutorValidationContext, ValidationMode,
+    validate_transaction_common,
   },
 };
 use cfx_types::{AllChainID, U256};
@@ -12,8 +13,8 @@ use primitives::{
   transaction::{SignedTransaction, TransactionError},
 };
 
-/// Protocol inputs required to process a raw transaction at one chain view.
-pub(crate) struct TransactionIngressContext<'a> {
+/// Protocol inputs required to validate a transaction at one chain view.
+pub(crate) struct TransactionValidationContext<'a> {
   pub(crate) chain_id: AllChainID,
   pub(crate) height: BlockHeight,
   pub(crate) transitions: &'a TransitionsEpochHeight,
@@ -22,24 +23,33 @@ pub(crate) struct TransactionIngressContext<'a> {
   pub(crate) spec: &'a Spec,
 }
 
+impl TransactionValidationContext<'_> {
+  pub(crate) fn validate(
+    &self,
+    transaction: &TransactionWithSignature,
+  ) -> Result<(), TransactionError> {
+    validate_transaction_common(
+      transaction,
+      &ExecutorValidationContext {
+        chain_id: self.chain_id,
+        height: self.height,
+        transitions: self.transitions,
+        transaction_epoch_bound: self.transaction_epoch_bound,
+        max_nonce: self.max_nonce,
+        mode: ValidationMode::Local(LocalValidationMode::Full, self.spec),
+      },
+    )
+  }
+}
+
 /// Decode, validate, and recover the sender of a raw transaction.
 pub(crate) fn decode_and_validate_raw_transaction(
   raw: &[u8],
-  context: &TransactionIngressContext<'_>,
+  context: &TransactionValidationContext<'_>,
 ) -> Result<SignedTransaction, TransactionError> {
-  let tx = TransactionWithSignature::from_raw(raw)?;
+  let transaction = TransactionWithSignature::from_raw(raw)?;
+  context.validate(&transaction)?;
+  let public = transaction.recover_public()?;
 
-  validate_transaction_common(
-    &tx,
-    &ValidationContext {
-      chain_id: context.chain_id,
-      height: context.height,
-      transitions: context.transitions,
-      transaction_epoch_bound: context.transaction_epoch_bound,
-      max_nonce: context.max_nonce,
-      mode: ValidationMode::Local(LocalValidationMode::Full, context.spec),
-    },
-  )?;
-  let public = tx.recover_public()?;
-  Ok(SignedTransaction::new(public, tx))
+  Ok(SignedTransaction::new(public, transaction))
 }

@@ -1,3 +1,4 @@
+mod block_producer;
 mod execution;
 mod genesis;
 mod mpt;
@@ -6,6 +7,7 @@ mod runtime;
 mod state;
 mod transaction_ingress;
 mod transaction_pool;
+mod transaction_selector;
 /// Identifies the Rust product code included in the current build.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildInfo {

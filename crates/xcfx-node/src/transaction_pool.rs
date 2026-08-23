@@ -142,9 +142,9 @@ pub(crate) struct PoolViewEntry {
 pub(crate) struct TransactionPoolView {
   pub(crate) view_id: H256,
   pub(crate) pool_revision: u64,
+  /// Entries preserve the pool's `(sender, space, nonce)` key order.
   pub(crate) entries: Vec<PoolViewEntry>,
 }
-
 pub(crate) struct PoolSelectionInput {
   pub(crate) view: TransactionPoolView,
   pub(crate) entry_states: PoolEntryStates,
