@@ -21,11 +21,9 @@ use primitives::{
 
 use crate::{
   transaction_ingress::TransactionValidationContext,
-  transaction_pool::{
-    AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry, TransactionPoolView,
-  },
+  transaction_pool::{AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry},
 };
-/// Resource limits applied by the deterministic Local selector.
+/// Resource limits applied by the deterministic selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransactionSelectionLimits {
   max_transactions: usize,
@@ -171,10 +169,8 @@ fn select_account_transactions<'a>(
   selected
 }
 
-/// A selection result bound to one parent view and pool revision.
+/// Deterministic transaction selection for one linear block.
 pub(crate) struct TransactionSelectionPlan {
-  source_view_id: H256,
-  source_pool_revision: u64,
   epoch_height: BlockHeight,
   block_gas_limit: U256,
   transactions: Vec<Arc<SignedTransaction>>,
@@ -182,10 +178,6 @@ pub(crate) struct TransactionSelectionPlan {
 }
 
 impl TransactionSelectionPlan {
-  pub(crate) fn matches_pool_view(&self, view: &TransactionPoolView) -> bool {
-    self.source_view_id == view.view_id && self.source_pool_revision == view.pool_revision
-  }
-
   pub(crate) fn epoch_height(&self) -> BlockHeight {
     self.epoch_height
   }
@@ -202,6 +194,7 @@ impl TransactionSelectionPlan {
     &self.base_price
   }
 }
+
 pub(crate) fn select_transactions(
   input: &PoolSelectionInput,
   parent: &Block,
@@ -295,8 +288,6 @@ pub(crate) fn select_transactions(
     .collect();
 
   TransactionSelectionPlan {
-    source_view_id: input.view.view_id,
-    source_pool_revision: input.view.pool_revision,
     epoch_height,
     block_gas_limit,
     transactions,

@@ -578,7 +578,7 @@ mod tests {
 
     let custom = params
       .custom_prefix(0)
-      .expect("the modern Local rules must define Genesis custom data");
+      .expect("the configured protocol rules must define Genesis custom data");
 
     assert_eq!(
       custom,
@@ -648,7 +648,7 @@ mod tests {
     let custom = machine
       .params()
       .custom_prefix(1)
-      .expect("the modern Local rules must define first-block custom data");
+      .expect("the configured protocol rules must define first-block custom data");
     let cip112 = Cip112TransitionHeight::new(machine.params().transition_heights.cip112);
 
     Block::new(

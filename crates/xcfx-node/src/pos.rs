@@ -68,7 +68,7 @@ impl CommittedPosState {
   }
 }
 
-/// Converts a validated Local Genesis view-0 state into the committed view-1 record.
+/// Converts a validated Genesis view-0 state into the committed view-1 record.
 pub(crate) fn bootstrap_genesis_pos_state(
   definition: &GenesisPosDefinition,
   config: &PosStateConfig,

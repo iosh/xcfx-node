@@ -3,43 +3,24 @@ use cfx_internal_common::EpochExecutionCommitment;
 use cfx_types::{Address, U256};
 use primitives::{Block, BlockHeaderBuilder, Cip112TransitionHeight};
 
-use crate::{
-  mpt::indexed_mpt_root, transaction_pool::TransactionPoolView,
-  transaction_selector::TransactionSelectionPlan,
-};
+use crate::{mpt::indexed_mpt_root, transaction_selector::TransactionSelectionPlan};
 
-/// Caller-controlled fields for one deterministic Local block.
+/// Caller-controlled fields for one deterministic block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LocalBlockHeaderInput {
+pub(crate) struct BlockProductionInput {
   pub(crate) timestamp: u64,
   pub(crate) author: Address,
   pub(crate) difficulty: U256,
 }
 
-/// A produced block kept together with the selection identity that created it.
-pub(crate) struct ProducedBlockCandidate {
-  selection: TransactionSelectionPlan,
-  block: Block,
-}
-
-impl ProducedBlockCandidate {
-  pub(crate) fn matches_pool_view(&self, view: &TransactionPoolView) -> bool {
-    self.selection.matches_pool_view(view)
-  }
-
-  pub(crate) fn into_parts(self) -> (TransactionSelectionPlan, Block) {
-    (self.selection, self.block)
-  }
-}
-
-/// Constructs one linear Local block without executing or committing it.
-pub(crate) fn produce_local_block(
+/// Constructs one linear block without executing or committing it.
+pub(crate) fn produce_block(
   parent: &Block,
   selection: TransactionSelectionPlan,
   params: &CommonParams,
-  header_input: LocalBlockHeaderInput,
+  header_input: BlockProductionInput,
   deferred_commitment: &EpochExecutionCommitment,
-) -> ProducedBlockCandidate {
+) -> Block {
   let transactions = selection.transactions().to_vec();
 
   let transaction_hashes = transactions
@@ -81,7 +62,5 @@ pub(crate) fn produce_local_block(
       params.transition_heights.cip112,
     ));
 
-  let block = Block::new(block_header, transactions);
-
-  ProducedBlockCandidate { selection, block }
+  Block::new(block_header, transactions)
 }
