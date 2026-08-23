@@ -1,5 +1,5 @@
 use std::{
-  collections::{BTreeMap, HashMap},
+  collections::{BTreeMap, BTreeSet, HashMap},
   sync::Arc,
 };
 
@@ -140,26 +140,22 @@ pub(crate) struct PoolViewEntry {
 }
 
 pub(crate) struct TransactionPoolView {
-  pub(crate) view_id: H256,
-  pub(crate) pool_revision: u64,
   /// Entries preserve the pool's `(sender, space, nonce)` key order.
   pub(crate) entries: Vec<PoolViewEntry>,
 }
+
 pub(crate) struct PoolSelectionInput {
   pub(crate) view: TransactionPoolView,
   pub(crate) entry_states: PoolEntryStates,
 }
 
-impl TransactionPoolView {
-  pub(crate) fn is_current(&self, view_id: H256, pool_revision: u64) -> bool {
-    self.view_id == view_id && self.pool_revision == pool_revision
-  }
+pub(crate) struct TransactionPoolReconciliation {
+  transaction_hashes_to_remove: Vec<H256>,
 }
 
 pub(crate) struct TransactionPool {
   by_key: BTreeMap<TransactionKey, PoolEntry>,
   key_by_hash: HashMap<H256, TransactionKey>,
-  revision: u64,
   next_arrival_sequence: u64,
 }
 
@@ -168,12 +164,8 @@ impl TransactionPool {
     Self {
       by_key: BTreeMap::new(),
       key_by_hash: HashMap::new(),
-      revision: 0,
       next_arrival_sequence: 0,
     }
-  }
-  pub(crate) fn revision(&self) -> u64 {
-    self.revision
   }
 
   pub(crate) fn len(&self) -> usize {
@@ -236,7 +228,6 @@ impl TransactionPool {
         self.key_by_hash.insert(hash, key).is_none(),
         "pool hash index must not contain a replacement hash",
       );
-      self.bump_revision();
 
       return Ok(TransactionPoolInsertOutcome::Replaced { previous });
     }
@@ -258,7 +249,6 @@ impl TransactionPool {
         arrival_sequence,
       },
     );
-    self.bump_revision();
 
     Ok(TransactionPoolInsertOutcome::Inserted)
   }
@@ -269,13 +259,6 @@ impl TransactionPool {
       .checked_add(1)
       .expect("transaction pool arrival sequence exhausted");
     sequence
-  }
-
-  fn bump_revision(&mut self) {
-    self.revision = self
-      .revision
-      .checked_add(1)
-      .expect("transaction pool revision exhausted");
   }
 
   fn replacement_is_sufficient(
@@ -292,15 +275,7 @@ impl TransactionPool {
     *replacement.gas_price() >= required_price
   }
 
-  pub(crate) fn remove_by_hash(&mut self, hash: H256) -> Option<Arc<SignedTransaction>> {
-    let transaction = self.remove_by_hash_without_revision(hash);
-    if transaction.is_some() {
-      self.bump_revision();
-    }
-    transaction
-  }
-
-  fn remove_by_hash_without_revision(&mut self, hash: H256) -> Option<Arc<SignedTransaction>> {
+  fn remove_by_hash(&mut self, hash: H256) -> Option<Arc<SignedTransaction>> {
     let key = self.key_by_hash.remove(&hash)?;
     let entry = self
       .by_key
@@ -324,14 +299,58 @@ impl TransactionPool {
       .filter_map(|(hash, state)| matches!(*state, PoolEntryState::Stale).then_some(*hash))
       .collect::<Vec<_>>();
 
-    let removed = stale_hashes
+    stale_hashes
       .into_iter()
-      .filter_map(|hash| self.remove_by_hash_without_revision(hash))
-      .collect::<Vec<_>>();
-    if !removed.is_empty() {
-      self.bump_revision();
+      .filter_map(|hash| self.remove_by_hash(hash))
+      .collect()
+  }
+
+  pub(crate) fn prepare_reconciliation(
+    &self,
+    transactions_to_remove: impl IntoIterator<Item = H256>,
+    modified_accounts: &[Account],
+  ) -> TransactionPoolReconciliation {
+    let mut transaction_hashes_to_remove =
+      transactions_to_remove.into_iter().collect::<BTreeSet<_>>();
+
+    let committed_nonces = modified_accounts
+      .iter()
+      .map(|account| {
+        let address = account.address();
+        ((address.address, address.space), account.nonce)
+      })
+      .collect::<BTreeMap<AccountKey, U256>>();
+
+    for ((sender, space), committed_nonce) in committed_nonces {
+      let first_key = TransactionKey {
+        sender,
+        space,
+        nonce: U256::zero(),
+      };
+      let committed_key = TransactionKey {
+        sender,
+        space,
+        nonce: committed_nonce,
+      };
+
+      for entry in self
+        .by_key
+        .range(first_key..committed_key)
+        .map(|(_, entry)| entry)
+      {
+        transaction_hashes_to_remove.insert(entry.transaction.hash());
+      }
     }
-    removed
+
+    TransactionPoolReconciliation {
+      transaction_hashes_to_remove: transaction_hashes_to_remove.into_iter().collect(),
+    }
+  }
+
+  pub(crate) fn apply_reconciliation(&mut self, reconciliation: TransactionPoolReconciliation) {
+    for hash in reconciliation.transaction_hashes_to_remove {
+      let _ = self.remove_by_hash(hash);
+    }
   }
 
   pub(crate) fn derive_entry_states(&self, inputs: &PoolReadinessInputs) -> PoolEntryStates {
@@ -414,7 +433,7 @@ impl TransactionPool {
     PoolEntryStates { states }
   }
 
-  pub(crate) fn view(&self, view_id: H256) -> TransactionPoolView {
+  pub(crate) fn view(&self) -> TransactionPoolView {
     let entries = self
       .by_key
       .values()
@@ -424,10 +443,6 @@ impl TransactionPool {
       })
       .collect();
 
-    TransactionPoolView {
-      view_id,
-      pool_revision: self.revision,
-      entries,
-    }
+    TransactionPoolView { entries }
   }
 }

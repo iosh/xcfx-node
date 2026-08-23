@@ -1,13 +1,19 @@
 //! Owns one node instance's authoritative protocol state.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  collections::{BTreeMap, HashMap},
+  sync::Arc,
+};
 
 use cfx_executor::{machine::Machine, state::State};
 use cfx_statedb::{Result as StateResult, StateDb};
-use cfx_types::{AddressSpaceUtil, AddressWithSpace, U256};
+use cfx_types::{AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256};
 use diem_types::term_state::pos_state_config::PosStateConfig;
 
 use crate::{
-  execution::{ExecutedSingleBlockEpoch, execute_single_block_epoch},
+  block_producer::{BlockProductionInput, produce_block},
+  execution::{
+    ExecutedSingleBlockEpoch, TransactionExecutionDisposition, execute_single_block_epoch,
+  },
   genesis::{
     ExecutedGenesis, ExecutedGenesisWithPos, GenesisError, GenesisHeaderInput,
     execute_genesis_with_pos,
@@ -17,15 +23,21 @@ use crate::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate, StateVersion},
   },
+  transaction_ingress::TransactionValidationContext,
   transaction_pool::{
     AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
     TransactionPool, TransactionPoolInsertOutcome, TransactionPoolPolicy, TransactionPoolView,
     pool_transaction_cost,
   },
+  transaction_selector::{TransactionSelectionLimits, select_transactions},
 };
 
 use cfx_internal_common::EpochExecutionCommitment;
-use primitives::{Account, Block, BlockNumber, BlockReceipts, SignedTransaction};
+use cfx_parameters::consensus::{DEFERRED_STATE_EPOCH_COUNT, TRANSACTION_DEFAULT_EPOCH_BOUND};
+
+use primitives::{
+  Account, Block, BlockNumber, BlockReceipts, Receipt, SignedTransaction, block::BlockHeight,
+};
 
 pub(crate) struct CommittedEpoch {
   start_block_number: BlockNumber,
@@ -101,9 +113,359 @@ impl CommittedChainView {
   }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BlockLocation {
+  epoch_height: BlockHeight,
+  block_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TransactionLocation {
+  block: BlockLocation,
+  transaction_index: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct MinedBlockView {
+  chain_view: Arc<CommittedChainView>,
+  block_index: usize,
+}
+
+impl MinedBlockView {
+  pub(crate) fn block(&self) -> &Block {
+    self
+      .chain_view
+      .epoch
+      .ordered_blocks
+      .get(self.block_index)
+      .expect("an indexed block must exist in its committed chain view")
+  }
+
+  pub(crate) fn epoch_height(&self) -> BlockHeight {
+    self.chain_view.epoch.pivot_block().block_header.height()
+  }
+}
+
+#[derive(Clone)]
+pub(crate) struct MinedTransactionView {
+  block: MinedBlockView,
+  transaction_index: usize,
+}
+
+impl MinedTransactionView {
+  pub(crate) fn block(&self) -> &MinedBlockView {
+    &self.block
+  }
+
+  pub(crate) fn transaction(&self) -> &Arc<SignedTransaction> {
+    self
+      .block
+      .block()
+      .transactions
+      .get(self.transaction_index)
+      .expect("an indexed transaction must exist in its mined block")
+  }
+
+  pub(crate) fn transaction_index(&self) -> usize {
+    self.transaction_index
+  }
+}
+
+#[derive(Clone)]
+pub(crate) struct TransactionReceiptView {
+  transaction: MinedTransactionView,
+}
+
+impl TransactionReceiptView {
+  pub(crate) fn transaction(&self) -> &MinedTransactionView {
+    &self.transaction
+  }
+
+  pub(crate) fn receipt(&self) -> &Receipt {
+    self
+      .block_receipts()
+      .receipts
+      .get(self.transaction.transaction_index)
+      .expect("an indexed transaction receipt must exist in its committed block results")
+  }
+
+  pub(crate) fn execution_error_message(&self) -> Option<&str> {
+    let message = self
+      .block_receipts()
+      .tx_execution_error_messages
+      .get(self.transaction.transaction_index)
+      .expect("an indexed transaction error must exist in its committed block results");
+
+    (!message.is_empty()).then_some(message.as_str())
+  }
+
+  fn block_receipts(&self) -> &BlockReceipts {
+    self
+      .transaction
+      .block
+      .chain_view
+      .epoch
+      .block_receipts
+      .get(self.transaction.block.block_index)
+      .expect("an indexed block must have committed receipts")
+  }
+}
+
+struct CommittedChainHistory {
+  views: Vec<Arc<CommittedChainView>>,
+  block_locations: HashMap<H256, BlockLocation>,
+  transaction_locations: HashMap<H256, TransactionLocation>,
+}
+
+impl CommittedChainHistory {
+  fn from_genesis(genesis: CommittedChainView) -> Self {
+    let mut history = Self {
+      views: Vec::new(),
+      block_locations: HashMap::new(),
+      transaction_locations: HashMap::new(),
+    };
+
+    history.append(Arc::new(genesis));
+    history
+  }
+
+  fn optimistic_head(&self) -> &Arc<CommittedChainView> {
+    self
+      .views
+      .last()
+      .expect("committed chain history always contains the Genesis view")
+  }
+
+  fn optimistic_height(&self) -> BlockHeight {
+    self
+      .optimistic_head()
+      .epoch
+      .pivot_block()
+      .block_header
+      .height()
+  }
+
+  fn append(&mut self, view: Arc<CommittedChainView>) {
+    let epoch_height = view.epoch.pivot_block().block_header.height();
+    let expected_epoch_height = BlockHeight::try_from(self.views.len())
+      .expect("a linear history length must fit in BlockHeight");
+
+    assert_eq!(
+      epoch_height, expected_epoch_height,
+      "a linear history append must contain the next epoch height",
+    );
+    assert_eq!(
+      view.epoch.ordered_blocks.len(),
+      view.epoch.block_receipts.len(),
+      "every committed block must have one block receipt collection",
+    );
+
+    let mut block_locations = HashMap::with_capacity(view.epoch.ordered_blocks.len());
+    let mut transaction_locations = HashMap::new();
+
+    for (block_index, (block, block_receipts)) in view
+      .epoch
+      .ordered_blocks
+      .iter()
+      .zip(&view.epoch.block_receipts)
+      .enumerate()
+    {
+      assert_eq!(
+        block.transactions.len(),
+        block_receipts.receipts.len(),
+        "every block transaction must have one execution receipt",
+      );
+      assert_eq!(
+        block.transactions.len(),
+        block_receipts.tx_execution_error_messages.len(),
+        "every block transaction must have one execution error entry",
+      );
+
+      let block_hash = block.hash();
+      let block_location = BlockLocation {
+        epoch_height,
+        block_index,
+      };
+
+      assert!(
+        !self.block_locations.contains_key(&block_hash),
+        "a committed block hash must not already exist in history",
+      );
+      assert!(
+        block_locations.insert(block_hash, block_location).is_none(),
+        "a committed epoch must not contain duplicate block hashes",
+      );
+
+      for (transaction_index, (transaction, receipt)) in block
+        .transactions
+        .iter()
+        .zip(&block_receipts.receipts)
+        .enumerate()
+      {
+        if receipt.tx_skipped() {
+          continue;
+        }
+
+        let transaction_hash = transaction.hash();
+        let transaction_location = TransactionLocation {
+          block: block_location,
+          transaction_index,
+        };
+
+        assert!(
+          !self.transaction_locations.contains_key(&transaction_hash),
+          "an executed transaction hash must not already exist in history",
+        );
+        assert!(
+          transaction_locations
+            .insert(transaction_hash, transaction_location)
+            .is_none(),
+          "a committed epoch must not execute a transaction hash twice",
+        );
+      }
+    }
+
+    self.views.reserve(1);
+    self.block_locations.reserve(block_locations.len());
+    self
+      .transaction_locations
+      .reserve(transaction_locations.len());
+
+    self.views.push(view);
+    self.block_locations.extend(block_locations);
+    self.transaction_locations.extend(transaction_locations);
+  }
+
+  fn view_at_epoch_height(&self, epoch_height: BlockHeight) -> Option<&Arc<CommittedChainView>> {
+    let index = usize::try_from(epoch_height).ok()?;
+    let view = self.views.get(index)?;
+
+    if view.epoch.pivot_block().block_header.height() == epoch_height {
+      Some(view)
+    } else {
+      None
+    }
+  }
+
+  fn latest_state_height(&self) -> BlockHeight {
+    let optimistic_height = self.optimistic_height();
+
+    if optimistic_height < DEFERRED_STATE_EPOCH_COUNT {
+      0
+    } else {
+      optimistic_height - DEFERRED_STATE_EPOCH_COUNT + 1
+    }
+  }
+
+  fn latest_state_view(&self) -> &Arc<CommittedChainView> {
+    self
+      .view_at_epoch_height(self.latest_state_height())
+      .expect("a complete linear history must contain its latest state view")
+  }
+
+  fn latest_header_committed_height(&self) -> BlockHeight {
+    self
+      .optimistic_height()
+      .saturating_sub(DEFERRED_STATE_EPOCH_COUNT)
+  }
+
+  fn latest_header_committed_view(&self) -> &Arc<CommittedChainView> {
+    self
+      .view_at_epoch_height(self.latest_header_committed_height())
+      .expect("a complete linear history must contain its latest Header-committed view")
+  }
+
+  fn contains_executed_transaction(&self, transaction_hash: &H256) -> bool {
+    self.transaction_locations.contains_key(transaction_hash)
+  }
+
+  fn mined_block_at(&self, location: BlockLocation) -> MinedBlockView {
+    let chain_view = Arc::clone(
+      self
+        .view_at_epoch_height(location.epoch_height)
+        .expect("an indexed block must reference a committed epoch"),
+    );
+
+    chain_view
+      .epoch
+      .ordered_blocks
+      .get(location.block_index)
+      .expect("an indexed block must reference a block in its committed epoch");
+
+    MinedBlockView {
+      chain_view,
+      block_index: location.block_index,
+    }
+  }
+
+  fn mined_block_by_hash(&self, block_hash: &H256) -> Option<MinedBlockView> {
+    self
+      .block_locations
+      .get(block_hash)
+      .copied()
+      .map(|location| self.mined_block_at(location))
+  }
+
+  fn mined_transaction_at(&self, location: TransactionLocation) -> MinedTransactionView {
+    let block = self.mined_block_at(location.block);
+
+    block
+      .block()
+      .transactions
+      .get(location.transaction_index)
+      .expect("an indexed transaction must reference its mined block body");
+
+    MinedTransactionView {
+      block,
+      transaction_index: location.transaction_index,
+    }
+  }
+
+  fn mined_transaction_by_hash(&self, transaction_hash: &H256) -> Option<MinedTransactionView> {
+    self
+      .transaction_locations
+      .get(transaction_hash)
+      .copied()
+      .map(|location| self.mined_transaction_at(location))
+  }
+
+  fn transaction_receipt_by_hash(&self, transaction_hash: &H256) -> Option<TransactionReceiptView> {
+    let location = *self.transaction_locations.get(transaction_hash)?;
+
+    if location.block.epoch_height > self.latest_state_height() {
+      return None;
+    }
+
+    Some(TransactionReceiptView {
+      transaction: self.mined_transaction_at(location),
+    })
+  }
+
+  fn deferred_commitment_for_header_height(
+    &self,
+    header_height: BlockHeight,
+  ) -> &EpochExecutionCommitment {
+    let deferred_epoch_height = header_height.saturating_sub(DEFERRED_STATE_EPOCH_COUNT);
+
+    self
+      .view_at_epoch_height(deferred_epoch_height)
+      .expect("a next linear epoch must have its deferred commitment in committed history")
+      .epoch
+      .commitment()
+  }
+}
+
 pub(crate) struct TransactionPoolUpdates {
   pub(crate) transactions_to_repack: Vec<Arc<SignedTransaction>>,
   pub(crate) modified_accounts: Vec<Account>,
+}
+
+/// Facts exposed after one Runtime transition has updated history, indexes, and the pool.
+pub(crate) struct RuntimeCommitOutcome {
+  pub(crate) optimistic_view: Arc<CommittedChainView>,
+  pub(crate) latest_state_advanced_to: Option<Arc<CommittedChainView>>,
+  pub(crate) latest_header_committed_advanced_to: Option<Arc<CommittedChainView>>,
+  pub(crate) transaction_pool_updates: TransactionPoolUpdates,
 }
 
 fn open_committed_state(version: &Arc<StateVersion>) -> StateResult<State> {
@@ -114,7 +476,7 @@ fn open_committed_state(version: &Arc<StateVersion>) -> StateResult<State> {
 pub(crate) struct NodeRuntime {
   machine: Arc<Machine>,
   pos_config: PosStateConfig,
-  current: Arc<CommittedChainView>,
+  history: CommittedChainHistory,
   transaction_pool: TransactionPool,
 }
 
@@ -137,7 +499,7 @@ impl NodeRuntime {
     Ok(Self {
       machine,
       pos_config,
-      current: Arc::new(CommittedChainView::from_genesis(genesis)),
+      history: CommittedChainHistory::from_genesis(CommittedChainView::from_genesis(genesis)),
       transaction_pool: TransactionPool::new(),
     })
   }
@@ -156,14 +518,19 @@ impl NodeRuntime {
     transaction: Arc<SignedTransaction>,
     policy: &TransactionPoolPolicy,
   ) -> Result<TransactionPoolInsertOutcome, primitives::transaction::TransactionError> {
+    if self
+      .history
+      .contains_executed_transaction(&transaction.hash())
+    {
+      return Err(primitives::transaction::TransactionError::AlreadyImported);
+    }
+
     self.transaction_pool.insert(transaction, policy)
   }
 
-  /// Returns the pool entries associated with the current committed chain view.
+  /// Returns a stable snapshot of the transaction pool.
   pub(crate) fn transaction_pool_view(&self) -> TransactionPoolView {
-    self
-      .transaction_pool
-      .view(self.current.epoch().pivot_block().hash())
+    self.transaction_pool.view()
   }
 
   pub(crate) fn derive_transaction_pool_states(
@@ -184,8 +551,8 @@ impl NodeRuntime {
     &self,
     pool_view: &TransactionPoolView,
   ) -> StateResult<PoolReadinessInputs> {
-    let mut state = open_committed_state(&self.current.state.version)?;
-
+    let optimistic_head = self.history.optimistic_head();
+    let mut state = open_committed_state(&optimistic_head.state.version)?;
     let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
     let mut transaction_costs = BTreeMap::new();
 
@@ -214,11 +581,68 @@ impl NodeRuntime {
     Ok(PoolReadinessInputs::new(account_states, transaction_costs))
   }
 
+  pub(crate) fn produce_and_commit_block(
+    &mut self,
+    header_input: BlockProductionInput,
+    block_gas_limit: U256,
+  ) -> StateResult<RuntimeCommitOutcome> {
+    let parent = Arc::clone(self.history.optimistic_head());
+    let parent_block = parent.epoch.pivot_block();
+
+    let epoch_height = parent_block
+      .block_header
+      .height()
+      .checked_add(1)
+      .expect("a parent block must permit a subsequent epoch height");
+
+    let block_number = parent.epoch.next_epoch_start_block_number();
+    let selection_input = self.transaction_pool_selection_input()?;
+    let params = self.machine.params();
+    let spec = self.machine.spec(block_number, epoch_height);
+
+    let validation = TransactionValidationContext {
+      chain_id: AllChainID::new(
+        params.chain_id(epoch_height, Space::Native),
+        params.chain_id(epoch_height, Space::Ethereum),
+      ),
+      height: epoch_height,
+      transitions: &params.transition_heights,
+      transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
+      max_nonce: None,
+      spec: &spec,
+    };
+
+    let selection = select_transactions(
+      &selection_input,
+      parent_block,
+      params,
+      &validation,
+      block_gas_limit,
+      TransactionSelectionLimits::default(),
+    );
+
+    let deferred_commitment = self
+      .history
+      .deferred_commitment_for_header_height(epoch_height);
+
+    let block = produce_block(
+      parent_block,
+      selection,
+      params,
+      header_input,
+      deferred_commitment,
+    );
+
+    Ok(self.execute_and_commit_single_block_epoch(block))
+  }
+
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     block: Block,
-  ) -> TransactionPoolUpdates {
-    let parent = Arc::clone(&self.current);
+  ) -> RuntimeCommitOutcome {
+    let parent = Arc::clone(self.history.optimistic_head());
+    let previous_latest_state_height = self.history.latest_state_height();
+    let previous_latest_header_committed_height = self.history.latest_header_committed_height();
     let start_block_number = parent.epoch.next_epoch_start_block_number();
 
     let executed = execute_single_block_epoch(
@@ -235,11 +659,30 @@ impl NodeRuntime {
       state,
       commitment,
       block_receipts,
-      transactions_to_repack,
+      transaction_dispositions,
       accounts_for_txpool,
     } = executed;
 
-    let next_view = CommittedChainView {
+    let mut transaction_hashes_to_remove = Vec::new();
+    let mut transactions_to_repack = Vec::new();
+
+    for (transaction, disposition) in block.transactions.iter().zip(transaction_dispositions) {
+      match disposition {
+        TransactionExecutionDisposition::Executed
+        | TransactionExecutionDisposition::SkippedDrop => {
+          transaction_hashes_to_remove.push(transaction.hash());
+        }
+        TransactionExecutionDisposition::SkippedRepack => {
+          transactions_to_repack.push(Arc::clone(transaction));
+        }
+      }
+    }
+
+    let pool_reconciliation = self
+      .transaction_pool
+      .prepare_reconciliation(transaction_hashes_to_remove, &accounts_for_txpool);
+
+    let next_view = Arc::new(CommittedChainView {
       epoch: CommittedEpoch {
         start_block_number,
         ordered_blocks: vec![block],
@@ -248,19 +691,68 @@ impl NodeRuntime {
       },
       state,
       pos_state: Arc::clone(&parent.pos_state),
-    };
+    });
 
-    let transaction_pool_updates = TransactionPoolUpdates {
-      transactions_to_repack,
-      modified_accounts: accounts_for_txpool,
-    };
+    self.history.append(Arc::clone(&next_view));
+    self
+      .transaction_pool
+      .apply_reconciliation(pool_reconciliation);
 
-    self.current = Arc::new(next_view);
+    let latest_state_advanced_to = (self.history.latest_state_height()
+      > previous_latest_state_height)
+      .then(|| Arc::clone(self.history.latest_state_view()));
+    let latest_header_committed_advanced_to = (self.history.latest_header_committed_height()
+      > previous_latest_header_committed_height)
+      .then(|| Arc::clone(self.history.latest_header_committed_view()));
 
-    transaction_pool_updates
+    RuntimeCommitOutcome {
+      optimistic_view: next_view,
+      latest_state_advanced_to,
+      latest_header_committed_advanced_to,
+      transaction_pool_updates: TransactionPoolUpdates {
+        transactions_to_repack,
+        modified_accounts: accounts_for_txpool,
+      },
+    }
   }
 
-  pub(crate) fn current_view(&self) -> Arc<CommittedChainView> {
-    Arc::clone(&self.current)
+  pub(crate) fn optimistic_view(&self) -> Arc<CommittedChainView> {
+    Arc::clone(self.history.optimistic_head())
+  }
+
+  pub(crate) fn epoch_view_at_height(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Option<Arc<CommittedChainView>> {
+    self
+      .history
+      .view_at_epoch_height(epoch_height)
+      .map(Arc::clone)
+  }
+
+  pub(crate) fn mined_block_by_hash(&self, block_hash: &H256) -> Option<MinedBlockView> {
+    self.history.mined_block_by_hash(block_hash)
+  }
+
+  pub(crate) fn mined_transaction_by_hash(
+    &self,
+    transaction_hash: &H256,
+  ) -> Option<MinedTransactionView> {
+    self.history.mined_transaction_by_hash(transaction_hash)
+  }
+
+  pub(crate) fn transaction_receipt_by_hash(
+    &self,
+    transaction_hash: &H256,
+  ) -> Option<TransactionReceiptView> {
+    self.history.transaction_receipt_by_hash(transaction_hash)
+  }
+
+  pub(crate) fn latest_state_view(&self) -> Arc<CommittedChainView> {
+    Arc::clone(self.history.latest_state_view())
+  }
+
+  pub(crate) fn latest_header_committed_view(&self) -> Arc<CommittedChainView> {
+    Arc::clone(self.history.latest_header_committed_view())
   }
 }

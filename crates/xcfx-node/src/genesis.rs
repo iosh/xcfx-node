@@ -886,15 +886,15 @@ mod tests {
     let sender = DEV_GENESIS_KEY_PAIR.address().with_native_space();
     let receiver = DEV_GENESIS_KEY_PAIR_2.address().with_native_space();
 
-    let parent_view = runtime.current_view();
+    let parent_view = runtime.optimistic_view();
     let parent_state = open_committed_state(&parent_view.state().version);
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
     let block = first_core_transfer_block(machine.as_ref(), parent_view.epoch().pivot_block());
-    let transaction_pool_updates = runtime.execute_and_commit_single_block_epoch(block);
-    let committed_view = runtime.current_view();
+    let commit_outcome = runtime.execute_and_commit_single_block_epoch(block);
+    let executed_view = runtime.optimistic_view();
 
-    let receipts = &committed_view.epoch().block_receipts()[0];
+    let receipts = &executed_view.epoch().block_receipts()[0];
     assert_eq!(receipts.receipts.len(), 1);
     assert_eq!(
       receipts.receipts[0].outcome_status,
@@ -905,23 +905,28 @@ mod tests {
       U256::from(21_000),
     );
     assert!(receipts.tx_execution_error_messages[0].is_empty());
-    assert!(transaction_pool_updates.transactions_to_repack.is_empty());
+    assert!(
+      commit_outcome
+        .transaction_pool_updates
+        .transactions_to_repack
+        .is_empty(),
+    );
 
-    let committed_block = committed_view.epoch().pivot_block();
+    let executed_block = executed_view.epoch().pivot_block();
     assert_eq!(
-      committed_block.hash(),
+      executed_block.hash(),
       H256(hex!(
         "3a295cd18717ed5f12db90924dd2c18149550525b4a3a935820fb5fe2371fc01"
       )),
     );
     assert_eq!(
-      committed_block.transactions[0].hash(),
+      executed_block.transactions[0].hash(),
       H256(hex!(
         "3957d7bdaaee6ff2660ad54681c5f4f0c1fb794c99cd95621b2de7a18e0dfa65"
       )),
     );
 
-    let commitment = committed_view.epoch().commitment();
+    let commitment = executed_view.epoch().commitment();
     assert_eq!(
       commitment.receipts_root,
       H256(hex!(
@@ -941,10 +946,10 @@ mod tests {
       )),
     );
 
-    let committed_state = open_committed_state(&committed_view.state().version);
-    assert_eq!(committed_state.nonce(&sender).unwrap(), U256::one());
+    let executed_state = open_committed_state(&executed_view.state().version);
+    assert_eq!(executed_state.nonce(&sender).unwrap(), U256::one());
     assert_eq!(
-      committed_state.balance(&receiver).unwrap(),
+      executed_state.balance(&receiver).unwrap(),
       parent_receiver_balance + U256::from(ONE_CFX_IN_DRIP),
     );
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cfx_executor::{
   epoch_execution::{before_block_execution, before_epoch_execution},
-  executive::{ExecutiveContext, TransactOptions},
+  executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
   machine::Machine,
   state::State,
 };
@@ -13,9 +13,7 @@ use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
 use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{H256, U256};
 use cfx_vm_types::Env;
-use primitives::{
-  Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts, SignedTransaction,
-};
+use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
 use rlp::Encodable;
 
 use crate::{
@@ -27,12 +25,31 @@ use crate::{
   },
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransactionExecutionDisposition {
+  Executed,
+  SkippedDrop,
+  SkippedRepack,
+}
+
+impl TransactionExecutionDisposition {
+  fn from_outcome(outcome: &ExecutionOutcome) -> Self {
+    match outcome {
+      ExecutionOutcome::Finished(_) | ExecutionOutcome::ExecutionErrorBumpNonce(_, _) => {
+        Self::Executed
+      }
+      ExecutionOutcome::NotExecutedDrop(_) => Self::SkippedDrop,
+      ExecutionOutcome::NotExecutedToReconsiderPacking(_) => Self::SkippedRepack,
+    }
+  }
+}
+
 pub(crate) struct ExecutedSingleBlockEpoch {
   pub(crate) block: Block,
   pub(crate) state: CommittedStateVersion,
   pub(crate) commitment: EpochExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
-  pub(crate) transactions_to_repack: Vec<Arc<SignedTransaction>>,
+  pub(crate) transaction_dispositions: Vec<TransactionExecutionDisposition>,
   pub(crate) accounts_for_txpool: Vec<Account>,
 }
 
@@ -161,7 +178,7 @@ pub(crate) fn execute_single_block_epoch(
   let spec = machine.spec(block_number, epoch_height);
   let mut receipts = Vec::with_capacity(epoch_block.transactions.len());
   let mut execution_errors = Vec::with_capacity(epoch_block.transactions.len());
-  let mut transactions_to_repack = Vec::new();
+  let mut transaction_dispositions = Vec::with_capacity(epoch_block.transactions.len());
 
   for (transaction_index, transaction) in epoch_block.transactions.iter().enumerate() {
     env.transaction_hash = transaction.hash();
@@ -177,10 +194,6 @@ pub(crate) fn execute_single_block_epoch(
 
     state.update_state_post_tx_execution(!spec.cip645.fix_eip1153);
 
-    if outcome.consider_repacked() {
-      transactions_to_repack.push(Arc::clone(transaction));
-    }
-
     if let Some(burnt_fee) = outcome
       .try_as_executed()
       .and_then(|executed| executed.burnt_fee)
@@ -188,6 +201,9 @@ pub(crate) fn execute_single_block_epoch(
       state.burn_by_cip1559(burnt_fee);
     }
 
+    let disposition = TransactionExecutionDisposition::from_outcome(&outcome);
+
+    transaction_dispositions.push(disposition);
     execution_errors.push(outcome.error_message());
     receipts.push(outcome.make_receipt(&mut env.accumulated_gas_used, &spec));
   }
@@ -236,7 +252,7 @@ pub(crate) fn execute_single_block_epoch(
     state: committed_state,
     commitment,
     block_receipts,
-    transactions_to_repack,
+    transaction_dispositions,
     accounts_for_txpool: commit_result.accounts_for_txpool,
   }
 }
