@@ -3,7 +3,7 @@ use cfx_internal_common::EpochExecutionCommitment;
 use cfx_types::{Address, U256};
 use primitives::{Block, BlockHeaderBuilder, Cip112TransitionHeight};
 
-use crate::{mpt::indexed_mpt_root, transaction_selector::TransactionSelectionPlan};
+use crate::{mpt::indexed_mpt_root, transaction_selector::BlockTransactionSelection};
 
 /// Caller-controlled fields for one deterministic block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,7 +16,7 @@ pub(crate) struct BlockProductionInput {
 /// Constructs one linear block without executing or committing it.
 pub(crate) fn produce_block(
   parent: &Block,
-  selection: TransactionSelectionPlan,
+  selection: BlockTransactionSelection,
   params: &CommonParams,
   header_input: BlockProductionInput,
   deferred_commitment: &EpochExecutionCommitment,

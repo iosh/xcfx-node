@@ -46,12 +46,7 @@ pub(crate) fn pool_transaction_cost(
   sponsored_storage: u64,
 ) -> U256 {
   let gas = *transaction.gas() - sponsored_gas;
-
-  let gas_cost = if gas.full_mul(*transaction.gas_price()) > U512::from(U128::max_value()) {
-    U256::from(U128::max_value())
-  } else {
-    gas * *transaction.gas_price()
-  };
+  let gas_cost = pool_gas_cost(gas, *transaction.gas_price());
 
   let storage_cost = transaction
     .storage_limit()
@@ -71,6 +66,15 @@ pub(crate) fn pool_transaction_cost(
   };
 
   value + gas_cost + storage_cost
+}
+
+/// Caps declared gas cost at `U128::MAX` for transaction-pool accounting.
+pub(crate) fn pool_gas_cost(gas: U256, gas_price: U256) -> U256 {
+  if gas.full_mul(gas_price) > U512::from(U128::max_value()) {
+    U256::from(U128::max_value())
+  } else {
+    gas * gas_price
+  }
 }
 
 pub(crate) struct PoolReadinessInputs {
@@ -154,14 +158,16 @@ pub(crate) struct TransactionPoolReconciliation {
 }
 
 pub(crate) struct TransactionPool {
+  policy: TransactionPoolPolicy,
   by_key: BTreeMap<TransactionKey, PoolEntry>,
   key_by_hash: HashMap<H256, TransactionKey>,
   next_arrival_sequence: u64,
 }
 
 impl TransactionPool {
-  pub(crate) fn new() -> Self {
+  pub(crate) fn new(policy: TransactionPoolPolicy) -> Self {
     Self {
+      policy,
       by_key: BTreeMap::new(),
       key_by_hash: HashMap::new(),
       next_arrival_sequence: 0,
@@ -186,7 +192,6 @@ impl TransactionPool {
   pub(crate) fn insert(
     &mut self,
     transaction: Arc<SignedTransaction>,
-    policy: &TransactionPoolPolicy,
   ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
     let hash = transaction.hash();
 
@@ -232,7 +237,7 @@ impl TransactionPool {
       return Ok(TransactionPoolInsertOutcome::Replaced { previous });
     }
 
-    if self.by_key.len() >= policy.max_transactions {
+    if self.by_key.len() >= self.policy.max_transactions {
       return Err(TransactionError::LimitReached);
     }
 
@@ -267,12 +272,14 @@ impl TransactionPool {
   ) -> bool {
     let previous_price = *previous.gas_price();
     let required_price = if previous_price < U256::from(100) {
-      previous_price + U256::one()
+      previous_price.checked_add(U256::one())
     } else {
-      previous_price + (previous_price / U256::from(100)) * U256::from(2)
+      (previous_price / U256::from(100))
+        .checked_mul(U256::from(2))
+        .and_then(|bump| previous_price.checked_add(bump))
     };
 
-    *replacement.gas_price() >= required_price
+    required_price.is_some_and(|required| *replacement.gas_price() >= required)
   }
 
   fn remove_by_hash(&mut self, hash: H256) -> Option<Arc<SignedTransaction>> {

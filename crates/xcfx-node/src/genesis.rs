@@ -503,6 +503,7 @@ mod tests {
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     runtime::NodeRuntime,
+    transaction_pool::TransactionPoolPolicy,
   };
 
   const CONFLUX_COMPATIBILITY_CHAIN_ID: u32 = 10;
@@ -880,6 +881,7 @@ mod tests {
       header,
       definition,
       PosStateConfig::default(),
+      TransactionPoolPolicy::new(1_024),
     )
     .expect("the fixed PoS Genesis must execute");
 

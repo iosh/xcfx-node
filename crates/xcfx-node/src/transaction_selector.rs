@@ -4,7 +4,7 @@ use std::{
   sync::Arc,
 };
 
-use cfx_executor::spec::CommonParams;
+use cfx_executor::{spec::CommonParams, transaction_validation::PackingCheckResult};
 use cfx_parameters::{
   block::{
     MAX_BLOCK_SIZE_IN_BYTES, MAX_TRANSACTION_COUNT_PER_BLOCK, cspace_block_gas_limit_after_cip1559,
@@ -23,6 +23,7 @@ use crate::{
   transaction_ingress::TransactionValidationContext,
   transaction_pool::{AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry},
 };
+
 /// Resource limits applied by the deterministic selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransactionSelectionLimits {
@@ -169,15 +170,15 @@ fn select_account_transactions<'a>(
   selected
 }
 
-/// Deterministic transaction selection for one linear block.
-pub(crate) struct TransactionSelectionPlan {
+/// Transaction-related inputs consumed by the linear block producer.
+pub(crate) struct BlockTransactionSelection {
   epoch_height: BlockHeight,
   block_gas_limit: U256,
   transactions: Vec<Arc<SignedTransaction>>,
   base_price: SpaceMap<U256>,
 }
 
-impl TransactionSelectionPlan {
+impl BlockTransactionSelection {
   pub(crate) fn epoch_height(&self) -> BlockHeight {
     self.epoch_height
   }
@@ -195,6 +196,20 @@ impl TransactionSelectionPlan {
   }
 }
 
+/// Selector output, including pool entries dropped only after a successful commit.
+pub(crate) struct TransactionSelection {
+  block_selection: BlockTransactionSelection,
+  transactions_to_drop: Vec<Arc<SignedTransaction>>,
+}
+
+impl TransactionSelection {
+  pub(crate) fn into_block_selection_and_transactions_to_drop(
+    self,
+  ) -> (BlockTransactionSelection, Vec<Arc<SignedTransaction>>) {
+    (self.block_selection, self.transactions_to_drop)
+  }
+}
+
 pub(crate) fn select_transactions(
   input: &PoolSelectionInput,
   parent: &Block,
@@ -202,7 +217,7 @@ pub(crate) fn select_transactions(
   validation: &TransactionValidationContext<'_>,
   block_gas_limit: U256,
   limits: TransactionSelectionLimits,
-) -> TransactionSelectionPlan {
+) -> TransactionSelection {
   let epoch_height = parent
     .block_header
     .height()
@@ -236,16 +251,22 @@ pub(crate) fn select_transactions(
     .map_all(compute_next_price_tuple);
 
   let transactions_by_account = pending_transactions_by_account(input);
+  let mut transactions_to_drop = Vec::new();
 
   let selected_entries = select_account_transactions(&transactions_by_account, limits, |entry| {
     let transaction = entry.transaction.as_ref();
     let space = transaction.space();
 
-    if space == Space::Ethereum && !can_pack_evm_transactions {
-      return false;
+    match validation.check_for_packing(transaction) {
+      PackingCheckResult::Pack => {}
+      PackingCheckResult::Pending => return false,
+      PackingCheckResult::Drop => {
+        transactions_to_drop.push(Arc::clone(&entry.transaction));
+        return false;
+      }
     }
 
-    if validation.validate(transaction).is_err() {
+    if space == Space::Ethereum && !can_pack_evm_transactions {
       return false;
     }
 
@@ -287,10 +308,13 @@ pub(crate) fn select_transactions(
     .map(|entry| Arc::clone(&entry.transaction))
     .collect();
 
-  TransactionSelectionPlan {
-    epoch_height,
-    block_gas_limit,
-    transactions,
-    base_price,
+  TransactionSelection {
+    block_selection: BlockTransactionSelection {
+      epoch_height,
+      block_gas_limit,
+      transactions,
+      base_price,
+    },
+    transactions_to_drop,
   }
 }

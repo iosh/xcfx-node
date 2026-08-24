@@ -4,9 +4,13 @@ use std::{
   sync::Arc,
 };
 
-use cfx_executor::{machine::Machine, state::State};
+use cfx_executor::{machine::Machine, spec::CommonParams, state::State};
 use cfx_statedb::{Result as StateResult, StateDb};
-use cfx_types::{AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256};
+use cfx_types::{
+  AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256,
+  address_util::AddressUtil,
+};
+use cfx_vm_types::Spec;
 use diem_types::term_state::pos_state_config::PosStateConfig;
 
 use crate::{
@@ -23,20 +27,24 @@ use crate::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate, StateVersion},
   },
-  transaction_ingress::TransactionValidationContext,
+  transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
     AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
     TransactionPool, TransactionPoolInsertOutcome, TransactionPoolPolicy, TransactionPoolView,
-    pool_transaction_cost,
+    pool_gas_cost, pool_transaction_cost,
   },
   transaction_selector::{TransactionSelectionLimits, select_transactions},
 };
 
 use cfx_internal_common::EpochExecutionCommitment;
-use cfx_parameters::consensus::{DEFERRED_STATE_EPOCH_COUNT, TRANSACTION_DEFAULT_EPOCH_BOUND};
+use cfx_parameters::{
+  consensus::{DEFERRED_STATE_EPOCH_COUNT, TRANSACTION_DEFAULT_EPOCH_BOUND},
+  staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
+};
 
 use primitives::{
-  Account, Block, BlockNumber, BlockReceipts, Receipt, SignedTransaction, block::BlockHeight,
+  Account, Action, Block, BlockNumber, BlockReceipts, Receipt, SignedTransaction, Transaction,
+  block::BlockHeight, transaction::TransactionError,
 };
 
 pub(crate) struct CommittedEpoch {
@@ -70,6 +78,13 @@ impl CommittedEpoch {
       .start_block_number
       .checked_add(epoch_size)
       .expect("a committed epoch must permit a subsequent block number")
+  }
+
+  fn pivot_block_number(&self) -> BlockNumber {
+    self
+      .next_epoch_start_block_number()
+      .checked_sub(1)
+      .expect("a committed epoch always contains at least one block")
   }
 }
 
@@ -457,6 +472,7 @@ impl CommittedChainHistory {
 
 pub(crate) struct TransactionPoolUpdates {
   pub(crate) transactions_to_repack: Vec<Arc<SignedTransaction>>,
+  pub(crate) transactions_dropped_during_selection: Vec<Arc<SignedTransaction>>,
   pub(crate) modified_accounts: Vec<Account>,
 }
 
@@ -473,6 +489,68 @@ fn open_committed_state(version: &Arc<StateVersion>) -> StateResult<State> {
   State::new(StateDb::new(Box::new(backend)))
 }
 
+/// Derives declared gas and storage covered by sponsorship for pool readiness.
+fn sponsored_gas_and_storage(
+  state: &State,
+  transaction: &SignedTransaction,
+) -> StateResult<(U256, u64)> {
+  let Transaction::Native(native_transaction) = &transaction.unsigned else {
+    return Ok(Default::default());
+  };
+
+  let contract_address = match native_transaction.action() {
+    Action::Call(address) if address.is_contract_address() => address,
+    _ => return Ok(Default::default()),
+  };
+
+  let Some(sponsor_info) = state.sponsor_info(&contract_address)? else {
+    return Ok(Default::default());
+  };
+
+  if !state.check_contract_whitelist(&contract_address, &transaction.sender)? {
+    return Ok(Default::default());
+  }
+
+  let declared_gas_cost = pool_gas_cost(*transaction.gas(), *transaction.gas_price());
+  let sponsored_gas = if declared_gas_cost <= sponsor_info.sponsor_gas_bound
+    && declared_gas_cost <= sponsor_info.sponsor_balance_for_gas
+  {
+    *native_transaction.gas()
+  } else {
+    U256::zero()
+  };
+
+  let required_storage_collateral =
+    U256::from(*native_transaction.storage_limit()) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT;
+  let sponsored_storage = if required_storage_collateral
+    <= sponsor_info.sponsor_balance_for_collateral + sponsor_info.unused_storage_points()
+  {
+    *native_transaction.storage_limit()
+  } else {
+    0
+  };
+
+  Ok((sponsored_gas, sponsored_storage))
+}
+
+fn transaction_validation_context<'a>(
+  params: &'a CommonParams,
+  spec: &'a Spec,
+  height: BlockHeight,
+) -> TransactionValidationContext<'a> {
+  TransactionValidationContext {
+    chain_id: AllChainID::new(
+      params.chain_id(height, Space::Native),
+      params.chain_id(height, Space::Ethereum),
+    ),
+    height,
+    transitions: &params.transition_heights,
+    transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
+    max_nonce: None,
+    spec,
+  }
+}
+
 pub(crate) struct NodeRuntime {
   machine: Arc<Machine>,
   pos_config: PosStateConfig,
@@ -487,6 +565,7 @@ impl NodeRuntime {
     header: GenesisHeaderInput,
     pos_definition: GenesisPosDefinition,
     pos_config: PosStateConfig,
+    transaction_pool_policy: TransactionPoolPolicy,
   ) -> Result<Self, GenesisError> {
     let genesis = execute_genesis_with_pos(
       Arc::clone(&machine),
@@ -500,7 +579,7 @@ impl NodeRuntime {
       machine,
       pos_config,
       history: CommittedChainHistory::from_genesis(CommittedChainView::from_genesis(genesis)),
-      transaction_pool: TransactionPool::new(),
+      transaction_pool: TransactionPool::new(transaction_pool_policy),
     })
   }
 
@@ -512,20 +591,39 @@ impl NodeRuntime {
     Ok(PoolSelectionInput { view, entry_states })
   }
 
+  /// Validates raw transaction bytes against the current optimistic view and
+  /// inserts the recovered transaction into this Runtime's pool.
+  pub(crate) fn submit_raw_transaction(&mut self, raw: &[u8]) -> Result<H256, TransactionError> {
+    let transaction = {
+      let optimistic_head = self.history.optimistic_head();
+      let epoch_height = self.history.optimistic_height();
+      let block_number = optimistic_head.epoch.pivot_block_number();
+      let params = self.machine.params();
+      let spec = self.machine.spec(block_number, epoch_height);
+      let validation = transaction_validation_context(params, &spec, epoch_height);
+
+      Arc::new(decode_and_validate_raw_transaction(raw, &validation)?)
+    };
+
+    let transaction_hash = transaction.hash();
+    self.insert_admitted_transaction(transaction)?;
+
+    Ok(transaction_hash)
+  }
+
   /// Inserts a transaction that has already passed transaction-only ingress validation.
   pub(crate) fn insert_admitted_transaction(
     &mut self,
     transaction: Arc<SignedTransaction>,
-    policy: &TransactionPoolPolicy,
-  ) -> Result<TransactionPoolInsertOutcome, primitives::transaction::TransactionError> {
+  ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
     if self
       .history
       .contains_executed_transaction(&transaction.hash())
     {
-      return Err(primitives::transaction::TransactionError::AlreadyImported);
+      return Err(TransactionError::AlreadyImported);
     }
 
-    self.transaction_pool.insert(transaction, policy)
+    self.transaction_pool.insert(transaction)
   }
 
   /// Returns a stable snapshot of the transaction pool.
@@ -552,7 +650,7 @@ impl NodeRuntime {
     pool_view: &TransactionPoolView,
   ) -> StateResult<PoolReadinessInputs> {
     let optimistic_head = self.history.optimistic_head();
-    let mut state = open_committed_state(&optimistic_head.state.version)?;
+    let state = open_committed_state(&optimistic_head.state.version)?;
     let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
     let mut transaction_costs = BTreeMap::new();
 
@@ -572,10 +670,12 @@ impl NodeRuntime {
         );
       }
 
-      transaction_costs.insert(
-        transaction.hash(),
-        pool_transaction_cost(transaction, U256::zero(), 0),
-      );
+      let (sponsored_gas, sponsored_storage) =
+        sponsored_gas_and_storage(&state, transaction)?;
+      let transaction_cost =
+        pool_transaction_cost(transaction, sponsored_gas, sponsored_storage);
+
+      transaction_costs.insert(transaction.hash(), transaction_cost);
     }
 
     Ok(PoolReadinessInputs::new(account_states, transaction_costs))
@@ -600,17 +700,7 @@ impl NodeRuntime {
     let params = self.machine.params();
     let spec = self.machine.spec(block_number, epoch_height);
 
-    let validation = TransactionValidationContext {
-      chain_id: AllChainID::new(
-        params.chain_id(epoch_height, Space::Native),
-        params.chain_id(epoch_height, Space::Ethereum),
-      ),
-      height: epoch_height,
-      transitions: &params.transition_heights,
-      transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
-      max_nonce: None,
-      spec: &spec,
-    };
+    let validation = transaction_validation_context(params, &spec, epoch_height);
 
     let selection = select_transactions(
       &selection_input,
@@ -620,6 +710,8 @@ impl NodeRuntime {
       block_gas_limit,
       TransactionSelectionLimits::default(),
     );
+    let (block_selection, transactions_to_drop) =
+      selection.into_block_selection_and_transactions_to_drop();
 
     let deferred_commitment = self
       .history
@@ -627,18 +719,29 @@ impl NodeRuntime {
 
     let block = produce_block(
       parent_block,
-      selection,
+      block_selection,
       params,
       header_input,
       deferred_commitment,
     );
 
-    Ok(self.execute_and_commit_single_block_epoch(block))
+    Ok(self.execute_and_commit_single_block_epoch_with_selection_drops(
+      block,
+      transactions_to_drop,
+    ))
   }
 
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     block: Block,
+  ) -> RuntimeCommitOutcome {
+    self.execute_and_commit_single_block_epoch_with_selection_drops(block, Vec::new())
+  }
+
+  fn execute_and_commit_single_block_epoch_with_selection_drops(
+    &mut self,
+    block: Block,
+    transactions_to_drop: Vec<Arc<SignedTransaction>>,
   ) -> RuntimeCommitOutcome {
     let parent = Arc::clone(self.history.optimistic_head());
     let previous_latest_state_height = self.history.latest_state_height();
@@ -663,7 +766,10 @@ impl NodeRuntime {
       accounts_for_txpool,
     } = executed;
 
-    let mut transaction_hashes_to_remove = Vec::new();
+    let mut transaction_hashes_to_remove = transactions_to_drop
+      .iter()
+      .map(|transaction| transaction.hash())
+      .collect::<Vec<_>>();
     let mut transactions_to_repack = Vec::new();
 
     for (transaction, disposition) in block.transactions.iter().zip(transaction_dispositions) {
@@ -711,6 +817,7 @@ impl NodeRuntime {
       latest_header_committed_advanced_to,
       transaction_pool_updates: TransactionPoolUpdates {
         transactions_to_repack,
+        transactions_dropped_during_selection: transactions_to_drop,
         modified_accounts: accounts_for_txpool,
       },
     }
