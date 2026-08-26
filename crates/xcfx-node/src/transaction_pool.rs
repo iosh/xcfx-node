@@ -123,6 +123,7 @@ pub(crate) struct PoolEntry {
   pub(crate) arrival_sequence: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransactionPoolPolicy {
   pub(crate) max_transactions: usize,
 }
