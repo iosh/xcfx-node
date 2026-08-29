@@ -502,7 +502,7 @@ mod tests {
   use crate::{
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
-    runtime::NodeRuntime,
+    runtime::{CheckpointPolicy, NodeRuntime},
     transaction_pool::TransactionPoolPolicy,
   };
 
@@ -882,6 +882,7 @@ mod tests {
       definition,
       PosStateConfig::default(),
       TransactionPoolPolicy::new(1_024),
+      CheckpointPolicy::new(1),
     )
     .expect("the fixed PoS Genesis must execute");
 

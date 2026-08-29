@@ -118,11 +118,11 @@ enum BlockedState {
   InsufficientBalance { required: U256, available: U256 },
 }
 
+#[derive(Clone)]
 pub(crate) struct PoolEntry {
   pub(crate) transaction: Arc<SignedTransaction>,
   pub(crate) arrival_sequence: u64,
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransactionPoolPolicy {
   pub(crate) max_transactions: usize,
@@ -149,6 +149,11 @@ pub(crate) struct TransactionPoolView {
   pub(crate) entries: Vec<PoolViewEntry>,
 }
 
+pub(crate) struct TransactionPoolCheckpoint {
+  entries: Vec<PoolEntry>,
+  next_arrival_sequence: u64,
+}
+
 pub(crate) struct PoolSelectionInput {
   pub(crate) view: TransactionPoolView,
   pub(crate) entry_states: PoolEntryStates,
@@ -173,6 +178,54 @@ impl TransactionPool {
       key_by_hash: HashMap::new(),
       next_arrival_sequence: 0,
     }
+  }
+
+  pub(crate) fn capture_checkpoint(&self) -> TransactionPoolCheckpoint {
+    TransactionPoolCheckpoint {
+      entries: self.by_key.values().cloned().collect(),
+      next_arrival_sequence: self.next_arrival_sequence,
+    }
+  }
+
+  pub(crate) fn from_checkpoint(
+    policy: TransactionPoolPolicy,
+    checkpoint: &TransactionPoolCheckpoint,
+  ) -> Self {
+    assert!(
+      checkpoint.entries.len() <= policy.max_transactions,
+      "a checkpoint cannot restore more transactions than the stable pool policy allows",
+    );
+
+    let mut pool = Self::new(policy);
+    let mut arrival_sequences = BTreeSet::new();
+
+    pool.key_by_hash.reserve(checkpoint.entries.len());
+    pool.next_arrival_sequence = checkpoint.next_arrival_sequence;
+
+    for entry in &checkpoint.entries {
+      assert!(
+        entry.arrival_sequence < checkpoint.next_arrival_sequence,
+        "a checkpoint pool entry must have an allocated arrival sequence",
+      );
+      assert!(
+        arrival_sequences.insert(entry.arrival_sequence),
+        "checkpoint pool entries must have distinct arrival sequences",
+      );
+
+      let key = TransactionKey::from_transaction(&entry.transaction);
+      let hash = entry.transaction.hash();
+
+      assert!(
+        pool.by_key.insert(key, entry.clone()).is_none(),
+        "checkpoint pool entries must have distinct conflict keys",
+      );
+      assert!(
+        pool.key_by_hash.insert(hash, key).is_none(),
+        "checkpoint pool entries must have distinct transaction hashes",
+      );
+    }
+
+    pool
   }
 
   pub(crate) fn len(&self) -> usize {

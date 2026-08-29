@@ -1,17 +1,4 @@
 //! Owns one node instance's authoritative protocol state.
-use std::{
-  collections::{BTreeMap, HashMap},
-  sync::Arc,
-};
-
-use cfx_executor::{machine::Machine, spec::CommonParams, state::State};
-use cfx_statedb::{Result as StateResult, StateDb};
-use cfx_types::{
-  AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256, address_util::AddressUtil,
-};
-use cfx_vm_types::Spec;
-use diem_types::term_state::pos_state_config::PosStateConfig;
-
 use crate::{
   block_producer::{BlockProductionInput, produce_block},
   execution::{
@@ -29,11 +16,26 @@ use crate::{
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
     AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
-    TransactionPool, TransactionPoolInsertOutcome, TransactionPoolPolicy, TransactionPoolView,
-    pool_gas_cost, pool_transaction_cost,
+    TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
+    TransactionPoolPolicy, TransactionPoolView, pool_gas_cost, pool_transaction_cost,
   },
   transaction_selector::{TransactionSelectionLimits, select_transactions},
 };
+use cfx_executor::{machine::Machine, spec::CommonParams, state::State};
+use cfx_statedb::{Result as StateResult, StateDb};
+use cfx_types::{
+  AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256, address_util::AddressUtil,
+};
+use cfx_vm_types::Spec;
+use diem_types::term_state::pos_state_config::PosStateConfig;
+use std::{
+  collections::{BTreeMap, HashMap},
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+};
+use thiserror::Error;
 
 use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::{
@@ -45,6 +47,43 @@ use primitives::{
   Account, Action, Block, BlockNumber, BlockReceipts, Receipt, SignedTransaction, Transaction,
   block::BlockHeight, transaction::TransactionError,
 };
+
+static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct RuntimeInstanceId(u64);
+
+fn allocate_runtime_instance_id() -> RuntimeInstanceId {
+  let id = NEXT_RUNTIME_INSTANCE_ID
+    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+      current.checked_add(1)
+    })
+    .expect("Runtime instance ID space exhausted");
+
+  RuntimeInstanceId(id)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct CheckpointId {
+  runtime_instance_id: RuntimeInstanceId,
+  sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CheckpointPolicy {
+  max_checkpoints: usize,
+}
+
+impl CheckpointPolicy {
+  pub(crate) const fn new(max_checkpoints: usize) -> Self {
+    Self { max_checkpoints }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("checkpoint limit reached ({max_checkpoints})")]
+pub(crate) struct CheckpointLimitError {
+  pub(crate) max_checkpoints: usize,
+}
 
 pub(crate) struct CommittedEpoch {
   start_block_number: BlockNumber,
@@ -313,6 +352,37 @@ impl CommittedChainHistory {
       block_locations,
       transaction_locations,
     }
+  }
+  fn capture_checkpoint_head(&self) -> Arc<CommittedChainView> {
+    Arc::clone(self.optimistic_head())
+  }
+
+  fn rebuild_through_checkpoint_head(&self, checkpoint_head: &Arc<CommittedChainView>) -> Self {
+    let checkpoint_height = checkpoint_head.epoch.pivot_block().block_header.height();
+    let checkpoint_index =
+      usize::try_from(checkpoint_height).expect("a checkpoint epoch height must fit in usize");
+    let ancestor = self
+      .views
+      .get(checkpoint_index)
+      .expect("a checkpoint history head must exist in the current history");
+
+    assert!(
+      Arc::ptr_eq(ancestor, checkpoint_head),
+      "a checkpoint history head must be an ancestor of the current history",
+    );
+
+    let checkpoint_views = &self.views[..=checkpoint_index];
+    let (genesis, remaining_views) = checkpoint_views
+      .split_first()
+      .expect("a checkpoint history must contain the Genesis view");
+
+    let mut history = Self::from_genesis(Arc::clone(genesis));
+
+    for view in remaining_views {
+      history.append_executed_epoch(Arc::clone(view));
+    }
+
+    history
   }
 
   fn optimistic_head(&self) -> &Arc<CommittedChainView> {
@@ -625,25 +695,71 @@ struct RuntimeState {
   transaction_pool: TransactionPool,
 }
 
-impl RuntimeState {
-  fn from_genesis(
-    reset_baseline: Arc<CommittedChainView>,
-    transaction_pool_policy: TransactionPoolPolicy,
-  ) -> Self {
-    Self {
-      history: CommittedChainHistory::from_genesis(reset_baseline),
+struct ResetState {
+  genesis_view: Arc<CommittedChainView>,
+}
+
+impl ResetState {
+  fn from_genesis(genesis_view: Arc<CommittedChainView>) -> Self {
+    Self { genesis_view }
+  }
+
+  fn build_runtime_state(&self, transaction_pool_policy: TransactionPoolPolicy) -> RuntimeState {
+    RuntimeState {
+      history: CommittedChainHistory::from_genesis(Arc::clone(&self.genesis_view)),
       transaction_pool: TransactionPool::new(transaction_pool_policy),
     }
   }
+}
+
+struct Checkpoint {
+  history_head: Arc<CommittedChainView>,
+  transaction_pool: TransactionPoolCheckpoint,
+}
+
+impl Checkpoint {
+  fn capture(runtime_state: &RuntimeState) -> Self {
+    Self {
+      history_head: runtime_state.history.capture_checkpoint_head(),
+      transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
+    }
+  }
+
+  fn build_runtime_state(
+    &self,
+    current_runtime_state: &RuntimeState,
+    transaction_pool_policy: TransactionPoolPolicy,
+  ) -> RuntimeState {
+    RuntimeState {
+      history: current_runtime_state
+        .history
+        .rebuild_through_checkpoint_head(&self.history_head),
+      transaction_pool: TransactionPool::from_checkpoint(
+        transaction_pool_policy,
+        &self.transaction_pool,
+      ),
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RevertCheckpointOutcome {
+  Reverted,
+  Unavailable,
 }
 
 pub(crate) struct NodeRuntime {
   machine: Arc<Machine>,
   pos_config: PosStateConfig,
   transaction_pool_policy: TransactionPoolPolicy,
-  reset_baseline: Arc<CommittedChainView>,
+  checkpoint_policy: CheckpointPolicy,
+  reset_state: ResetState,
   runtime_state: RuntimeState,
+  checkpoints: BTreeMap<u64, Checkpoint>,
+  runtime_instance_id: RuntimeInstanceId,
+  next_checkpoint_sequence: u64,
 }
+
 impl NodeRuntime {
   pub(crate) fn from_genesis(
     machine: Arc<Machine>,
@@ -652,6 +768,7 @@ impl NodeRuntime {
     pos_definition: GenesisPosDefinition,
     pos_config: PosStateConfig,
     transaction_pool_policy: TransactionPoolPolicy,
+    checkpoint_policy: CheckpointPolicy,
   ) -> Result<Self, GenesisError> {
     let genesis = execute_genesis_with_pos(
       Arc::clone(&machine),
@@ -661,17 +778,89 @@ impl NodeRuntime {
       &pos_config,
     )?;
 
-    let reset_baseline = Arc::new(CommittedChainView::from_genesis(genesis));
-    let runtime_state =
-      RuntimeState::from_genesis(Arc::clone(&reset_baseline), transaction_pool_policy);
+    let reset_state = ResetState::from_genesis(Arc::new(CommittedChainView::from_genesis(genesis)));
+    let runtime_state = reset_state.build_runtime_state(transaction_pool_policy);
 
     Ok(Self {
       machine,
       pos_config,
       transaction_pool_policy,
-      reset_baseline,
+      checkpoint_policy,
+      reset_state,
       runtime_state,
+      checkpoints: BTreeMap::new(),
+      runtime_instance_id: allocate_runtime_instance_id(),
+      next_checkpoint_sequence: 1,
     })
+  }
+
+  pub(crate) fn create_checkpoint(&mut self) -> Result<CheckpointId, CheckpointLimitError> {
+    if self.checkpoints.len() >= self.checkpoint_policy.max_checkpoints {
+      return Err(CheckpointLimitError {
+        max_checkpoints: self.checkpoint_policy.max_checkpoints,
+      });
+    }
+
+    let next_checkpoint_sequence = self
+      .next_checkpoint_sequence
+      .checked_add(1)
+      .expect("checkpoint ID space exhausted");
+
+    let checkpoint_id = CheckpointId {
+      runtime_instance_id: self.runtime_instance_id,
+      sequence: self.next_checkpoint_sequence,
+    };
+    let checkpoint = Checkpoint::capture(&self.runtime_state);
+
+    assert!(
+      !self.checkpoints.contains_key(&checkpoint_id.sequence),
+      "a checkpoint sequence must never be reused",
+    );
+
+    let _previous = self.checkpoints.insert(checkpoint_id.sequence, checkpoint);
+
+    self.next_checkpoint_sequence = next_checkpoint_sequence;
+
+    Ok(checkpoint_id)
+  }
+
+  pub(crate) fn revert_to_checkpoint(
+    &mut self,
+    checkpoint_id: CheckpointId,
+  ) -> RevertCheckpointOutcome {
+    let next_runtime_state = {
+      let Some(checkpoint) = self.resolve_checkpoint(checkpoint_id) else {
+        return RevertCheckpointOutcome::Unavailable;
+      };
+
+      checkpoint.build_runtime_state(&self.runtime_state, self.transaction_pool_policy)
+    };
+
+    // The target and every checkpoint created after it become unavailable.
+    let _invalidated_checkpoints = self.checkpoints.split_off(&checkpoint_id.sequence);
+
+    self.runtime_state = next_runtime_state;
+
+    RevertCheckpointOutcome::Reverted
+  }
+
+  pub(crate) fn reset(&mut self) {
+    let next_runtime_state = self
+      .reset_state
+      .build_runtime_state(self.transaction_pool_policy);
+
+    self.runtime_state = next_runtime_state;
+    self.checkpoints.clear();
+
+    // Keep checkpoint IDs monotonic so cleared IDs are never reused.
+  }
+
+  fn resolve_checkpoint(&self, checkpoint_id: CheckpointId) -> Option<&Checkpoint> {
+    if checkpoint_id.runtime_instance_id != self.runtime_instance_id {
+      return None;
+    }
+
+    self.checkpoints.get(&checkpoint_id.sequence)
   }
 
   pub(crate) fn transaction_pool_selection_input(&self) -> StateResult<PoolSelectionInput> {
