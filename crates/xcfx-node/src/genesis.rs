@@ -503,6 +503,7 @@ mod tests {
     block_producer::RuntimeBlock,
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
+    production_environment::ProductionDefaults,
     runtime::{CheckpointPolicy, NodeRuntime},
     transaction_pool::TransactionPoolPolicy,
   };
@@ -882,6 +883,7 @@ mod tests {
       header,
       definition,
       PosStateConfig::default(),
+      ProductionDefaults::new(1),
       TransactionPoolPolicy::new(1_024),
       CheckpointPolicy::new(1),
     )

@@ -172,10 +172,9 @@ impl RuntimeBlock {
   }
 }
 
-/// Caller-controlled fields for one deterministic block.
+/// Caller-controlled header fields not yet owned by the production environment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockProductionInput {
-  pub(crate) timestamp: u64,
   pub(crate) author: Address,
   pub(crate) difficulty: U256,
 }
@@ -185,6 +184,7 @@ pub(crate) fn produce_block(
   parent: &RuntimeBlock,
   selection: BlockTransactionSelection,
   params: &CommonParams,
+  timestamp: u64,
   header_input: BlockProductionInput,
   deferred_commitment: &EpochExecutionCommitment,
 ) -> RuntimeBlock {
@@ -201,7 +201,6 @@ pub(crate) fn produce_block(
   let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
 
   let custom = params.custom_prefix(epoch_height).unwrap_or_default();
-  let timestamp = header_input.timestamp.max(parent.header().timestamp());
   let block_header = BlockHeaderBuilder::new()
     .with_parent_hash(parent.hash())
     .with_height(epoch_height)

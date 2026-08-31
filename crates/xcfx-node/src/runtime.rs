@@ -9,6 +9,9 @@ use crate::{
     execute_genesis_with_pos,
   },
   pos::{CommittedPosState, GenesisPosDefinition},
+  production_environment::{
+    PreparedProductionEnvironment, ProductionDefaults, ProductionEnvironment, ProductionTimeError,
+  },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
   state::{
@@ -101,6 +104,15 @@ pub(crate) enum RuntimeTransactionError {
     sender: AddressWithSpace,
     transaction_space: Space,
   },
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum RuntimeBlockProductionError {
+  #[error(transparent)]
+  State(#[from] cfx_statedb::Error),
+
+  #[error(transparent)]
+  Time(#[from] ProductionTimeError),
 }
 
 pub(crate) struct CommittedEpoch {
@@ -788,6 +800,7 @@ fn transaction_validation_context<'a>(
 struct RuntimeState {
   history: CommittedChainHistory,
   transaction_pool: TransactionPool,
+  production_environment: ProductionEnvironment,
 }
 
 struct ResetState {
@@ -799,10 +812,22 @@ impl ResetState {
     Self { genesis_view }
   }
 
-  fn build_runtime_state(&self, transaction_pool_policy: TransactionPoolPolicy) -> RuntimeState {
+  fn build_runtime_state(
+    &self,
+    transaction_pool_policy: TransactionPoolPolicy,
+    production_defaults: &ProductionDefaults,
+  ) -> RuntimeState {
+    let reset_base_timestamp = self
+      .genesis_view
+      .epoch
+      .pivot_runtime_block()
+      .header()
+      .timestamp();
+
     RuntimeState {
       history: CommittedChainHistory::from_genesis(Arc::clone(&self.genesis_view)),
       transaction_pool: TransactionPool::new(transaction_pool_policy),
+      production_environment: production_defaults.build_environment(reset_base_timestamp),
     }
   }
 }
@@ -810,6 +835,7 @@ impl ResetState {
 struct Checkpoint {
   history_head: Arc<CommittedChainView>,
   transaction_pool: TransactionPoolCheckpoint,
+  production_environment: ProductionEnvironment,
 }
 
 impl Checkpoint {
@@ -817,6 +843,7 @@ impl Checkpoint {
     Self {
       history_head: runtime_state.history.capture_checkpoint_head(),
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
+      production_environment: runtime_state.production_environment,
     }
   }
 
@@ -833,19 +860,19 @@ impl Checkpoint {
         transaction_pool_policy,
         &self.transaction_pool,
       ),
+      production_environment: self.production_environment,
     }
   }
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RevertCheckpointOutcome {
   Reverted,
   Unavailable,
 }
-
 pub(crate) struct NodeRuntime {
   machine: Arc<Machine>,
   pos_config: PosStateConfig,
+  production_defaults: ProductionDefaults,
   signing_keys: SigningKeys,
   impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
@@ -864,6 +891,7 @@ impl NodeRuntime {
     header: GenesisHeaderInput,
     pos_definition: GenesisPosDefinition,
     pos_config: PosStateConfig,
+    production_defaults: ProductionDefaults,
     transaction_pool_policy: TransactionPoolPolicy,
     checkpoint_policy: CheckpointPolicy,
   ) -> Result<Self, GenesisError> {
@@ -876,11 +904,13 @@ impl NodeRuntime {
     )?;
 
     let reset_state = ResetState::from_genesis(Arc::new(CommittedChainView::from_genesis(genesis)));
-    let runtime_state = reset_state.build_runtime_state(transaction_pool_policy);
+    let runtime_state =
+      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults);
 
     Ok(Self {
       machine,
       pos_config,
+      production_defaults,
       signing_keys: SigningKeys::default(),
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
@@ -946,13 +976,43 @@ impl NodeRuntime {
   pub(crate) fn reset(&mut self) {
     let next_runtime_state = self
       .reset_state
-      .build_runtime_state(self.transaction_pool_policy);
+      .build_runtime_state(self.transaction_pool_policy, &self.production_defaults);
 
     self.runtime_state = next_runtime_state;
     self.checkpoints.clear();
     self.impersonation.clear();
 
     // Keep checkpoint IDs monotonic so cleared IDs are never reused.
+  }
+
+  pub(crate) fn increase_time(&mut self, increment: u64) -> Result<u64, ProductionTimeError> {
+    self
+      .runtime_state
+      .production_environment
+      .increase_time(increment)
+  }
+
+  pub(crate) fn set_next_block_timestamp(
+    &mut self,
+    timestamp: u64,
+  ) -> Result<u64, ProductionTimeError> {
+    let parent_timestamp = self.optimistic_head_timestamp();
+
+    self
+      .runtime_state
+      .production_environment
+      .set_next_block_timestamp(timestamp, parent_timestamp)
+  }
+
+  fn optimistic_head_timestamp(&self) -> u64 {
+    self
+      .runtime_state
+      .history
+      .optimistic_head()
+      .epoch
+      .pivot_runtime_block()
+      .header()
+      .timestamp()
   }
 
   fn resolve_checkpoint(&self, checkpoint_id: CheckpointId) -> Option<&Checkpoint> {
@@ -1186,9 +1246,14 @@ impl NodeRuntime {
     &mut self,
     header_input: BlockProductionInput,
     block_gas_limit: U256,
-  ) -> StateResult<RuntimeCommitOutcome> {
+  ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.epoch.pivot_runtime_block();
+
+    let prepared_environment = self
+      .runtime_state
+      .production_environment
+      .prepare_next_block(&self.production_defaults, parent_block.header().timestamp())?;
 
     let epoch_height = parent_block
       .header()
@@ -1223,31 +1288,51 @@ impl NodeRuntime {
       parent_block,
       block_selection,
       params,
+      prepared_environment.timestamp(),
       header_input,
       deferred_commitment,
     );
 
-    Ok(
-      self.execute_and_commit_single_block_epoch_with_selection_drops(
-        runtime_block,
-        transactions_to_drop,
-      ),
-    )
+    let outcome = self.execute_and_commit_single_block_epoch_with_selection_drops(
+      runtime_block,
+      transactions_to_drop,
+      Some(prepared_environment),
+    );
+
+    Ok(outcome)
   }
 
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     runtime_block: RuntimeBlock,
   ) -> RuntimeCommitOutcome {
-    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new())
+    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new(), None)
   }
 
   fn execute_and_commit_single_block_epoch_with_selection_drops(
     &mut self,
     runtime_block: RuntimeBlock,
     transactions_to_drop: Vec<RuntimeTransaction>,
+    prepared_environment: Option<PreparedProductionEnvironment>,
   ) -> RuntimeCommitOutcome {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
+    let parent_block = parent.epoch.pivot_runtime_block();
+    let block_timestamp = runtime_block.header().timestamp();
+
+    assert!(
+      block_timestamp >= parent_block.header().timestamp(),
+      "block timestamp {block_timestamp} must not be lower than parent timestamp {}",
+      parent_block.header().timestamp(),
+    );
+
+    if let Some(prepared_environment) = prepared_environment.as_ref() {
+      assert_eq!(
+        block_timestamp,
+        prepared_environment.timestamp(),
+        "a produced block must use its prepared timestamp",
+      );
+    }
+
     let previous_latest_state_height = self.runtime_state.history.latest_state_height();
     let previous_latest_header_committed_height =
       self.runtime_state.history.latest_header_committed_height();
@@ -1255,7 +1340,7 @@ impl NodeRuntime {
 
     let executed = execute_single_block_epoch(
       self.machine.as_ref(),
-      parent.epoch.pivot_runtime_block(),
+      parent_block,
       &parent.state,
       parent.pos_state.as_ref(),
       start_block_number,
@@ -1323,6 +1408,17 @@ impl NodeRuntime {
       .runtime_state
       .transaction_pool
       .apply_reconciliation(pool_reconciliation);
+
+    match prepared_environment {
+      Some(prepared_environment) => self
+        .runtime_state
+        .production_environment
+        .commit_prepared(prepared_environment),
+      None => self
+        .runtime_state
+        .production_environment
+        .synchronize_committed_timestamp(block_timestamp),
+    }
 
     let latest_state_advanced_to = (self.runtime_state.history.latest_state_height()
       > previous_latest_state_height)
