@@ -1,10 +1,10 @@
 use crate::{
-  mpt::indexed_mpt_root, runtime_transaction::RuntimeTransaction,
-  transaction_selector::BlockTransactionSelection,
+  mpt::indexed_mpt_root, production_environment::PreparedProductionEnvironment,
+  runtime_transaction::RuntimeTransaction, transaction_selector::BlockTransactionSelection,
 };
 use cfx_executor::spec::CommonParams;
 use cfx_internal_common::EpochExecutionCommitment;
-use cfx_types::{Address, U256};
+use cfx_types::U256;
 use primitives::{Block, BlockHeader, BlockHeaderBuilder, Cip112TransitionHeight};
 
 /// A Runtime block keeps local transaction identity separate from the
@@ -172,10 +172,9 @@ impl RuntimeBlock {
   }
 }
 
-/// Caller-controlled header fields not yet owned by the production environment.
+/// Caller-controlled difficulty not yet owned by the production environment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockProductionInput {
-  pub(crate) author: Address,
   pub(crate) difficulty: U256,
 }
 
@@ -184,12 +183,12 @@ pub(crate) fn produce_block(
   parent: &RuntimeBlock,
   selection: BlockTransactionSelection,
   params: &CommonParams,
-  timestamp: u64,
+  prepared_environment: PreparedProductionEnvironment,
   header_input: BlockProductionInput,
   deferred_commitment: &EpochExecutionCommitment,
 ) -> RuntimeBlock {
   let epoch_height = selection.epoch_height();
-  let block_gas_limit = selection.block_gas_limit();
+  let block_gas_limit = prepared_environment.block_gas_limit();
   let base_price = *selection.base_price();
   let transactions = selection.into_transactions();
 
@@ -204,8 +203,8 @@ pub(crate) fn produce_block(
   let block_header = BlockHeaderBuilder::new()
     .with_parent_hash(parent.hash())
     .with_height(epoch_height)
-    .with_timestamp(timestamp)
-    .with_author(header_input.author)
+    .with_timestamp(prepared_environment.timestamp())
+    .with_author(prepared_environment.author())
     .with_transactions_root(transactions_root)
     .with_deferred_state_root(
       deferred_commitment

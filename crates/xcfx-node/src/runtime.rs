@@ -11,6 +11,7 @@ use crate::{
   pos::{CommittedPosState, GenesisPosDefinition},
   production_environment::{
     PreparedProductionEnvironment, ProductionDefaults, ProductionEnvironment, ProductionTimeError,
+    block_gas_limit_bounds,
   },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
@@ -29,7 +30,8 @@ use crate::{
 use cfx_executor::{machine::Machine, spec::CommonParams, state::State};
 use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{
-  AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256, address_util::AddressUtil,
+  Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256,
+  address_util::AddressUtil,
 };
 use cfx_vm_types::Spec;
 use cfxkey::KeyPair;
@@ -985,6 +987,17 @@ impl NodeRuntime {
     // Keep checkpoint IDs monotonic so cleared IDs are never reused.
   }
 
+  pub(crate) fn set_author(&mut self, author: Address) -> Address {
+    self.runtime_state.production_environment.set_author(author)
+  }
+
+  pub(crate) fn set_block_gas_target(&mut self, block_gas_target: u64) -> u64 {
+    self
+      .runtime_state
+      .production_environment
+      .set_block_gas_target(block_gas_target)
+  }
+
   pub(crate) fn increase_time(&mut self, increment: u64) -> Result<u64, ProductionTimeError> {
     self
       .runtime_state
@@ -1245,15 +1258,9 @@ impl NodeRuntime {
   pub(crate) fn produce_and_commit_block(
     &mut self,
     header_input: BlockProductionInput,
-    block_gas_limit: U256,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.epoch.pivot_runtime_block();
-
-    let prepared_environment = self
-      .runtime_state
-      .production_environment
-      .prepare_next_block(&self.production_defaults, parent_block.header().timestamp())?;
 
     let epoch_height = parent_block
       .header()
@@ -1261,11 +1268,21 @@ impl NodeRuntime {
       .checked_add(1)
       .expect("a parent block must permit a subsequent epoch height");
 
+    let params = self.machine.params();
+    let prepared_environment = self
+      .runtime_state
+      .production_environment
+      .prepare_next_block(
+        &self.production_defaults,
+        parent_block.header().timestamp(),
+        *parent_block.header().gas_limit(),
+        epoch_height,
+        params,
+      )?;
+
     let block_number = parent.epoch.next_epoch_start_block_number();
     let selection_input = self.transaction_pool_selection_input()?;
-    let params = self.machine.params();
     let spec = self.machine.spec(block_number, epoch_height);
-
     let validation = transaction_validation_context(params, &spec, epoch_height);
 
     let selection = select_transactions(
@@ -1273,9 +1290,10 @@ impl NodeRuntime {
       parent_block,
       params,
       &validation,
-      block_gas_limit,
+      prepared_environment.block_gas_limit(),
       TransactionSelectionLimits::default(),
     );
+
     let (block_selection, transactions_to_drop) =
       selection.into_block_selection_and_transactions_to_drop();
 
@@ -1288,7 +1306,7 @@ impl NodeRuntime {
       parent_block,
       block_selection,
       params,
-      prepared_environment.timestamp(),
+      prepared_environment,
       header_input,
       deferred_commitment,
     );
@@ -1318,11 +1336,23 @@ impl NodeRuntime {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.epoch.pivot_runtime_block();
     let block_timestamp = runtime_block.header().timestamp();
+    let block_gas_limit = *runtime_block.header().gas_limit();
 
     assert!(
       block_timestamp >= parent_block.header().timestamp(),
       "block timestamp {block_timestamp} must not be lower than parent timestamp {}",
       parent_block.header().timestamp(),
+    );
+
+    let (gas_lower, gas_upper) = block_gas_limit_bounds(
+      *parent_block.header().gas_limit(),
+      runtime_block.header().height(),
+      self.machine.params(),
+    );
+
+    assert!(
+      block_gas_limit >= gas_lower && block_gas_limit <= gas_upper,
+      "block gas limit {block_gas_limit} must be within [{gas_lower}, {gas_upper}]",
     );
 
     if let Some(prepared_environment) = prepared_environment.as_ref() {

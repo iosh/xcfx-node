@@ -175,7 +175,6 @@ fn select_account_transactions<'a>(
 /// Transaction-related inputs consumed by the linear block producer.
 pub(crate) struct BlockTransactionSelection {
   epoch_height: BlockHeight,
-  block_gas_limit: U256,
   transactions: Vec<RuntimeTransaction>,
   base_price: SpaceMap<U256>,
 }
@@ -183,10 +182,6 @@ pub(crate) struct BlockTransactionSelection {
 impl BlockTransactionSelection {
   pub(crate) fn epoch_height(&self) -> BlockHeight {
     self.epoch_height
-  }
-
-  pub(crate) fn block_gas_limit(&self) -> U256 {
-    self.block_gas_limit
   }
 
   pub(crate) fn base_price(&self) -> &SpaceMap<U256> {
@@ -313,7 +308,6 @@ pub(crate) fn select_transactions(
   TransactionSelection {
     block_selection: BlockTransactionSelection {
       epoch_height,
-      block_gas_limit,
       transactions,
       base_price,
     },
