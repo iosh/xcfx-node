@@ -1,7 +1,6 @@
 use std::{
   cmp::Reverse,
   collections::{BTreeMap, BinaryHeap},
-  sync::Arc,
 };
 
 use cfx_executor::{spec::CommonParams, transaction_validation::PackingCheckResult};
@@ -14,12 +13,13 @@ use cfx_parameters::{
 };
 use cfx_types::{H256, Space, SpaceMap, U256};
 use primitives::{
-  Block, SignedTransaction,
   block::BlockHeight,
   block_header::{compute_next_price, compute_next_price_tuple},
 };
 
 use crate::{
+  block_producer::RuntimeBlock,
+  runtime_transaction::RuntimeTransaction,
   transaction_ingress::TransactionValidationContext,
   transaction_pool::{AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry},
 };
@@ -62,13 +62,13 @@ impl AccountHeadCandidate {
   }
 }
 
-fn pending_transactions_by_account<'a>(
-  input: &'a PoolSelectionInput,
-) -> BTreeMap<AccountKey, Vec<&'a PoolViewEntry>> {
+fn pending_transactions_by_account(
+  input: &PoolSelectionInput,
+) -> BTreeMap<AccountKey, Vec<&PoolViewEntry>> {
   let mut transactions_by_account = BTreeMap::<AccountKey, Vec<&PoolViewEntry>>::new();
 
   for entry in &input.view.entries {
-    let transaction = entry.transaction.as_ref();
+    let transaction = &entry.transaction;
     let state = input
       .entry_states
       .states
@@ -81,7 +81,7 @@ fn pending_transactions_by_account<'a>(
     }
 
     transactions_by_account
-      .entry((transaction.sender, transaction.space()))
+      .entry((transaction.sender(), transaction.space()))
       .or_default()
       .push(entry);
   }
@@ -149,7 +149,9 @@ fn select_account_transactions<'a>(
       .copied()
       .expect("an account-head candidate must reference its queue");
 
-    let Some(next_selected_bytes) = selected_bytes.checked_add(entry.transaction.rlp_size()) else {
+    let transaction_size = entry.transaction.selection_size();
+
+    let Some(next_selected_bytes) = selected_bytes.checked_add(transaction_size) else {
       continue;
     };
 
@@ -174,7 +176,7 @@ fn select_account_transactions<'a>(
 pub(crate) struct BlockTransactionSelection {
   epoch_height: BlockHeight,
   block_gas_limit: U256,
-  transactions: Vec<Arc<SignedTransaction>>,
+  transactions: Vec<RuntimeTransaction>,
   base_price: SpaceMap<U256>,
 }
 
@@ -187,39 +189,39 @@ impl BlockTransactionSelection {
     self.block_gas_limit
   }
 
-  pub(crate) fn transactions(&self) -> &[Arc<SignedTransaction>] {
-    &self.transactions
-  }
-
   pub(crate) fn base_price(&self) -> &SpaceMap<U256> {
     &self.base_price
+  }
+
+  pub(crate) fn into_transactions(self) -> Vec<RuntimeTransaction> {
+    self.transactions
   }
 }
 
 /// Selector output, including pool entries dropped only after a successful commit.
 pub(crate) struct TransactionSelection {
   block_selection: BlockTransactionSelection,
-  transactions_to_drop: Vec<Arc<SignedTransaction>>,
+  transactions_to_drop: Vec<RuntimeTransaction>,
 }
 
 impl TransactionSelection {
   pub(crate) fn into_block_selection_and_transactions_to_drop(
     self,
-  ) -> (BlockTransactionSelection, Vec<Arc<SignedTransaction>>) {
+  ) -> (BlockTransactionSelection, Vec<RuntimeTransaction>) {
     (self.block_selection, self.transactions_to_drop)
   }
 }
 
 pub(crate) fn select_transactions(
   input: &PoolSelectionInput,
-  parent: &Block,
+  parent: &RuntimeBlock,
   params: &CommonParams,
   validation: &TransactionValidationContext<'_>,
   block_gas_limit: U256,
   limits: TransactionSelectionLimits,
 ) -> TransactionSelection {
   let epoch_height = parent
-    .block_header
+    .header()
     .height()
     .checked_add(1)
     .expect("a parent block must permit a subsequent height");
@@ -238,7 +240,7 @@ pub(crate) fn select_transactions(
     params.init_base_price()
   } else {
     parent
-      .block_header
+      .header()
       .base_price()
       .expect("a post-CIP-1559 parent must contain base prices")
   };
@@ -254,14 +256,14 @@ pub(crate) fn select_transactions(
   let mut transactions_to_drop = Vec::new();
 
   let selected_entries = select_account_transactions(&transactions_by_account, limits, |entry| {
-    let transaction = entry.transaction.as_ref();
+    let transaction = &entry.transaction;
     let space = transaction.space();
 
-    match validation.check_for_packing(transaction) {
+    match validation.check_runtime_for_packing(transaction) {
       PackingCheckResult::Pack => {}
       PackingCheckResult::Pending => return false,
       PackingCheckResult::Drop => {
-        transactions_to_drop.push(Arc::clone(&entry.transaction));
+        transactions_to_drop.push(entry.transaction.clone());
         return false;
       }
     }
@@ -305,7 +307,7 @@ pub(crate) fn select_transactions(
 
   let transactions = selected_entries
     .into_iter()
-    .map(|entry| Arc::clone(&entry.transaction))
+    .map(|entry| entry.transaction.clone())
     .collect();
 
   TransactionSelection {

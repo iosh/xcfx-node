@@ -1,11 +1,9 @@
-use std::{
-  collections::{BTreeMap, BTreeSet, HashMap},
-  sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::runtime_transaction::RuntimeTransaction;
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
 use cfx_types::{Address, H256, Space, U128, U256, U512};
-use primitives::{Account, SignedTransaction, transaction::TransactionError};
+use primitives::{Account, transaction::TransactionError};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TransactionKey {
@@ -15,9 +13,9 @@ pub(crate) struct TransactionKey {
 }
 
 impl TransactionKey {
-  pub(crate) fn from_transaction(transaction: &SignedTransaction) -> Self {
+  pub(crate) fn from_transaction(transaction: &RuntimeTransaction) -> Self {
     Self {
-      sender: transaction.sender,
+      sender: transaction.sender(),
       space: transaction.space(),
       nonce: *transaction.nonce(),
     }
@@ -41,7 +39,7 @@ impl PoolAccountState {
 }
 
 pub(crate) fn pool_transaction_cost(
-  transaction: &SignedTransaction,
+  transaction: &RuntimeTransaction,
   sponsored_gas: U256,
   sponsored_storage: u64,
 ) -> U256 {
@@ -120,7 +118,7 @@ enum BlockedState {
 
 #[derive(Clone)]
 pub(crate) struct PoolEntry {
-  pub(crate) transaction: Arc<SignedTransaction>,
+  pub(crate) transaction: RuntimeTransaction,
   pub(crate) arrival_sequence: u64,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,11 +134,11 @@ impl TransactionPoolPolicy {
 
 pub(crate) enum TransactionPoolInsertOutcome {
   Inserted,
-  Replaced { previous: Arc<SignedTransaction> },
+  Replaced { previous: RuntimeTransaction },
 }
 
 pub(crate) struct PoolViewEntry {
-  pub(crate) transaction: Arc<SignedTransaction>,
+  pub(crate) transaction: RuntimeTransaction,
   pub(crate) arrival_sequence: u64,
 }
 
@@ -245,8 +243,13 @@ impl TransactionPool {
 
   pub(crate) fn insert(
     &mut self,
-    transaction: Arc<SignedTransaction>,
+    transaction: RuntimeTransaction,
   ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
+    assert!(
+      !matches!(&transaction, RuntimeTransaction::System(_)),
+      "system transactions must not enter the user transaction pool",
+    );
+
     let hash = transaction.hash();
 
     if self.key_by_hash.contains_key(&hash) {
@@ -256,7 +259,7 @@ impl TransactionPool {
     if let Some((previous, previous_hash)) = self
       .by_key
       .get(&key)
-      .map(|entry| (Arc::clone(&entry.transaction), entry.transaction.hash()))
+      .map(|entry| (entry.transaction.clone(), entry.transaction.hash()))
     {
       if !Self::replacement_is_sufficient(&transaction, &previous) {
         return Err(TransactionError::TooCheapToReplace);
@@ -321,8 +324,8 @@ impl TransactionPool {
   }
 
   fn replacement_is_sufficient(
-    replacement: &SignedTransaction,
-    previous: &SignedTransaction,
+    replacement: &RuntimeTransaction,
+    previous: &RuntimeTransaction,
   ) -> bool {
     let previous_price = *previous.gas_price();
     let required_price = if previous_price < U256::from(100) {
@@ -336,7 +339,7 @@ impl TransactionPool {
     required_price.is_some_and(|required| *replacement.gas_price() >= required)
   }
 
-  fn remove_by_hash(&mut self, hash: H256) -> Option<Arc<SignedTransaction>> {
+  fn remove_by_hash(&mut self, hash: H256) -> Option<RuntimeTransaction> {
     let key = self.key_by_hash.remove(&hash)?;
     let entry = self
       .by_key
@@ -350,10 +353,7 @@ impl TransactionPool {
     Some(entry.transaction)
   }
 
-  pub(crate) fn remove_stale(
-    &mut self,
-    entry_states: &PoolEntryStates,
-  ) -> Vec<Arc<SignedTransaction>> {
+  pub(crate) fn remove_stale(&mut self, entry_states: &PoolEntryStates) -> Vec<RuntimeTransaction> {
     let stale_hashes = entry_states
       .states
       .iter()
@@ -499,7 +499,7 @@ impl TransactionPool {
       .by_key
       .values()
       .map(|entry| PoolViewEntry {
-        transaction: Arc::clone(&entry.transaction),
+        transaction: entry.transaction.clone(),
         arrival_sequence: entry.arrival_sequence,
       })
       .collect();

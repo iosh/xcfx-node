@@ -11,6 +11,7 @@ repository = "https://github.com/iosh/xcfx-node"
 
 
 [workspace.dependencies]
+cfxkey = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-executor = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-internal-common = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-mpt = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
@@ -27,3 +28,4 @@ pow-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 rustc-hex = "2"
 thiserror = "2"
 rlp = "0.6"
+keccak-hash = "0.12"

@@ -1,6 +1,6 @@
 //! Owns one node instance's authoritative protocol state.
 use crate::{
-  block_producer::{BlockProductionInput, produce_block},
+  block_producer::{BlockProductionInput, RuntimeBlock, produce_block},
   execution::{
     ExecutedSingleBlockEpoch, TransactionExecutionDisposition, execute_single_block_epoch,
   },
@@ -9,6 +9,8 @@ use crate::{
     execute_genesis_with_pos,
   },
   pos::{CommittedPosState, GenesisPosDefinition},
+  runtime_transaction::RuntimeTransaction,
+  signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
   state::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate, StateVersion},
@@ -27,9 +29,10 @@ use cfx_types::{
   AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256, address_util::AddressUtil,
 };
 use cfx_vm_types::Spec;
+use cfxkey::KeyPair;
 use diem_types::term_state::pos_state_config::PosStateConfig;
 use std::{
-  collections::{BTreeMap, HashMap},
+  collections::{BTreeMap, HashMap, btree_map::Entry},
   sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -44,8 +47,8 @@ use cfx_parameters::{
 };
 
 use primitives::{
-  Account, Action, Block, BlockNumber, BlockReceipts, Receipt, SignedTransaction, Transaction,
-  block::BlockHeight, transaction::TransactionError,
+  Account, Action, Block, BlockNumber, BlockReceipts, Receipt, Transaction, block::BlockHeight,
+  transaction::TransactionError,
 };
 
 static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
@@ -85,19 +88,38 @@ pub(crate) struct CheckpointLimitError {
   pub(crate) max_checkpoints: usize,
 }
 
+#[derive(Debug, Error, Eq, PartialEq)]
+pub(crate) enum RuntimeTransactionError {
+  #[error(transparent)]
+  Transaction(#[from] TransactionError),
+  #[error("no signing key is configured for address {address:?}")]
+  SigningKeyNotFound { address: AddressWithSpace },
+  #[error("impersonation is not authorized for {address:?}")]
+  ImpersonationNotAuthorized { address: AddressWithSpace },
+  #[error("the transaction uses {transaction_space:?}, but the sender uses {sender:?}")]
+  SenderSpaceMismatch {
+    sender: AddressWithSpace,
+    transaction_space: Space,
+  },
+}
+
 pub(crate) struct CommittedEpoch {
   start_block_number: BlockNumber,
-  ordered_blocks: Vec<Block>,
+  ordered_blocks: Vec<RuntimeBlock>,
   commitment: EpochExecutionCommitment,
   block_receipts: Vec<Arc<BlockReceipts>>,
 }
-
 impl CommittedEpoch {
-  pub(crate) fn pivot_block(&self) -> &Block {
+  pub(crate) fn pivot_runtime_block(&self) -> &RuntimeBlock {
     self
       .ordered_blocks
       .last()
       .expect("a committed epoch always contains a pivot block")
+  }
+
+  /// Returns the pivot only for callers that explicitly require a fork Block.
+  pub(crate) fn pivot_block(&self) -> &Block {
+    self.pivot_runtime_block().block()
   }
 
   pub(crate) fn commitment(&self) -> &EpochExecutionCommitment {
@@ -125,7 +147,6 @@ impl CommittedEpoch {
       .expect("a committed epoch always contains at least one block")
   }
 }
-
 pub(crate) struct CommittedChainView {
   epoch: CommittedEpoch,
   state: CommittedStateVersion,
@@ -149,7 +170,7 @@ impl CommittedChainView {
     Self {
       epoch: CommittedEpoch {
         start_block_number: 0,
-        ordered_blocks: vec![block],
+        ordered_blocks: vec![RuntimeBlock::from_system_block(block)],
         commitment,
         block_receipts,
       },
@@ -183,9 +204,8 @@ pub(crate) struct MinedBlockView {
   chain_view: Arc<CommittedChainView>,
   block_index: usize,
 }
-
 impl MinedBlockView {
-  pub(crate) fn block(&self) -> &Block {
+  pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
     self
       .chain_view
       .epoch
@@ -194,8 +214,30 @@ impl MinedBlockView {
       .expect("an indexed block must exist in its committed chain view")
   }
 
+  /// Returns the standard fork block for standard-only callers.
+  pub(crate) fn block(&self) -> &Block {
+    self.runtime_block().block()
+  }
+
+  pub(crate) fn standard_block(&self) -> Option<&Block> {
+    self.runtime_block().standard_block()
+  }
+
+  pub(crate) fn hash(&self) -> H256 {
+    self.runtime_block().hash()
+  }
+
+  pub(crate) fn transactions(&self) -> &[RuntimeTransaction] {
+    self.runtime_block().transactions()
+  }
+
   pub(crate) fn epoch_height(&self) -> BlockHeight {
-    self.chain_view.epoch.pivot_block().block_header.height()
+    self
+      .chain_view
+      .epoch
+      .pivot_runtime_block()
+      .header()
+      .height()
   }
 }
 
@@ -210,17 +252,32 @@ impl MinedTransactionView {
     &self.block
   }
 
-  pub(crate) fn transaction(&self) -> &Arc<SignedTransaction> {
+  pub(crate) fn transaction(&self) -> &RuntimeTransaction {
     self
       .block
-      .block()
-      .transactions
+      .transactions()
       .get(self.transaction_index)
       .expect("an indexed transaction must exist in its mined block")
   }
 
   pub(crate) fn transaction_index(&self) -> usize {
     self.transaction_index
+  }
+
+  pub(crate) fn hash(&self) -> H256 {
+    self.transaction().hash()
+  }
+
+  pub(crate) fn sender(&self) -> AddressWithSpace {
+    self.transaction().sender_with_space()
+  }
+
+  pub(crate) fn standard_raw(&self) -> Option<Vec<u8>> {
+    self.transaction().standard_raw()
+  }
+
+  pub(crate) fn impersonated_encoding(&self) -> Option<Vec<u8>> {
+    self.transaction().impersonated_encoding()
   }
 }
 
@@ -309,8 +366,16 @@ impl CommittedChainHistory {
       "the Genesis epoch must contain exactly one block receipt collection",
     );
 
-    let block = &genesis.epoch.ordered_blocks[0];
+    let runtime_block = &genesis.epoch.ordered_blocks[0];
+    let block = runtime_block.block();
+    let runtime_transactions = runtime_block.transactions();
     let block_receipts = &genesis.epoch.block_receipts[0];
+
+    assert_eq!(
+      block.transactions.len(),
+      runtime_transactions.len(),
+      "the Genesis Runtime block must preserve every fork transaction",
+    );
 
     assert_eq!(
       block.block_header.height(),
@@ -333,7 +398,17 @@ impl CommittedChainHistory {
     let block_locations = HashMap::from([(block.hash(), block_location)]);
     let mut transaction_locations = HashMap::with_capacity(block.transactions.len());
 
-    for (transaction_index, transaction) in block.transactions.iter().enumerate() {
+    for (transaction_index, (transaction, runtime_transaction)) in block
+      .transactions
+      .iter()
+      .zip(runtime_transactions)
+      .enumerate()
+    {
+      assert_eq!(
+        transaction.hash(),
+        runtime_transaction.hash(),
+        "the Genesis Runtime block must preserve transaction hashes",
+      );
       let transaction_location = TransactionLocation {
         block: block_location,
         transaction_index,
@@ -358,7 +433,11 @@ impl CommittedChainHistory {
   }
 
   fn rebuild_through_checkpoint_head(&self, checkpoint_head: &Arc<CommittedChainView>) -> Self {
-    let checkpoint_height = checkpoint_head.epoch.pivot_block().block_header.height();
+    let checkpoint_height = checkpoint_head
+      .epoch
+      .pivot_runtime_block()
+      .header()
+      .height();
     let checkpoint_index =
       usize::try_from(checkpoint_height).expect("a checkpoint epoch height must fit in usize");
     let ancestor = self
@@ -396,13 +475,13 @@ impl CommittedChainHistory {
     self
       .optimistic_head()
       .epoch
-      .pivot_block()
-      .block_header
+      .pivot_runtime_block()
+      .header()
       .height()
   }
 
   fn append_executed_epoch(&mut self, view: Arc<CommittedChainView>) {
-    let epoch_height = view.epoch.pivot_block().block_header.height();
+    let epoch_height = view.epoch.pivot_runtime_block().header().height();
     let expected_epoch_height = BlockHeight::try_from(self.views.len())
       .expect("a linear history length must fit in BlockHeight");
 
@@ -419,25 +498,45 @@ impl CommittedChainHistory {
     let mut block_locations = HashMap::with_capacity(view.epoch.ordered_blocks.len());
     let mut transaction_locations = HashMap::new();
 
-    for (block_index, (block, block_receipts)) in view
+    for (block_index, (runtime_block, block_receipts)) in view
       .epoch
       .ordered_blocks
       .iter()
       .zip(&view.epoch.block_receipts)
       .enumerate()
     {
+      let runtime_transactions = runtime_block.transactions();
+
       assert_eq!(
-        block.transactions.len(),
+        runtime_transactions.len(),
         block_receipts.receipts.len(),
         "every executed block transaction must have one receipt",
       );
       assert_eq!(
-        block.transactions.len(),
+        runtime_transactions.len(),
         block_receipts.tx_execution_error_messages.len(),
         "every executed block transaction must have one execution error entry",
       );
 
-      let block_hash = block.hash();
+      if let Some(block) = runtime_block.standard_block() {
+        assert_eq!(
+          block.transactions.len(),
+          runtime_transactions.len(),
+          "a standard Runtime block must preserve every fork transaction",
+        );
+
+        for (fork_transaction, runtime_transaction) in
+          block.transactions.iter().zip(runtime_transactions)
+        {
+          assert_eq!(
+            fork_transaction.hash(),
+            runtime_transaction.hash(),
+            "a committed Runtime block must preserve transaction hashes",
+          );
+        }
+      }
+
+      let block_hash = runtime_block.hash();
       let block_location = BlockLocation {
         epoch_height,
         block_index,
@@ -452,17 +551,12 @@ impl CommittedChainHistory {
         "a committed epoch must not contain duplicate block hashes",
       );
 
-      for (transaction_index, (transaction, receipt)) in block
-        .transactions
-        .iter()
-        .zip(&block_receipts.receipts)
-        .enumerate()
-      {
+      for (transaction_index, receipt) in block_receipts.receipts.iter().enumerate() {
         if receipt.tx_skipped() {
           continue;
         }
 
-        let transaction_hash = transaction.hash();
+        let transaction_hash = runtime_transactions[transaction_index].hash();
         let transaction_location = TransactionLocation {
           block: block_location,
           transaction_index,
@@ -496,7 +590,7 @@ impl CommittedChainHistory {
     let index = usize::try_from(epoch_height).ok()?;
     let view = self.views.get(index)?;
 
-    if view.epoch.pivot_block().block_header.height() == epoch_height {
+    if view.epoch.pivot_runtime_block().header().height() == epoch_height {
       Some(view)
     } else {
       None
@@ -566,8 +660,7 @@ impl CommittedChainHistory {
     let block = self.mined_block_at(location.block);
 
     block
-      .block()
-      .transactions
+      .transactions()
       .get(location.transaction_index)
       .expect("an indexed transaction must reference its mined block body");
 
@@ -610,8 +703,8 @@ impl CommittedChainHistory {
 }
 
 pub(crate) struct TransactionPoolUpdates {
-  pub(crate) transactions_to_repack: Vec<Arc<SignedTransaction>>,
-  pub(crate) transactions_dropped_during_selection: Vec<Arc<SignedTransaction>>,
+  pub(crate) transactions_to_repack: Vec<RuntimeTransaction>,
+  pub(crate) transactions_dropped_during_selection: Vec<RuntimeTransaction>,
   pub(crate) modified_accounts: Vec<Account>,
 }
 
@@ -631,9 +724,9 @@ fn open_committed_state(version: &Arc<StateVersion>) -> StateResult<State> {
 /// Derives declared gas and storage covered by sponsorship for pool readiness.
 fn sponsored_gas_and_storage(
   state: &State,
-  transaction: &SignedTransaction,
+  transaction: &RuntimeTransaction,
 ) -> StateResult<(U256, u64)> {
-  let Transaction::Native(native_transaction) = &transaction.unsigned else {
+  let Transaction::Native(native_transaction) = transaction.transaction() else {
     return Ok(Default::default());
   };
 
@@ -646,7 +739,9 @@ fn sponsored_gas_and_storage(
     return Ok(Default::default());
   };
 
-  if !state.check_contract_whitelist(&contract_address, &transaction.sender)? {
+  let sender = transaction.sender();
+
+  if !state.check_contract_whitelist(&contract_address, &sender)? {
     return Ok(Default::default());
   }
 
@@ -751,6 +846,8 @@ pub(crate) enum RevertCheckpointOutcome {
 pub(crate) struct NodeRuntime {
   machine: Arc<Machine>,
   pos_config: PosStateConfig,
+  signing_keys: SigningKeys,
+  impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
   checkpoint_policy: CheckpointPolicy,
   reset_state: ResetState,
@@ -784,6 +881,8 @@ impl NodeRuntime {
     Ok(Self {
       machine,
       pos_config,
+      signing_keys: SigningKeys::default(),
+      impersonation: ImpersonationState::default(),
       transaction_pool_policy,
       checkpoint_policy,
       reset_state,
@@ -851,6 +950,7 @@ impl NodeRuntime {
 
     self.runtime_state = next_runtime_state;
     self.checkpoints.clear();
+    self.impersonation.clear();
 
     // Keep checkpoint IDs monotonic so cleared IDs are never reused.
   }
@@ -863,6 +963,121 @@ impl NodeRuntime {
     self.checkpoints.get(&checkpoint_id.sequence)
   }
 
+  pub(crate) fn add_signing_key(&mut self, key_pair: KeyPair) -> Result<(), SigningKeyConflict> {
+    self.signing_keys.add(key_pair)
+  }
+
+  pub(crate) fn can_sign_for(&self, address: AddressWithSpace) -> bool {
+    self.signing_keys.can_sign_for(address)
+  }
+
+  pub(crate) fn impersonate_account(&mut self, address: AddressWithSpace) -> bool {
+    self.impersonation.authorize(address)
+  }
+
+  pub(crate) fn stop_impersonating_account(&mut self, address: AddressWithSpace) -> bool {
+    self.impersonation.revoke(address)
+  }
+
+  pub(crate) fn is_impersonated(&self, address: AddressWithSpace) -> bool {
+    self.impersonation.is_authorized(address)
+  }
+
+  fn with_current_transaction_validation<T>(
+    &self,
+    callback: impl FnOnce(&TransactionValidationContext<'_>) -> T,
+  ) -> T {
+    let optimistic_head = self.runtime_state.history.optimistic_head();
+    let epoch_height = self.runtime_state.history.optimistic_height();
+    let block_number = optimistic_head.epoch.pivot_block_number();
+    let params = self.machine.params();
+    let spec = self.machine.spec(block_number, epoch_height);
+    let validation = transaction_validation_context(params, &spec, epoch_height);
+
+    callback(&validation)
+  }
+
+  fn validate_runtime_transaction_for_pool(
+    &self,
+    transaction: &RuntimeTransaction,
+  ) -> Result<(), TransactionError> {
+    self.with_current_transaction_validation(|validation| {
+      validation.validate_runtime_for_pool_admission(transaction)
+    })
+  }
+
+  fn validate_sender_space(
+    sender: AddressWithSpace,
+    transaction: &Transaction,
+  ) -> Result<(), RuntimeTransactionError> {
+    if transaction.space() != sender.space {
+      return Err(RuntimeTransactionError::SenderSpaceMismatch {
+        sender,
+        transaction_space: transaction.space(),
+      });
+    }
+
+    Ok(())
+  }
+
+  /// Signs a payload with an instance-owned key and returns a Runtime
+  /// transaction backed by that signature. This method does not insert into
+  /// the pool.
+  pub(crate) fn sign_transaction(
+    &self,
+    sender: AddressWithSpace,
+    transaction: Transaction,
+  ) -> Result<RuntimeTransaction, RuntimeTransactionError> {
+    Self::validate_sender_space(sender, &transaction)?;
+    let transaction = self
+      .signing_keys
+      .sign(sender, transaction)
+      .ok_or(RuntimeTransactionError::SigningKeyNotFound { address: sender })?;
+
+    Ok(RuntimeTransaction::from_recovered_signature(transaction))
+  }
+
+  /// Signs, validates, and admits a transaction using an instance-owned key.
+  pub(crate) fn submit_node_transaction(
+    &mut self,
+    sender: AddressWithSpace,
+    transaction: Transaction,
+  ) -> Result<H256, RuntimeTransactionError> {
+    let transaction = self.sign_transaction(sender, transaction)?;
+    self.validate_runtime_transaction_for_pool(&transaction)?;
+    let transaction_hash = transaction.hash();
+    self.insert_admitted_transaction(transaction)?;
+    Ok(transaction_hash)
+  }
+
+  /// Builds an impersonated transaction only when the sender is currently
+  /// authorized. The returned value belongs to this Runtime instance.
+  pub(crate) fn build_impersonated_transaction(
+    &self,
+    sender: AddressWithSpace,
+    transaction: Transaction,
+  ) -> Result<RuntimeTransaction, RuntimeTransactionError> {
+    Self::validate_sender_space(sender, &transaction)?;
+    if !self.impersonation.is_authorized(sender) {
+      return Err(RuntimeTransactionError::ImpersonationNotAuthorized { address: sender });
+    }
+
+    Ok(RuntimeTransaction::from_impersonated(transaction, sender))
+  }
+
+  /// Checks authorization, validates, and admits an impersonated transaction.
+  pub(crate) fn submit_impersonated_transaction(
+    &mut self,
+    sender: AddressWithSpace,
+    transaction: Transaction,
+  ) -> Result<H256, RuntimeTransactionError> {
+    let transaction = self.build_impersonated_transaction(sender, transaction)?;
+    self.validate_runtime_transaction_for_pool(&transaction)?;
+    let transaction_hash = transaction.hash();
+    self.insert_admitted_transaction(transaction)?;
+    Ok(transaction_hash)
+  }
+
   pub(crate) fn transaction_pool_selection_input(&self) -> StateResult<PoolSelectionInput> {
     let view = self.transaction_pool_view();
     let inputs = self.pool_readiness_inputs(&view)?;
@@ -872,7 +1087,7 @@ impl NodeRuntime {
   }
 
   /// Validates raw transaction bytes against the current optimistic view and
-  /// inserts the recovered transaction into this Runtime's pool.
+  /// inserts the signed Runtime transaction into this Runtime's pool.
   pub(crate) fn submit_raw_transaction(&mut self, raw: &[u8]) -> Result<H256, TransactionError> {
     let transaction = {
       let optimistic_head = self.runtime_state.history.optimistic_head();
@@ -882,7 +1097,7 @@ impl NodeRuntime {
       let spec = self.machine.spec(block_number, epoch_height);
       let validation = transaction_validation_context(params, &spec, epoch_height);
 
-      Arc::new(decode_and_validate_raw_transaction(raw, &validation)?)
+      decode_and_validate_raw_transaction(raw, &validation)?
     };
 
     let transaction_hash = transaction.hash();
@@ -894,12 +1109,14 @@ impl NodeRuntime {
   /// Inserts a transaction that has already passed transaction-only ingress validation.
   pub(crate) fn insert_admitted_transaction(
     &mut self,
-    transaction: Arc<SignedTransaction>,
+    transaction: RuntimeTransaction,
   ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
+    let transaction_hash = transaction.hash();
+
     if self
       .runtime_state
       .history
-      .contains_mined_transaction(&transaction.hash())
+      .contains_mined_transaction(&transaction_hash)
     {
       return Err(TransactionError::AlreadyImported);
     }
@@ -925,7 +1142,7 @@ impl NodeRuntime {
   pub(crate) fn remove_stale_transactions(
     &mut self,
     entry_states: &PoolEntryStates,
-  ) -> Vec<Arc<SignedTransaction>> {
+  ) -> Vec<RuntimeTransaction> {
     self
       .runtime_state
       .transaction_pool
@@ -942,19 +1159,18 @@ impl NodeRuntime {
     let mut transaction_costs = BTreeMap::new();
 
     for entry in &pool_view.entries {
-      let transaction = entry.transaction.as_ref();
-      let account_key = (transaction.sender, transaction.space());
+      let transaction = &entry.transaction;
+      let sender = transaction.sender();
+      let space = transaction.space();
+      let account_key = (sender, space);
 
-      if !account_states.contains_key(&account_key) {
-        let address = transaction.sender.with_space(transaction.space());
+      if let Entry::Vacant(entry) = account_states.entry(account_key) {
+        let address = sender.with_space(space);
 
-        account_states.insert(
-          account_key,
-          PoolAccountState {
-            committed_nonce: state.nonce(&address)?,
-            balance: state.balance(&address)?,
-          },
-        );
+        entry.insert(PoolAccountState {
+          committed_nonce: state.nonce(&address)?,
+          balance: state.balance(&address)?,
+        });
       }
 
       let (sponsored_gas, sponsored_storage) = sponsored_gas_and_storage(&state, transaction)?;
@@ -972,10 +1188,10 @@ impl NodeRuntime {
     block_gas_limit: U256,
   ) -> StateResult<RuntimeCommitOutcome> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
-    let parent_block = parent.epoch.pivot_block();
+    let parent_block = parent.epoch.pivot_runtime_block();
 
     let epoch_height = parent_block
-      .block_header
+      .header()
       .height()
       .checked_add(1)
       .expect("a parent block must permit a subsequent epoch height");
@@ -1003,7 +1219,7 @@ impl NodeRuntime {
       .history
       .deferred_commitment_for_header_height(epoch_height);
 
-    let block = produce_block(
+    let runtime_block = produce_block(
       parent_block,
       block_selection,
       params,
@@ -1011,20 +1227,25 @@ impl NodeRuntime {
       deferred_commitment,
     );
 
-    Ok(self.execute_and_commit_single_block_epoch_with_selection_drops(block, transactions_to_drop))
+    Ok(
+      self.execute_and_commit_single_block_epoch_with_selection_drops(
+        runtime_block,
+        transactions_to_drop,
+      ),
+    )
   }
 
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
-    block: Block,
+    runtime_block: RuntimeBlock,
   ) -> RuntimeCommitOutcome {
-    self.execute_and_commit_single_block_epoch_with_selection_drops(block, Vec::new())
+    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new())
   }
 
   fn execute_and_commit_single_block_epoch_with_selection_drops(
     &mut self,
-    block: Block,
-    transactions_to_drop: Vec<Arc<SignedTransaction>>,
+    runtime_block: RuntimeBlock,
+    transactions_to_drop: Vec<RuntimeTransaction>,
   ) -> RuntimeCommitOutcome {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let previous_latest_state_height = self.runtime_state.history.latest_state_height();
@@ -1034,15 +1255,15 @@ impl NodeRuntime {
 
     let executed = execute_single_block_epoch(
       self.machine.as_ref(),
-      parent.epoch.pivot_block(),
+      parent.epoch.pivot_runtime_block(),
       &parent.state,
       parent.pos_state.as_ref(),
       start_block_number,
-      block,
+      runtime_block,
     );
 
     let ExecutedSingleBlockEpoch {
-      block,
+      runtime_block,
       state,
       commitment,
       block_receipts,
@@ -1056,14 +1277,24 @@ impl NodeRuntime {
       .collect::<Vec<_>>();
     let mut transactions_to_repack = Vec::new();
 
-    for (transaction, disposition) in block.transactions.iter().zip(transaction_dispositions) {
+    assert_eq!(
+      runtime_block.transactions().len(),
+      transaction_dispositions.len(),
+      "every Runtime block transaction must have one execution disposition",
+    );
+
+    for (transaction, disposition) in runtime_block
+      .transactions()
+      .iter()
+      .zip(transaction_dispositions)
+    {
       match disposition {
         TransactionExecutionDisposition::Executed
         | TransactionExecutionDisposition::SkippedDrop => {
           transaction_hashes_to_remove.push(transaction.hash());
         }
         TransactionExecutionDisposition::SkippedRepack => {
-          transactions_to_repack.push(Arc::clone(transaction));
+          transactions_to_repack.push(transaction.clone());
         }
       }
     }
@@ -1076,7 +1307,7 @@ impl NodeRuntime {
     let next_view = Arc::new(CommittedChainView {
       epoch: CommittedEpoch {
         start_block_number,
-        ordered_blocks: vec![block],
+        ordered_blocks: vec![runtime_block],
         commitment,
         block_receipts,
       },

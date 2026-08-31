@@ -14,6 +14,8 @@ use primitives::{
   transaction::{SignedTransaction, TransactionError},
 };
 
+use crate::runtime_transaction::RuntimeTransaction;
+
 /// Protocol inputs required to validate a transaction at one chain view.
 pub(crate) struct TransactionValidationContext<'a> {
   pub(crate) chain_id: AllChainID,
@@ -57,6 +59,28 @@ impl TransactionValidationContext<'_> {
     self.validate_with_mode(transaction, LocalValidationMode::Full)
   }
 
+  /// Validates a Runtime transaction while keeping any local compatibility
+  /// representation inside the transaction adapter.
+  pub(crate) fn validate_runtime_for_pool_admission(
+    &self,
+    transaction: &RuntimeTransaction,
+  ) -> Result<(), TransactionError> {
+    if transaction.selection_size() > MAX_BLOCK_SIZE_IN_BYTES {
+      return Err(TransactionError::TooBig);
+    }
+
+    transaction
+      .with_fork_transaction(|fork_transaction| self.validate_for_pool_admission(fork_transaction))
+  }
+
+  pub(crate) fn validate_runtime_for_packing(
+    &self,
+    transaction: &RuntimeTransaction,
+  ) -> Result<(), TransactionError> {
+    transaction
+      .with_fork_transaction(|fork_transaction| self.validate_for_packing(fork_transaction))
+  }
+
   pub(crate) fn check_for_packing(
     &self,
     transaction: &TransactionWithSignature,
@@ -84,13 +108,20 @@ impl TransactionValidationContext<'_> {
       },
     }
   }
+
+  pub(crate) fn check_runtime_for_packing(
+    &self,
+    transaction: &RuntimeTransaction,
+  ) -> PackingCheckResult {
+    transaction.with_fork_transaction(|fork_transaction| self.check_for_packing(fork_transaction))
+  }
 }
 
 /// Decode, validate, and recover the sender of a raw transaction.
 pub(crate) fn decode_and_validate_raw_transaction(
   raw: &[u8],
   context: &TransactionValidationContext<'_>,
-) -> Result<SignedTransaction, TransactionError> {
+) -> Result<RuntimeTransaction, TransactionError> {
   if raw.len() > MAX_BLOCK_SIZE_IN_BYTES {
     return Err(TransactionError::TooBig);
   }
@@ -99,5 +130,7 @@ pub(crate) fn decode_and_validate_raw_transaction(
   context.validate_for_pool_admission(&transaction)?;
   let public = transaction.recover_public()?;
 
-  Ok(SignedTransaction::new(public, transaction))
+  Ok(RuntimeTransaction::from_recovered_signature(
+    SignedTransaction::new(public, transaction),
+  ))
 }

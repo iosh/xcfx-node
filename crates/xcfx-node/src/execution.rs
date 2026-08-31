@@ -1,6 +1,7 @@
 //! Executes an ordered epoch against an isolated state candidate.
-
 use std::sync::Arc;
+
+use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
 
 use cfx_executor::{
   epoch_execution::{before_block_execution, before_epoch_execution},
@@ -12,13 +13,14 @@ use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
 use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{H256, U256};
-use cfx_vm_types::Env;
-use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
+use cfx_vm_types::{Env, Spec};
 use rlp::Encodable;
 
 use crate::{
+  block_producer::RuntimeBlock,
   mpt::indexed_mpt_root,
   pos::CommittedPosState,
+  runtime_transaction::RuntimeTransaction,
   state::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate},
@@ -45,7 +47,7 @@ impl TransactionExecutionDisposition {
 }
 
 pub(crate) struct ExecutedSingleBlockEpoch {
-  pub(crate) block: Block,
+  pub(crate) runtime_block: RuntimeBlock,
   pub(crate) state: CommittedStateVersion,
   pub(crate) commitment: EpochExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
@@ -70,18 +72,58 @@ pub(crate) fn compute_epoch_receipts_root(block_receipts: &[Arc<BlockReceipts>])
   indexed_mpt_root(block_receipt_roots.iter().map(|root| root.as_bytes()))
 }
 
+fn execute_runtime_transaction(
+  state: &mut State,
+  env: &Env,
+  machine: &Machine,
+  spec: &Spec,
+  transaction: &RuntimeTransaction,
+) -> StateResult<ExecutionOutcome> {
+  transaction.with_fork_transaction(|executor_transaction| {
+    ExecutiveContext::new(state, env, machine, spec)
+      .transact(executor_transaction, TransactOptions::default())
+  })
+}
+
 /// Executes the current single-block epoch path.
 ///
 /// The caller supplies an internally constructed block extending the committed
 /// parent. This initial path requires the PoS reference to remain unchanged.
 pub(crate) fn execute_single_block_epoch(
   machine: &Machine,
-  parent_block: &Block,
+  parent_block: &RuntimeBlock,
   parent_state: &CommittedStateVersion,
   parent_pos_state: &CommittedPosState,
   block_number: BlockNumber,
-  epoch_block: Block,
+  runtime_block: RuntimeBlock,
 ) -> ExecutedSingleBlockEpoch {
+  // The current fork pre-execution hooks consume only the header and block hash.
+  // A local Runtime block therefore needs no invented transaction body here.
+  let epoch_block = runtime_block
+    .standard_block()
+    .cloned()
+    .unwrap_or_else(|| Block::new(runtime_block.header().clone(), Vec::new()));
+  let runtime_transactions = runtime_block.transactions();
+
+  if let Some(standard_block) = runtime_block.standard_block() {
+    assert_eq!(
+      standard_block.transactions.len(),
+      runtime_transactions.len(),
+      "a standard Runtime block must preserve every fork transaction",
+    );
+
+    for (runtime_transaction, block_transaction) in runtime_transactions
+      .iter()
+      .zip(&standard_block.transactions)
+    {
+      assert_eq!(
+        runtime_transaction.hash(),
+        block_transaction.hash(),
+        "Runtime and fork transaction order must have matching hashes",
+      );
+    }
+  }
+
   let parent_hash = parent_block.hash();
 
   assert_eq!(
@@ -95,7 +137,7 @@ pub(crate) fn execute_single_block_epoch(
   );
 
   let expected_height = parent_block
-    .block_header
+    .header()
     .height()
     .checked_add(1)
     .expect("a committed parent height must permit a child block");
@@ -106,7 +148,7 @@ pub(crate) fn execute_single_block_epoch(
   );
 
   let parent_pos_reference = parent_block
-    .block_header
+    .header()
     .pos_reference()
     .as_ref()
     .expect("a committed parent block must contain a PoS reference");
@@ -116,14 +158,13 @@ pub(crate) fn execute_single_block_epoch(
 
   assert_eq!(
     epoch_block.block_header.pos_reference(),
-    parent_block.block_header.pos_reference(),
+    parent_block.header().pos_reference(),
     "the initial ordered execution path requires a stable PoS reference",
   );
 
-  let transaction_hashes = epoch_block
-    .transactions
+  let transaction_hashes = runtime_transactions
     .iter()
-    .map(|transaction| transaction.hash())
+    .map(RuntimeTransaction::hash)
     .collect::<Vec<_>>();
 
   let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
@@ -172,23 +213,21 @@ pub(crate) fn execute_single_block_epoch(
     base_gas_price,
     burnt_gas_price,
     transaction_hash: H256::zero(),
-    ..Default::default()
   };
 
   let spec = machine.spec(block_number, epoch_height);
-  let mut receipts = Vec::with_capacity(epoch_block.transactions.len());
-  let mut execution_errors = Vec::with_capacity(epoch_block.transactions.len());
-  let mut transaction_dispositions = Vec::with_capacity(epoch_block.transactions.len());
+  let mut receipts = Vec::with_capacity(runtime_transactions.len());
+  let mut execution_errors = Vec::with_capacity(runtime_transactions.len());
+  let mut transaction_dispositions = Vec::with_capacity(runtime_transactions.len());
 
-  for (transaction_index, transaction) in epoch_block.transactions.iter().enumerate() {
+  for (transaction_index, transaction) in runtime_transactions.iter().enumerate() {
     env.transaction_hash = transaction.hash();
 
-    let outcome = ExecutiveContext::new(&mut state, &env, machine, &spec)
-      .transact(transaction, TransactOptions::default())
+    let outcome = execute_runtime_transaction(&mut state, &env, machine, &spec, transaction)
       .unwrap_or_else(|error| {
         panic!(
           "ordered epoch execution invariant violated while executing \
-             transaction {transaction_index}: {error:?}"
+         transaction {transaction_index}: {error:?}"
         )
       });
 
@@ -248,7 +287,7 @@ pub(crate) fn execute_single_block_epoch(
   };
 
   ExecutedSingleBlockEpoch {
-    block: epoch_block,
+    runtime_block,
     state: committed_state,
     commitment,
     block_receipts,

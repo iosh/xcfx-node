@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cfxkey.workspace = true
 cfx-executor.workspace = true
 cfx-internal-common.workspace = true
 cfx-mpt.workspace = true
@@ -24,6 +25,7 @@ diem-crypto.workspace = true
 diem-types.workspace = true
 pow-types.workspace = true
 rlp.workspace = true
+keccak-hash.workspace = true
 
 [dev-dependencies]
 hex-literal = "1"

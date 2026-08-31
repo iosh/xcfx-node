@@ -500,6 +500,7 @@ mod tests {
   };
 
   use crate::{
+    block_producer::RuntimeBlock,
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     runtime::{CheckpointPolicy, NodeRuntime},
@@ -894,7 +895,8 @@ mod tests {
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
     let block = first_core_transfer_block(machine.as_ref(), parent_view.epoch().pivot_block());
-    let commit_outcome = runtime.execute_and_commit_single_block_epoch(block);
+    let commit_outcome =
+      runtime.execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block));
     let executed_view = runtime.optimistic_view();
 
     let receipts = &executed_view.epoch().block_receipts()[0];
