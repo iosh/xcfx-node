@@ -1,6 +1,6 @@
 //! Owns one node instance's authoritative protocol state.
 use crate::{
-  block_producer::{BlockProductionInput, RuntimeBlock, produce_block},
+  block_producer::{RuntimeBlock, produce_block},
   execution::{
     ExecutedSingleBlockEpoch, TransactionExecutionDisposition, execute_single_block_epoch,
   },
@@ -10,8 +10,8 @@ use crate::{
   },
   pos::{CommittedPosState, GenesisPosDefinition},
   production_environment::{
-    PreparedProductionEnvironment, ProductionDefaults, ProductionEnvironment, ProductionTimeError,
-    block_gas_limit_bounds,
+    InvalidBlockDifficulty, PreparedProductionEnvironment, ProductionDefaults,
+    ProductionEnvironment, ProductionTimeError, block_gas_limit_bounds,
   },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
@@ -998,6 +998,16 @@ impl NodeRuntime {
       .set_block_gas_target(block_gas_target)
   }
 
+  pub(crate) fn set_difficulty(
+    &mut self,
+    difficulty: U256,
+  ) -> Result<U256, InvalidBlockDifficulty> {
+    self
+      .runtime_state
+      .production_environment
+      .set_difficulty(difficulty)
+  }
+
   pub(crate) fn increase_time(&mut self, increment: u64) -> Result<u64, ProductionTimeError> {
     self
       .runtime_state
@@ -1257,7 +1267,6 @@ impl NodeRuntime {
 
   pub(crate) fn produce_and_commit_block(
     &mut self,
-    header_input: BlockProductionInput,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.epoch.pivot_runtime_block();
@@ -1307,7 +1316,6 @@ impl NodeRuntime {
       block_selection,
       params,
       prepared_environment,
-      header_input,
       deferred_commitment,
     );
 
@@ -1337,6 +1345,13 @@ impl NodeRuntime {
     let parent_block = parent.epoch.pivot_runtime_block();
     let block_timestamp = runtime_block.header().timestamp();
     let block_gas_limit = *runtime_block.header().gas_limit();
+
+    let block_difficulty = *runtime_block.header().difficulty();
+
+    assert!(
+      !block_difficulty.is_zero(),
+      "block difficulty must be non-zero",
+    );
 
     assert!(
       block_timestamp >= parent_block.header().timestamp(),

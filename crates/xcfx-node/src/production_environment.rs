@@ -11,20 +11,24 @@ use cfx_types::{Address, U256};
 use primitives::block::BlockHeight;
 use thiserror::Error;
 
+const DEFAULT_LOCAL_BLOCK_DIFFICULTY: u64 = 4;
+
 /// Stable production settings used when constructing or resetting a Runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionDefaults {
   timestamp_increment: u64,
   author: Address,
   block_gas_target: u64,
+  difficulty: U256,
 }
 
 impl ProductionDefaults {
-  pub(crate) const fn new(timestamp_increment: u64) -> Self {
+  pub(crate) fn new(timestamp_increment: u64) -> Self {
     Self {
       timestamp_increment,
       author: GENESIS_ACCOUNT_ADDRESS,
       block_gas_target: DEFAULT_TARGET_BLOCK_GAS_LIMIT,
+      difficulty: U256::from(DEFAULT_LOCAL_BLOCK_DIFFICULTY),
     }
   }
 
@@ -44,10 +48,10 @@ impl ProductionDefaults {
       next_block_timestamp: None,
       author: self.author,
       block_gas_target: self.block_gas_target,
+      difficulty: self.difficulty,
     }
   }
 }
-
 /// Recoverable production state owned by `RuntimeState`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionEnvironment {
@@ -55,14 +59,15 @@ pub(crate) struct ProductionEnvironment {
   next_block_timestamp: Option<u64>,
   author: Address,
   block_gas_target: u64,
+  difficulty: U256,
 }
-
 /// Immutable production input prepared for one block candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PreparedProductionEnvironment {
   timestamp: u64,
   author: Address,
   block_gas_limit: U256,
+  difficulty: U256,
 }
 
 impl PreparedProductionEnvironment {
@@ -77,8 +82,11 @@ impl PreparedProductionEnvironment {
   pub(crate) const fn block_gas_limit(&self) -> U256 {
     self.block_gas_limit
   }
-}
 
+  pub(crate) const fn difficulty(&self) -> U256 {
+    self.difficulty
+  }
+}
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub(crate) enum ProductionTimeError {
   #[error("next block timestamp {proposed} is lower than parent timestamp {parent}")]
@@ -87,6 +95,10 @@ pub(crate) enum ProductionTimeError {
   #[error("timestamp {current} cannot be increased by {increment} without overflowing")]
   TimestampOverflow { current: u64, increment: u64 },
 }
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("block difficulty must be non-zero")]
+pub(crate) struct InvalidBlockDifficulty;
 
 impl ProductionEnvironment {
   pub(crate) fn set_author(&mut self, author: Address) -> Address {
@@ -97,6 +109,19 @@ impl ProductionEnvironment {
   pub(crate) fn set_block_gas_target(&mut self, block_gas_target: u64) -> u64 {
     self.block_gas_target = block_gas_target;
     block_gas_target
+  }
+
+  pub(crate) fn set_difficulty(
+    &mut self,
+    difficulty: U256,
+  ) -> Result<U256, InvalidBlockDifficulty> {
+    if difficulty.is_zero() {
+      return Err(InvalidBlockDifficulty);
+    }
+
+    self.difficulty = difficulty;
+
+    Ok(self.difficulty)
   }
 
   pub(crate) fn increase_time(&mut self, increment: u64) -> Result<u64, ProductionTimeError> {
@@ -169,6 +194,7 @@ impl ProductionEnvironment {
       timestamp,
       author: self.author,
       block_gas_limit,
+      difficulty: self.difficulty,
     })
   }
 

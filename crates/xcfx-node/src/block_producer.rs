@@ -172,19 +172,12 @@ impl RuntimeBlock {
   }
 }
 
-/// Caller-controlled difficulty not yet owned by the production environment.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BlockProductionInput {
-  pub(crate) difficulty: U256,
-}
-
 /// Constructs one linear block without executing or committing it.
 pub(crate) fn produce_block(
   parent: &RuntimeBlock,
   selection: BlockTransactionSelection,
   params: &CommonParams,
   prepared_environment: PreparedProductionEnvironment,
-  header_input: BlockProductionInput,
   deferred_commitment: &EpochExecutionCommitment,
 ) -> RuntimeBlock {
   let epoch_height = selection.epoch_height();
@@ -215,7 +208,7 @@ pub(crate) fn produce_block(
     .with_deferred_receipts_root(deferred_commitment.receipts_root)
     .with_deferred_logs_bloom_hash(deferred_commitment.logs_bloom_hash)
     .with_blame(0)
-    .with_difficulty(header_input.difficulty)
+    .with_difficulty(prepared_environment.difficulty())
     .with_adaptive(false)
     .with_gas_limit(block_gas_limit)
     .with_referee_hashes(Vec::new())
