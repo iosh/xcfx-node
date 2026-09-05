@@ -25,14 +25,14 @@ impl TransactionKey {
 pub(crate) type AccountKey = (Address, Space);
 
 pub(crate) struct PoolAccountState {
-  pub(crate) committed_nonce: U256,
+  pub(crate) state_nonce: U256,
   pub(crate) balance: U256,
 }
 
 impl PoolAccountState {
   pub(crate) fn from_account(account: &Account) -> Self {
     Self {
-      committed_nonce: account.nonce,
+      state_nonce: account.nonce,
       balance: account.balance,
     }
   }
@@ -371,32 +371,37 @@ impl TransactionPool {
     transactions_to_remove: impl IntoIterator<Item = H256>,
     modified_accounts: &[Account],
   ) -> TransactionPoolReconciliation {
+    let account_nonces = modified_accounts.iter().map(|account| {
+      let address = account.address();
+      ((address.address, address.space), account.nonce)
+    });
+
+    self.prepare_nonce_reconciliation(transactions_to_remove, account_nonces)
+  }
+
+  pub(crate) fn prepare_nonce_reconciliation(
+    &self,
+    transactions_to_remove: impl IntoIterator<Item = H256>,
+    account_nonces: impl IntoIterator<Item = (AccountKey, U256)>,
+  ) -> TransactionPoolReconciliation {
     let mut transaction_hashes_to_remove =
       transactions_to_remove.into_iter().collect::<BTreeSet<_>>();
 
-    let committed_nonces = modified_accounts
-      .iter()
-      .map(|account| {
-        let address = account.address();
-        ((address.address, address.space), account.nonce)
-      })
-      .collect::<BTreeMap<AccountKey, U256>>();
-
-    for ((sender, space), committed_nonce) in committed_nonces {
+    for ((sender, space), nonce) in account_nonces {
       let first_key = TransactionKey {
         sender,
         space,
         nonce: U256::zero(),
       };
-      let committed_key = TransactionKey {
+      let nonce_key = TransactionKey {
         sender,
         space,
-        nonce: committed_nonce,
+        nonce,
       };
 
       for entry in self
         .by_key
-        .range(first_key..committed_key)
+        .range(first_key..nonce_key)
         .map(|(_, entry)| entry)
       {
         transaction_hashes_to_remove.insert(entry.transaction.hash());
@@ -429,7 +434,7 @@ impl TransactionPool {
 
       let expected_nonce = *next_nonce
         .entry(account_key)
-        .or_insert(account_state.committed_nonce);
+        .or_insert(account_state.state_nonce);
 
       let balance = remaining_balance
         .entry(account_key)
@@ -437,7 +442,7 @@ impl TransactionPool {
 
       let blocked = blocked_state.entry(account_key).or_insert(None);
 
-      let state = if key.nonce < account_state.committed_nonce {
+      let state = if key.nonce < account_state.state_nonce {
         PoolEntryState::Stale
       } else if let Some(previous_block) = *blocked {
         match previous_block {

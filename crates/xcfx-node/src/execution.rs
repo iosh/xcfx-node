@@ -23,7 +23,7 @@ use crate::{
   runtime_transaction::RuntimeTransaction,
   state::{
     layered_mpt_state::LayeredMptState,
-    state_version::{CommittedStateVersion, StateCandidate},
+    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
   },
 };
 
@@ -85,14 +85,16 @@ fn execute_runtime_transaction(
   })
 }
 
-/// Executes the current single-block epoch path.
+/// Executes an internally constructed block against an isolated state.
 ///
-/// The caller supplies an internally constructed block extending the committed
-/// parent. This initial path requires the PoS reference to remain unchanged.
+/// `parent_state` supplies the committed parent identity. `execution_state`
+/// may be an effective state prepared on top of that parent and therefore must
+/// remain separate from the committed identity.
 pub(crate) fn execute_single_block_epoch(
   machine: &Machine,
   parent_block: &RuntimeBlock,
   parent_state: &CommittedStateVersion,
+  execution_state: &Arc<StateVersion>,
   parent_pos_state: &CommittedPosState,
   block_number: BlockNumber,
   runtime_block: RuntimeBlock,
@@ -175,13 +177,15 @@ pub(crate) fn execute_single_block_epoch(
     "ordered epoch transactions must match the header commitment",
   );
 
-  let candidate = StateCandidate::new(Arc::clone(&parent_state.version));
+  let candidate = StateCandidate::new(Arc::clone(execution_state));
 
   let (backend, state_receiver) = LayeredMptState::new(candidate);
 
   let database = StateDb::new(Box::new(backend));
-  let mut state =
-    expect_state_operation(State::new(database), "opening the committed parent state");
+  let mut state = expect_state_operation(
+    State::new(database),
+    "opening the execution state candidate",
+  );
 
   expect_state_operation(
     before_epoch_execution(&mut state, machine, &epoch_block),

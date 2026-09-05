@@ -8,6 +8,7 @@ mod runtime;
 mod runtime_transaction;
 mod signing;
 mod state;
+mod state_overlay;
 mod transaction_ingress;
 mod transaction_pool;
 mod transaction_selector;

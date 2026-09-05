@@ -17,24 +17,48 @@ enum StateLifecycle {
 pub(crate) struct LayeredMptState {
   lifecycle: StateLifecycle,
   committed_state: Arc<OnceLock<CommittedStateVersion>>,
+  prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
 }
 
 pub(crate) struct CommittedStateReceiver {
   committed_state: Arc<OnceLock<CommittedStateVersion>>,
 }
 
+/// Receives the immutable state produced by non-committing preparation.
+pub(crate) struct PreparedStateReceiver {
+  prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
+}
+
 impl LayeredMptState {
-  pub(crate) fn new(candidate: StateCandidate) -> (Self, CommittedStateReceiver) {
+  fn new_with_receivers(
+    candidate: StateCandidate,
+  ) -> (Self, CommittedStateReceiver, PreparedStateReceiver) {
     let committed_state = Arc::new(OnceLock::new());
+    let prepared_state = Arc::new(OnceLock::new());
 
     let state = Self {
       lifecycle: StateLifecycle::Writable(candidate),
       committed_state: Arc::clone(&committed_state),
+      prepared_state: Arc::clone(&prepared_state),
     };
 
-    let receiver = CommittedStateReceiver { committed_state };
+    (
+      state,
+      CommittedStateReceiver { committed_state },
+      PreparedStateReceiver { prepared_state },
+    )
+  }
 
-    (state, receiver)
+  pub(crate) fn new(candidate: StateCandidate) -> (Self, CommittedStateReceiver) {
+    let (state, committed_receiver, _) = Self::new_with_receivers(candidate);
+
+    (state, committed_receiver)
+  }
+
+  pub(crate) fn new_for_preparation(candidate: StateCandidate) -> (Self, PreparedStateReceiver) {
+    let (state, _, prepared_receiver) = Self::new_with_receivers(candidate);
+
+    (state, prepared_receiver)
   }
 
   fn read(&self, key: StorageKeyWithSpace<'_>) -> Option<&[u8]> {
@@ -154,6 +178,14 @@ impl StateTrait for LayeredMptState {
     };
 
     let root = version.root_with_aux_info();
+
+    let prepared = self.prepared_state.get_or_init(|| Arc::clone(&version));
+
+    assert!(
+      Arc::ptr_eq(prepared, &version),
+      "prepared state handoff must remain tied to one state version",
+    );
+
     self.lifecycle = StateLifecycle::Prepared(version);
 
     Ok(root)
@@ -189,6 +221,12 @@ impl StateTrait for LayeredMptState {
     self.lifecycle = StateLifecycle::Committed;
 
     Ok(root)
+  }
+}
+
+impl PreparedStateReceiver {
+  pub(crate) fn prepared_state(&self) -> Option<Arc<StateVersion>> {
+    self.prepared_state.get().cloned()
   }
 }
 

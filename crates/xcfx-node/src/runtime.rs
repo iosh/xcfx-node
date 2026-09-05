@@ -19,6 +19,7 @@ use crate::{
     layered_mpt_state::LayeredMptState,
     state_version::{CommittedStateVersion, StateCandidate, StateVersion},
   },
+  state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
     AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
@@ -730,7 +731,7 @@ pub(crate) struct RuntimeCommitOutcome {
   pub(crate) transaction_pool_updates: TransactionPoolUpdates,
 }
 
-fn open_committed_state(version: &Arc<StateVersion>) -> StateResult<State> {
+fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State> {
   let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(version)));
   State::new(StateDb::new(Box::new(backend)))
 }
@@ -799,10 +800,39 @@ fn transaction_validation_context<'a>(
   }
 }
 
+/// The state currently used by Runtime consumers.
+#[derive(Clone)]
+struct EffectiveState {
+  state: Arc<StateVersion>,
+}
+
+impl EffectiveState {
+  fn from_committed(committed_state: &CommittedStateVersion) -> Self {
+    Self {
+      state: Arc::clone(&committed_state.version),
+    }
+  }
+
+  fn prepare(
+    committed_state: &CommittedStateVersion,
+    overlay: &StateOverlay,
+  ) -> Result<Self, StateControlPreparationError> {
+    let state = overlay.prepare_effective_state(committed_state)?;
+
+    Ok(Self { state })
+  }
+
+  fn state(&self) -> &Arc<StateVersion> {
+    &self.state
+  }
+}
+
 struct RuntimeState {
   history: CommittedChainHistory,
   transaction_pool: TransactionPool,
   production_environment: ProductionEnvironment,
+  state_overlay: StateOverlay,
+  effective_state: EffectiveState,
 }
 
 struct ResetState {
@@ -826,10 +856,15 @@ impl ResetState {
       .header()
       .timestamp();
 
+    let history = CommittedChainHistory::from_genesis(Arc::clone(&self.genesis_view));
+    let effective_state = EffectiveState::from_committed(history.optimistic_head().state());
+
     RuntimeState {
-      history: CommittedChainHistory::from_genesis(Arc::clone(&self.genesis_view)),
+      history,
       transaction_pool: TransactionPool::new(transaction_pool_policy),
       production_environment: production_defaults.build_environment(reset_base_timestamp),
+      state_overlay: StateOverlay::empty(),
+      effective_state,
     }
   }
 }
@@ -838,6 +873,8 @@ struct Checkpoint {
   history_head: Arc<CommittedChainView>,
   transaction_pool: TransactionPoolCheckpoint,
   production_environment: ProductionEnvironment,
+  state_overlay: StateOverlay,
+  effective_state: EffectiveState,
 }
 
 impl Checkpoint {
@@ -846,6 +883,8 @@ impl Checkpoint {
       history_head: runtime_state.history.capture_checkpoint_head(),
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
       production_environment: runtime_state.production_environment,
+      state_overlay: runtime_state.state_overlay.clone(),
+      effective_state: runtime_state.effective_state.clone(),
     }
   }
 
@@ -854,15 +893,19 @@ impl Checkpoint {
     current_runtime_state: &RuntimeState,
     transaction_pool_policy: TransactionPoolPolicy,
   ) -> RuntimeState {
+    let history = current_runtime_state
+      .history
+      .rebuild_through_checkpoint_head(&self.history_head);
+
     RuntimeState {
-      history: current_runtime_state
-        .history
-        .rebuild_through_checkpoint_head(&self.history_head),
+      history,
       transaction_pool: TransactionPool::from_checkpoint(
         transaction_pool_policy,
         &self.transaction_pool,
       ),
       production_environment: self.production_environment,
+      state_overlay: self.state_overlay.clone(),
+      effective_state: self.effective_state.clone(),
     }
   }
 }
@@ -985,6 +1028,61 @@ impl NodeRuntime {
     self.impersonation.clear();
 
     // Keep checkpoint IDs monotonic so cleared IDs are never reused.
+  }
+
+  /// Applies a validated control batch to the effective state and removes pool
+  /// transactions made stale by nonce changes.
+  ///
+  /// Runtime state is updated only after state preparation and the pool
+  /// reconciliation plan are complete.
+  pub(crate) fn apply_state_control_batch(
+    &mut self,
+    batch: &StateControlBatch,
+  ) -> Result<(), StateControlPreparationError> {
+    if batch.is_empty() {
+      return Ok(());
+    }
+
+    let next_overlay = self.runtime_state.state_overlay.with_appended(batch);
+    let next_effective_state = EffectiveState::prepare(
+      self.runtime_state.history.optimistic_head().state(),
+      &next_overlay,
+    )?;
+    let account_nonces = self.read_nonces_for_pool_reconciliation(batch, &next_effective_state)?;
+    let reconciliation = self
+      .runtime_state
+      .transaction_pool
+      .prepare_nonce_reconciliation(Vec::<H256>::new(), account_nonces);
+
+    self.runtime_state.state_overlay = next_overlay;
+    self.runtime_state.effective_state = next_effective_state;
+    self
+      .runtime_state
+      .transaction_pool
+      .apply_reconciliation(reconciliation);
+
+    Ok(())
+  }
+
+  fn read_nonces_for_pool_reconciliation(
+    &self,
+    batch: &StateControlBatch,
+    effective_state: &EffectiveState,
+  ) -> Result<BTreeMap<AccountKey, U256>, StateControlPreparationError> {
+    let nonce_targets = batch.nonce_targets();
+
+    if nonce_targets.is_empty() {
+      return Ok(BTreeMap::new());
+    }
+
+    let state = open_state_version(effective_state.state())?;
+    let mut account_nonces = BTreeMap::new();
+
+    for address in nonce_targets {
+      account_nonces.insert((address.address, address.space), state.nonce(&address)?);
+    }
+
+    Ok(account_nonces)
   }
 
   pub(crate) fn set_author(&mut self, author: Address) -> Address {
@@ -1236,8 +1334,7 @@ impl NodeRuntime {
     &self,
     pool_view: &TransactionPoolView,
   ) -> StateResult<PoolReadinessInputs> {
-    let optimistic_head = self.runtime_state.history.optimistic_head();
-    let state = open_committed_state(&optimistic_head.state.version)?;
+    let state = self.open_effective_state_for_reading()?;
     let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
     let mut transaction_costs = BTreeMap::new();
 
@@ -1251,7 +1348,7 @@ impl NodeRuntime {
         let address = sender.with_space(space);
 
         entry.insert(PoolAccountState {
-          committed_nonce: state.nonce(&address)?,
+          state_nonce: state.nonce(&address)?,
           balance: state.balance(&address)?,
         });
       }
@@ -1263,6 +1360,12 @@ impl NodeRuntime {
     }
 
     Ok(PoolReadinessInputs::new(account_states, transaction_costs))
+  }
+
+  /// Opens the current effective version through Conflux's `State` interface
+  /// for reading.
+  fn open_effective_state_for_reading(&self) -> StateResult<State> {
+    open_state_version(self.runtime_state.effective_state.state())
   }
 
   pub(crate) fn produce_and_commit_block(
@@ -1382,11 +1485,13 @@ impl NodeRuntime {
     let previous_latest_header_committed_height =
       self.runtime_state.history.latest_header_committed_height();
     let start_block_number = parent.epoch.next_epoch_start_block_number();
+    let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
     let executed = execute_single_block_epoch(
       self.machine.as_ref(),
       parent_block,
       &parent.state,
+      &execution_state,
       parent.pos_state.as_ref(),
       start_block_number,
       runtime_block,
@@ -1464,6 +1569,9 @@ impl NodeRuntime {
         .production_environment
         .synchronize_committed_timestamp(block_timestamp),
     }
+
+    self.runtime_state.state_overlay = StateOverlay::empty();
+    self.runtime_state.effective_state = EffectiveState::from_committed(next_view.state());
 
     let latest_state_advanced_to = (self.runtime_state.history.latest_state_height()
       > previous_latest_state_height)
