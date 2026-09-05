@@ -1,12 +1,12 @@
 use cfx_executor::{
-  spec::TransitionsEpochHeight,
+  spec::{CommonParams, TransitionsEpochHeight},
   transaction_validation::{
     LocalValidationMode, PackingCheckResult, ValidationContext as ExecutorValidationContext,
     ValidationMode, check_transaction_for_packing, validate_transaction_common,
   },
 };
-use cfx_parameters::block::MAX_BLOCK_SIZE_IN_BYTES;
-use cfx_types::{AllChainID, U256};
+use cfx_parameters::{block::MAX_BLOCK_SIZE_IN_BYTES, consensus::TRANSACTION_DEFAULT_EPOCH_BOUND};
+use cfx_types::{AllChainID, Space, U256};
 use cfx_vm_types::Spec;
 use primitives::{
   TransactionWithSignature,
@@ -26,7 +26,21 @@ pub(crate) struct TransactionValidationContext<'a> {
   pub(crate) spec: &'a Spec,
 }
 
-impl TransactionValidationContext<'_> {
+impl<'a> TransactionValidationContext<'a> {
+  pub(crate) fn new(params: &'a CommonParams, spec: &'a Spec, height: BlockHeight) -> Self {
+    Self {
+      chain_id: AllChainID::new(
+        params.chain_id(height, Space::Native),
+        params.chain_id(height, Space::Ethereum),
+      ),
+      height,
+      transitions: &params.transition_heights,
+      transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
+      max_nonce: None,
+      spec,
+    }
+  }
+
   fn validate_with_mode(
     &self,
     transaction: &TransactionWithSignature,

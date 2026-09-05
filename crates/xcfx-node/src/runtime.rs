@@ -27,14 +27,16 @@ use crate::{
     TransactionPoolPolicy, TransactionPoolView, pool_gas_cost, pool_transaction_cost,
   },
   transaction_selector::{TransactionSelectionLimits, select_transactions},
+  virtual_execution::{
+    VirtualExecutionError, VirtualExecutionOverrides, VirtualExecutionRequest,
+    execute_virtual_transaction as execute_isolated_transaction,
+  },
 };
-use cfx_executor::{machine::Machine, spec::CommonParams, state::State};
+use cfx_executor::{executive::ExecutionOutcome, machine::Machine, state::State};
 use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{
-  Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, Space, U256,
-  address_util::AddressUtil,
+  Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, address_util::AddressUtil,
 };
-use cfx_vm_types::Spec;
 use cfxkey::KeyPair;
 use diem_types::term_state::pos_state_config::PosStateConfig;
 use std::{
@@ -48,8 +50,7 @@ use thiserror::Error;
 
 use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::{
-  consensus::{DEFERRED_STATE_EPOCH_COUNT, TRANSACTION_DEFAULT_EPOCH_BOUND},
-  staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
+  consensus::DEFERRED_STATE_EPOCH_COUNT, staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
 };
 
 use primitives::{
@@ -782,24 +783,6 @@ fn sponsored_gas_and_storage(
   Ok((sponsored_gas, sponsored_storage))
 }
 
-fn transaction_validation_context<'a>(
-  params: &'a CommonParams,
-  spec: &'a Spec,
-  height: BlockHeight,
-) -> TransactionValidationContext<'a> {
-  TransactionValidationContext {
-    chain_id: AllChainID::new(
-      params.chain_id(height, Space::Native),
-      params.chain_id(height, Space::Ethereum),
-    ),
-    height,
-    transitions: &params.transition_heights,
-    transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
-    max_nonce: None,
-    spec,
-  }
-}
-
 /// The state currently used by Runtime consumers.
 #[derive(Clone)]
 struct EffectiveState {
@@ -1064,6 +1047,26 @@ impl NodeRuntime {
     Ok(())
   }
 
+  /// Executes one fully resolved transaction against the current effective
+  /// state without publishing any state transition.
+  pub(crate) fn execute_virtual_transaction(
+    &self,
+    request: VirtualExecutionRequest,
+    overrides: VirtualExecutionOverrides,
+  ) -> Result<ExecutionOutcome, VirtualExecutionError> {
+    let parent = self.runtime_state.history.optimistic_head();
+
+    execute_isolated_transaction(
+      self.machine.as_ref(),
+      parent.epoch.pivot_runtime_block(),
+      parent.pos_state.as_ref(),
+      self.runtime_state.effective_state.state(),
+      parent.epoch.next_epoch_start_block_number(),
+      request,
+      overrides,
+    )
+  }
+
   fn read_nonces_for_pool_reconciliation(
     &self,
     batch: &StateControlBatch,
@@ -1173,7 +1176,7 @@ impl NodeRuntime {
     let block_number = optimistic_head.epoch.pivot_block_number();
     let params = self.machine.params();
     let spec = self.machine.spec(block_number, epoch_height);
-    let validation = transaction_validation_context(params, &spec, epoch_height);
+    let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
     callback(&validation)
   }
@@ -1276,7 +1279,7 @@ impl NodeRuntime {
       let block_number = optimistic_head.epoch.pivot_block_number();
       let params = self.machine.params();
       let spec = self.machine.spec(block_number, epoch_height);
-      let validation = transaction_validation_context(params, &spec, epoch_height);
+      let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
       decode_and_validate_raw_transaction(raw, &validation)?
     };
@@ -1395,7 +1398,7 @@ impl NodeRuntime {
     let block_number = parent.epoch.next_epoch_start_block_number();
     let selection_input = self.transaction_pool_selection_input()?;
     let spec = self.machine.spec(block_number, epoch_height);
-    let validation = transaction_validation_context(params, &spec, epoch_height);
+    let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
     let selection = select_transactions(
       &selection_input,

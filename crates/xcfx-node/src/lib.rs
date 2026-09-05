@@ -12,6 +12,7 @@ mod state_overlay;
 mod transaction_ingress;
 mod transaction_pool;
 mod transaction_selector;
+mod virtual_execution;
 
 /// Identifies the Rust product code included in the current build.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

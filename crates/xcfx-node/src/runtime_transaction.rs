@@ -26,6 +26,22 @@ fn compute_impersonated_hash(transaction: &Transaction, sender: AddressWithSpace
   keccak(encode_impersonated_transaction(transaction, sender))
 }
 
+pub(crate) fn fake_sign_for_execution(
+  transaction: Transaction,
+  sender: AddressWithSpace,
+) -> SignedTransaction {
+  assert_eq!(
+    transaction.space(),
+    sender.space,
+    "a locally resolved sender must use the transaction space",
+  );
+
+  match transaction {
+    Transaction::Native(transaction) => transaction.fake_sign_rpc(sender),
+    Transaction::Ethereum(transaction) => transaction.fake_sign_rpc(sender),
+  }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveredTransaction(Arc<SignedTransaction>);
 
@@ -327,10 +343,7 @@ impl RuntimeTransaction {
       Self::System(transaction) => callback(transaction.as_ref()),
       Self::Impersonated(transaction) => {
         let sender = transaction.sender_with_space();
-        let signed = match transaction.transaction().clone() {
-          Transaction::Native(transaction) => transaction.fake_sign_rpc(sender),
-          Transaction::Ethereum(transaction) => transaction.fake_sign_rpc(sender),
-        };
+        let signed = fake_sign_for_execution(transaction.transaction().clone(), sender);
         callback(&signed)
       }
     }

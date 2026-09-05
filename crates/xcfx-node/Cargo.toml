@@ -14,6 +14,7 @@ cfx-executor.workspace = true
 cfx-internal-common.workspace = true
 cfx-mpt.workspace = true
 cfx-parameters.workspace = true
+cfx-rpc-eth-types.workspace = true
 cfx-statedb.workspace = true
 cfx-storage-types.workspace = true
 cfx-types.workspace = true

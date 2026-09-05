@@ -6031,6 +6031,7 @@ dependencies = [
  "cfx-internal-common",
  "cfx-mpt",
  "cfx-parameters",
+ "cfx-rpc-eth-types",
  "cfx-statedb",
  "cfx-storage-types",
  "cfx-types",
