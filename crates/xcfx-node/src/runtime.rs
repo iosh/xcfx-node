@@ -1,6 +1,7 @@
 //! Owns one node instance's authoritative protocol state.
 use crate::{
   block_producer::{RuntimeBlock, produce_block},
+  chain_spec::ChainSpec,
   execution::{
     ExecutedSingleBlockEpoch, TransactionExecutionDisposition, execute_single_block_epoch,
   },
@@ -32,13 +33,12 @@ use crate::{
     execute_virtual_transaction as execute_isolated_transaction,
   },
 };
-use cfx_executor::{executive::ExecutionOutcome, machine::Machine, state::State};
+use cfx_executor::{executive::ExecutionOutcome, state::State};
 use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, address_util::AddressUtil,
 };
 use cfxkey::KeyPair;
-use diem_types::term_state::pos_state_config::PosStateConfig;
 use std::{
   collections::{BTreeMap, HashMap, btree_map::Entry},
   sync::{
@@ -898,8 +898,7 @@ pub(crate) enum RevertCheckpointOutcome {
   Unavailable,
 }
 pub(crate) struct NodeRuntime {
-  machine: Arc<Machine>,
-  pos_config: PosStateConfig,
+  chain_spec: Arc<ChainSpec>,
   production_defaults: ProductionDefaults,
   signing_keys: SigningKeys,
   impersonation: ImpersonationState,
@@ -914,21 +913,20 @@ pub(crate) struct NodeRuntime {
 
 impl NodeRuntime {
   pub(crate) fn from_genesis(
-    machine: Arc<Machine>,
+    chain_spec: Arc<ChainSpec>,
     allocations: BTreeMap<AddressWithSpace, U256>,
     header: GenesisHeaderInput,
     pos_definition: GenesisPosDefinition,
-    pos_config: PosStateConfig,
     production_defaults: ProductionDefaults,
     transaction_pool_policy: TransactionPoolPolicy,
     checkpoint_policy: CheckpointPolicy,
   ) -> Result<Self, GenesisError> {
     let genesis = execute_genesis_with_pos(
-      Arc::clone(&machine),
+      Arc::clone(chain_spec.machine()),
       allocations,
       header,
       &pos_definition,
-      &pos_config,
+      chain_spec.pos_state_config(),
     )?;
 
     let reset_state = ResetState::from_genesis(Arc::new(CommittedChainView::from_genesis(genesis)));
@@ -936,8 +934,7 @@ impl NodeRuntime {
       reset_state.build_runtime_state(transaction_pool_policy, &production_defaults);
 
     Ok(Self {
-      machine,
-      pos_config,
+      chain_spec,
       production_defaults,
       signing_keys: SigningKeys::default(),
       impersonation: ImpersonationState::default(),
@@ -1057,7 +1054,7 @@ impl NodeRuntime {
     let parent = self.runtime_state.history.optimistic_head();
 
     execute_isolated_transaction(
-      self.machine.as_ref(),
+      self.chain_spec.machine().as_ref(),
       parent.epoch.pivot_runtime_block(),
       parent.pos_state.as_ref(),
       self.runtime_state.effective_state.state(),
@@ -1174,8 +1171,8 @@ impl NodeRuntime {
     let optimistic_head = self.runtime_state.history.optimistic_head();
     let epoch_height = self.runtime_state.history.optimistic_height();
     let block_number = optimistic_head.epoch.pivot_block_number();
-    let params = self.machine.params();
-    let spec = self.machine.spec(block_number, epoch_height);
+    let params = self.chain_spec.machine().params();
+    let spec = self.chain_spec.machine().spec(block_number, epoch_height);
     let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
     callback(&validation)
@@ -1277,8 +1274,8 @@ impl NodeRuntime {
       let optimistic_head = self.runtime_state.history.optimistic_head();
       let epoch_height = self.runtime_state.history.optimistic_height();
       let block_number = optimistic_head.epoch.pivot_block_number();
-      let params = self.machine.params();
-      let spec = self.machine.spec(block_number, epoch_height);
+      let params = self.chain_spec.machine().params();
+      let spec = self.chain_spec.machine().spec(block_number, epoch_height);
       let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
       decode_and_validate_raw_transaction(raw, &validation)?
@@ -1383,7 +1380,7 @@ impl NodeRuntime {
       .checked_add(1)
       .expect("a parent block must permit a subsequent epoch height");
 
-    let params = self.machine.params();
+    let params = self.chain_spec.machine().params();
     let prepared_environment = self
       .runtime_state
       .production_environment
@@ -1397,7 +1394,7 @@ impl NodeRuntime {
 
     let block_number = parent.epoch.next_epoch_start_block_number();
     let selection_input = self.transaction_pool_selection_input()?;
-    let spec = self.machine.spec(block_number, epoch_height);
+    let spec = self.chain_spec.machine().spec(block_number, epoch_height);
     let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
     let selection = select_transactions(
@@ -1468,7 +1465,7 @@ impl NodeRuntime {
     let (gas_lower, gas_upper) = block_gas_limit_bounds(
       *parent_block.header().gas_limit(),
       runtime_block.header().height(),
-      self.machine.params(),
+      self.chain_spec.machine().params(),
     );
 
     assert!(
@@ -1491,7 +1488,7 @@ impl NodeRuntime {
     let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
     let executed = execute_single_block_epoch(
-      self.machine.as_ref(),
+      self.chain_spec.machine().as_ref(),
       parent_block,
       &parent.state,
       &execution_state,

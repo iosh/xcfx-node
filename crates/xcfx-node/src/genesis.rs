@@ -112,13 +112,13 @@ pub(crate) fn execute_genesis_with_pos(
   allocations: BTreeMap<AddressWithSpace, U256>,
   header: GenesisHeaderInput,
   definition: &GenesisPosDefinition,
-  pos_config: &PosStateConfig,
+  pos_state_config: &PosStateConfig,
 ) -> Result<ExecutedGenesisWithPos, GenesisError> {
   let execution = execute_genesis_inner(machine, allocations, header, Some(definition))?;
 
   let committed_pos_state = bootstrap_genesis_pos_state(
     definition,
-    pos_config,
+    pos_state_config,
     PivotBlockDecision {
       height: 0,
       block_hash: execution.block.hash(),
@@ -501,6 +501,7 @@ mod tests {
 
   use crate::{
     block_producer::RuntimeBlock,
+    chain_spec::{ChainSpec, PosParameters},
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     production_environment::ProductionDefaults,
@@ -878,11 +879,14 @@ mod tests {
     let (machine, header) = conflux_compatibility_protocol();
 
     let mut runtime = NodeRuntime::from_genesis(
-      Arc::clone(&machine),
+      Arc::new(ChainSpec::new(
+        machine.params().clone(),
+        PosParameters::default(),
+        machine.vm_factory(),
+      )),
       conflux_compatibility_allocations(),
       header,
       definition,
-      PosStateConfig::default(),
       ProductionDefaults::new(1),
       TransactionPoolPolicy::new(1_024),
       CheckpointPolicy::new(1),
