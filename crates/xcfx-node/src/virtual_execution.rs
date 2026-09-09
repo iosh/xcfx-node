@@ -14,20 +14,14 @@ use cfx_rpc_eth_types::{
   AccountOverride as ExecutorAccountOverride, AccountStateOverrideMode,
   StateOverride as ExecutorStateOverride,
 };
-use cfx_statedb::StateDb;
 use cfx_types::{Address, AddressSpaceUtil, H256, Space, U64, U256, address_util::AddressUtil};
 use cfx_vm_types::Env;
 use primitives::{BlockNumber, SignedTransaction, Transaction, transaction::TransactionError};
 use thiserror::Error;
 
 use crate::{
-  block_producer::RuntimeBlock,
-  pos::CommittedPosState,
-  runtime_transaction::fake_sign_for_execution,
-  state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::{StateCandidate, StateVersion},
-  },
+  block_producer::RuntimeBlock, pos::CommittedPosState,
+  runtime_transaction::fake_sign_for_execution, state::state_version::StateVersion,
   transaction_ingress::TransactionValidationContext,
 };
 
@@ -207,9 +201,7 @@ pub(crate) fn execute_virtual_transaction(
 
   let VirtualExecutionOverrides { state, environment } = overrides;
   let executor_overrides = state.into_executor_overrides(transaction_space)?;
-  let candidate = StateCandidate::new(Arc::clone(effective_state));
-  let (backend, _state_receiver) = LayeredMptState::new(candidate);
-  let database = StateDb::new(Box::new(backend));
+  let (database, _state_receiver) = effective_state.open_database();
   let mut state = if executor_overrides.is_empty() {
     State::new(database)?
   } else {

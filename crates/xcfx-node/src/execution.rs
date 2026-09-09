@@ -11,7 +11,7 @@ use cfx_executor::{
 };
 use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
-use cfx_statedb::{Result as StateResult, StateDb};
+use cfx_statedb::Result as StateResult;
 use cfx_types::{H256, U256};
 use cfx_vm_types::{Env, Spec};
 use rlp::Encodable;
@@ -21,10 +21,7 @@ use crate::{
   mpt::indexed_mpt_root,
   pos::CommittedPosState,
   runtime_transaction::RuntimeTransaction,
-  state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
-  },
+  state::state_version::{CommittedStateVersion, StateVersion},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +87,11 @@ fn execute_runtime_transaction(
 /// `parent_state` supplies the committed parent identity. `execution_state`
 /// may be an effective state prepared on top of that parent and therefore must
 /// remain separate from the committed identity.
+///
+/// # Errors
+///
+/// Returns state errors from initialization, protocol transitions, transaction
+/// execution, or commit. The private candidate is discarded on failure.
 pub(crate) fn execute_single_block_epoch(
   machine: &Machine,
   parent_block: &RuntimeBlock,
@@ -98,7 +100,7 @@ pub(crate) fn execute_single_block_epoch(
   parent_pos_state: &CommittedPosState,
   block_number: BlockNumber,
   runtime_block: RuntimeBlock,
-) -> ExecutedSingleBlockEpoch {
+) -> StateResult<ExecutedSingleBlockEpoch> {
   // The current fork pre-execution hooks consume only the header and block hash.
   // A local Runtime block therefore needs no invented transaction body here.
   let epoch_block = runtime_block
@@ -177,29 +179,16 @@ pub(crate) fn execute_single_block_epoch(
     "ordered epoch transactions must match the header commitment",
   );
 
-  let candidate = StateCandidate::new(Arc::clone(execution_state));
+  let (database, state_receiver) = execution_state.open_database();
+  let mut state = State::new(database)?;
 
-  let (backend, state_receiver) = LayeredMptState::new(candidate);
-
-  let database = StateDb::new(Box::new(backend));
-  let mut state = expect_state_operation(
-    State::new(database),
-    "opening the execution state candidate",
-  );
-
-  expect_state_operation(
-    before_epoch_execution(&mut state, machine, &epoch_block),
-    "applying the epoch pre-execution transition",
-  );
+  before_epoch_execution(&mut state, machine, &epoch_block)?;
 
   let epoch_height = epoch_block.block_header.height();
   let base_gas_price = epoch_block.block_header.base_price().unwrap_or_default();
   let burnt_gas_price = base_gas_price.map_all(|price| state.burnt_gas_price(price));
 
-  let secondary_reward = expect_state_operation(
-    before_block_execution(&mut state, machine, block_number, &epoch_block),
-    "applying the block pre-execution transition",
-  );
+  let secondary_reward = before_block_execution(&mut state, machine, block_number, &epoch_block)?;
 
   let mut env = Env {
     chain_id: machine.params().chain_id_map(epoch_height),
@@ -224,16 +213,10 @@ pub(crate) fn execute_single_block_epoch(
   let mut execution_errors = Vec::with_capacity(runtime_transactions.len());
   let mut transaction_dispositions = Vec::with_capacity(runtime_transactions.len());
 
-  for (transaction_index, transaction) in runtime_transactions.iter().enumerate() {
+  for transaction in runtime_transactions {
     env.transaction_hash = transaction.hash();
 
-    let outcome = execute_runtime_transaction(&mut state, &env, machine, &spec, transaction)
-      .unwrap_or_else(|error| {
-        panic!(
-          "ordered epoch execution invariant violated while executing \
-         transaction {transaction_index}: {error:?}"
-        )
-      });
+    let outcome = execute_runtime_transaction(&mut state, &env, machine, &spec, transaction)?;
 
     state.update_state_post_tx_execution(!spec.cip645.fix_eip1153);
 
@@ -266,10 +249,7 @@ pub(crate) fn execute_single_block_epoch(
   // With a stable PoS reference, the full node's post-epoch PoS distribution
   // branch is a no-op for this execution path.
   let epoch_id = epoch_block.hash();
-  let commit_result = expect_state_operation(
-    state.commit(epoch_id, None),
-    "committing the epoch state candidate",
-  );
+  let commit_result = state.commit(epoch_id, None)?;
   let committed_state = state_receiver
     .committed_state()
     .expect("a successful state commit must hand off its state version");
@@ -290,21 +270,12 @@ pub(crate) fn execute_single_block_epoch(
     logs_bloom_hash,
   };
 
-  ExecutedSingleBlockEpoch {
+  Ok(ExecutedSingleBlockEpoch {
     runtime_block,
     state: committed_state,
     commitment,
     block_receipts,
     transaction_dispositions,
     accounts_for_txpool: commit_result.accounts_for_txpool,
-  }
-}
-
-fn expect_state_operation<T>(result: StateResult<T>, operation: &'static str) -> T {
-  result.unwrap_or_else(|error| {
-    panic!(
-      "ordered epoch execution invariant violated while {operation}: \
-         {error:?}"
-    )
   })
 }

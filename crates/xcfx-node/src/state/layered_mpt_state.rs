@@ -6,7 +6,9 @@ use cfx_internal_common::StateRootWithAuxInfo;
 use cfx_storage_types::{Error, MptKeyValue, Result, StateTrait};
 use primitives::{EpochId, MptValue, SkipInputCheck, StorageKey, StorageKeyWithSpace};
 
-use super::state_version::{CommittedStateVersion, StateCandidate, StateVersion};
+use super::state_version::{
+  CommittedStateVersion, StateCandidate, StateVersion, StateVersionReceiver,
+};
 
 enum StateLifecycle {
   Writable(StateCandidate),
@@ -14,25 +16,14 @@ enum StateLifecycle {
   Committed,
 }
 
-pub(crate) struct LayeredMptState {
+pub(super) struct LayeredMptState {
   lifecycle: StateLifecycle,
   committed_state: Arc<OnceLock<CommittedStateVersion>>,
   prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
 }
 
-pub(crate) struct CommittedStateReceiver {
-  committed_state: Arc<OnceLock<CommittedStateVersion>>,
-}
-
-/// Receives the immutable state produced by non-committing preparation.
-pub(crate) struct PreparedStateReceiver {
-  prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
-}
-
 impl LayeredMptState {
-  fn new_with_receivers(
-    candidate: StateCandidate,
-  ) -> (Self, CommittedStateReceiver, PreparedStateReceiver) {
+  pub(super) fn new(candidate: StateCandidate) -> (Self, StateVersionReceiver) {
     let committed_state = Arc::new(OnceLock::new());
     let prepared_state = Arc::new(OnceLock::new());
 
@@ -44,21 +35,11 @@ impl LayeredMptState {
 
     (
       state,
-      CommittedStateReceiver { committed_state },
-      PreparedStateReceiver { prepared_state },
+      StateVersionReceiver {
+        committed_state,
+        prepared_state,
+      },
     )
-  }
-
-  pub(crate) fn new(candidate: StateCandidate) -> (Self, CommittedStateReceiver) {
-    let (state, committed_receiver, _) = Self::new_with_receivers(candidate);
-
-    (state, committed_receiver)
-  }
-
-  pub(crate) fn new_for_preparation(candidate: StateCandidate) -> (Self, PreparedStateReceiver) {
-    let (state, _, prepared_receiver) = Self::new_with_receivers(candidate);
-
-    (state, prepared_receiver)
   }
 
   fn read(&self, key: StorageKeyWithSpace<'_>) -> Option<&[u8]> {
@@ -87,12 +68,6 @@ impl LayeredMptState {
     };
 
     candidate
-  }
-}
-
-impl CommittedStateReceiver {
-  pub(crate) fn committed_state(&self) -> Option<CommittedStateVersion> {
-    self.committed_state.get().cloned()
   }
 }
 
@@ -221,12 +196,6 @@ impl StateTrait for LayeredMptState {
     self.lifecycle = StateLifecycle::Committed;
 
     Ok(root)
-  }
-}
-
-impl PreparedStateReceiver {
-  pub(crate) fn prepared_state(&self) -> Option<Arc<StateVersion>> {
-    self.prepared_state.get().cloned()
   }
 }
 

@@ -16,10 +16,7 @@ use crate::{
   },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
-  state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
-  },
+  state::state_version::{CommittedStateVersion, StateVersion},
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
@@ -34,7 +31,7 @@ use crate::{
   },
 };
 use cfx_executor::{executive::ExecutionOutcome, state::State};
-use cfx_statedb::{Result as StateResult, StateDb};
+use cfx_statedb::Result as StateResult;
 use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, address_util::AddressUtil,
 };
@@ -733,8 +730,8 @@ pub(crate) struct RuntimeCommitOutcome {
 }
 
 fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State> {
-  let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(version)));
-  State::new(StateDb::new(Box::new(backend)))
+  let (database, _) = version.open_database();
+  State::new(database)
 }
 
 /// Derives declared gas and storage covered by sponsorship for pool readiness.
@@ -1426,15 +1423,21 @@ impl NodeRuntime {
       runtime_block,
       transactions_to_drop,
       Some(prepared_environment),
-    );
+    )?;
 
     Ok(outcome)
   }
 
+  /// Executes a constructed block and publishes its complete result on success.
+  ///
+  /// # Errors
+  ///
+  /// Returns state errors without changing the active history, pool, controls,
+  /// or production environment.
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     runtime_block: RuntimeBlock,
-  ) -> RuntimeCommitOutcome {
+  ) -> StateResult<RuntimeCommitOutcome> {
     self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new(), None)
   }
 
@@ -1443,7 +1446,7 @@ impl NodeRuntime {
     runtime_block: RuntimeBlock,
     transactions_to_drop: Vec<RuntimeTransaction>,
     prepared_environment: Option<PreparedProductionEnvironment>,
-  ) -> RuntimeCommitOutcome {
+  ) -> StateResult<RuntimeCommitOutcome> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.epoch.pivot_runtime_block();
     let block_timestamp = runtime_block.header().timestamp();
@@ -1495,7 +1498,7 @@ impl NodeRuntime {
       parent.pos_state.as_ref(),
       start_block_number,
       runtime_block,
-    );
+    )?;
 
     let ExecutedSingleBlockEpoch {
       runtime_block,
@@ -1581,7 +1584,7 @@ impl NodeRuntime {
         > previous_latest_header_committed_height)
         .then(|| Arc::clone(self.runtime_state.history.latest_header_committed_view()));
 
-    RuntimeCommitOutcome {
+    Ok(RuntimeCommitOutcome {
       optimistic_view: next_view,
       latest_state_advanced_to,
       latest_header_committed_advanced_to,
@@ -1590,7 +1593,7 @@ impl NodeRuntime {
         transactions_dropped_during_selection: transactions_to_drop,
         modified_accounts: accounts_for_txpool,
       },
-    }
+    })
   }
 
   pub(crate) fn optimistic_view(&self) -> Arc<CommittedChainView> {

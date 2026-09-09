@@ -20,7 +20,6 @@ use cfx_parameters::{
   },
   staking::POS_VOTE_PRICE,
 };
-use cfx_statedb::StateDb;
 use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, SpaceMap,
   U256, cal_contract_address_with_space,
@@ -43,10 +42,7 @@ use crate::{
   pos::{
     CommittedPosState, GENESIS_POS_REFERENCE, GenesisPosDefinition, bootstrap_genesis_pos_state,
   },
-  state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
-  },
+  state::state_version::{CommittedStateVersion, StateVersion},
 };
 
 const GENESIS_CONTRACT_NAMES: [&str; 7] = [
@@ -138,13 +134,8 @@ fn execute_genesis_inner(
   pos_definition: Option<&GenesisPosDefinition>,
 ) -> Result<ExecutedGenesis, GenesisError> {
   let parent = Arc::new(StateVersion::genesis_parent());
-
-  let candidate = StateCandidate::new(parent);
-
-  let (backend, committed_state_receiver) = LayeredMptState::new(candidate);
-
-  let db = StateDb::new(Box::new(backend));
-  let mut state = State::new(db)?;
+  let (database, state_receiver) = parent.open_database();
+  let mut state = State::new(database)?;
 
   initialize_internal_contract_accounts(
     &mut state,
@@ -246,7 +237,7 @@ fn execute_genesis_inner(
     "Genesis commit changed the prepared state root",
   );
 
-  let committed_state = committed_state_receiver
+  let committed_state = state_receiver
     .committed_state()
     .expect("successful Genesis commit must hand off its state version");
 
@@ -478,15 +469,11 @@ mod tests {
     internal_contract_addresses::{ADMIN_CONTROL_CONTRACT_ADDRESS, POS_REGISTER_CONTRACT_ADDRESS},
     staking::POS_VOTE_PRICE,
   };
-  use cfx_statedb::StateDb;
   use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, SpaceMap, U256};
   use hex_literal::hex;
 
   use super::{GenesisHeaderInput, execute_genesis, execute_genesis_with_pos};
-  use crate::state::{
-    layered_mpt_state::LayeredMptState,
-    state_version::{StateCandidate, StateVersion},
-  };
+  use crate::state::state_version::StateVersion;
 
   use diem_crypto::ValidCryptoMaterialStringExt;
   use diem_types::{
@@ -675,8 +662,8 @@ mod tests {
     )
   }
   fn open_committed_state(version: &Arc<StateVersion>) -> State {
-    let (backend, _) = LayeredMptState::new(StateCandidate::new(Arc::clone(version)));
-    State::new(StateDb::new(Box::new(backend))).expect("a committed Genesis state must be readable")
+    let (database, _) = version.open_database();
+    State::new(database).expect("a committed Genesis state must be readable")
   }
 
   #[test]
@@ -901,8 +888,9 @@ mod tests {
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
     let block = first_core_transfer_block(machine.as_ref(), parent_view.epoch().pivot_block());
-    let commit_outcome =
-      runtime.execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block));
+    let commit_outcome = runtime
+      .execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block))
+      .expect("the fixed Core transfer block must execute");
     let executed_view = runtime.optimistic_view();
 
     let receipts = &executed_view.epoch().block_receipts()[0];

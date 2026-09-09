@@ -3,14 +3,10 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use cfx_executor::state::State;
-use cfx_statedb::StateDb;
 use cfx_types::{AddressWithSpace, Space, U256, address_util::AddressUtil};
 use thiserror::Error;
 
-use crate::state::{
-  layered_mpt_state::LayeredMptState,
-  state_version::{CommittedStateVersion, StateCandidate, StateVersion},
-};
+use crate::state::state_version::{CommittedStateVersion, StateVersion};
 
 /// A Runtime control intent, not a protocol transaction or committed state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,11 +219,8 @@ impl StateOverlay {
       return Ok(Arc::clone(&committed_base.version));
     }
 
-    let (backend, prepared_receiver) = LayeredMptState::new_for_preparation(StateCandidate::new(
-      Arc::clone(&committed_base.version),
-    ));
-
-    let mut state = State::new(StateDb::new(Box::new(backend)))?;
+    let (database, state_receiver) = committed_base.version.open_database();
+    let mut state = State::new(database)?;
 
     for control in &self.controls {
       apply_control(&mut state, control)?;
@@ -236,7 +229,7 @@ impl StateOverlay {
     // The fork currently exposes non-committing StateDb root preparation
     // through this genesis-named wrapper; it does not bind an epoch identity.
     let root = state.compute_state_root_for_genesis(None)?;
-    let version = prepared_receiver
+    let version = state_receiver
       .prepared_state()
       .expect("state root preparation must hand off its immutable version");
 

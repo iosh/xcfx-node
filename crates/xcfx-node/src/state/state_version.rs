@@ -2,10 +2,11 @@
 
 use std::{
   collections::{BTreeMap, HashSet},
-  sync::Arc,
+  sync::{Arc, OnceLock},
 };
 
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
+use cfx_statedb::StateDb;
 use primitives::{
   DeltaMptKeyPadding, EpochId, MERKLE_NULL_NODE, MptValue, NULL_EPOCH, SkipInputCheck, StateRoot,
   StorageKey, StorageKeyWithSpace,
@@ -13,6 +14,7 @@ use primitives::{
 
 use super::{
   delta_mpt::{CurrentDeltaCandidate, DeltaMptVersion},
+  layered_mpt_state::LayeredMptState,
   snapshot_mpt::SnapshotMptVersion,
   state_proof::StateProof,
 };
@@ -78,6 +80,17 @@ impl StateVersion {
       None,
       Arc::new(DeltaMptVersion::empty()),
     )
+  }
+
+  /// Opens an isolated writable database and the receiver for its resulting version.
+  ///
+  /// Opening does not read state. Preparation and commit hand off immutable
+  /// versions through the receiver; publication remains the caller's responsibility.
+  pub(crate) fn open_database(self: &Arc<Self>) -> (StateDb, StateVersionReceiver) {
+    let candidate = StateCandidate::new(Arc::clone(self));
+    let (backend, receiver) = LayeredMptState::new(candidate);
+
+    (StateDb::new(Box::new(backend)), receiver)
   }
 
   /// Rotates the three Conflux state layers at a snapshot boundary.
@@ -290,6 +303,24 @@ impl StateVersion {
 pub(crate) struct CommittedStateVersion {
   pub(crate) epoch_id: EpochId,
   pub(crate) version: Arc<StateVersion>,
+}
+
+/// Receives prepared and committed versions from one opened database.
+pub(crate) struct StateVersionReceiver {
+  pub(super) committed_state: Arc<OnceLock<CommittedStateVersion>>,
+  pub(super) prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
+}
+
+impl StateVersionReceiver {
+  /// Returns the immutable version produced by successful preparation.
+  pub(crate) fn prepared_state(&self) -> Option<Arc<StateVersion>> {
+    self.prepared_state.get().cloned()
+  }
+
+  /// Returns the version handed off by a successful backend commit.
+  pub(crate) fn committed_state(&self) -> Option<CommittedStateVersion> {
+    self.committed_state.get().cloned()
+  }
 }
 
 fn visit_visible_delta_entry<'a>(
