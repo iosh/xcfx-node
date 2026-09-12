@@ -8,7 +8,6 @@ use cfx_executor::{
   machine::Machine,
   state::State,
 };
-use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::{
   consensus::{GENESIS_GAS_LIMIT, ONE_CFX_IN_DRIP},
   consensus_internal::{GENESIS_TOKEN_COUNT_IN_CFX, TWO_YEAR_UNLOCK_TOKEN_COUNT_IN_CFX},
@@ -20,6 +19,7 @@ use cfx_parameters::{
   },
   staking::POS_VOTE_PRICE,
 };
+use cfx_statedb::StateDb;
 use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, SpaceMap,
   U256, cal_contract_address_with_space,
@@ -37,12 +37,12 @@ use rustc_hex::FromHex;
 use thiserror::Error;
 
 use crate::{
-  execution::compute_epoch_receipts_root,
+  execution::{ExecutionCommitment, compute_epoch_receipts_root},
   mpt::indexed_mpt_root,
   pos::{
     CommittedPosState, GENESIS_POS_REFERENCE, GenesisPosDefinition, bootstrap_genesis_pos_state,
   },
-  state::state_version::{CommittedStateVersion, StateVersion},
+  state::state_version::{CommittedStateVersion, StateCandidate, StateVersion},
 };
 
 const GENESIS_CONTRACT_NAMES: [&str; 7] = [
@@ -66,7 +66,7 @@ pub(crate) struct GenesisHeaderInput {
 pub(crate) struct ExecutedGenesis {
   pub(crate) block: Block,
   pub(crate) committed_state: CommittedStateVersion,
-  pub(crate) commitment: EpochExecutionCommitment,
+  pub(crate) commitment: ExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
 }
 
@@ -134,8 +134,8 @@ fn execute_genesis_inner(
   pos_definition: Option<&GenesisPosDefinition>,
 ) -> Result<ExecutedGenesis, GenesisError> {
   let parent = Arc::new(StateVersion::genesis_parent());
-  let (database, state_receiver) = parent.open_database();
-  let mut state = State::new(database)?;
+  let mut candidate = StateCandidate::new(parent);
+  let mut state = State::new(StateDb::new(&mut candidate))?;
 
   initialize_internal_contract_accounts(
     &mut state,
@@ -192,7 +192,11 @@ fn execute_genesis_inner(
 
   state.genesis_special_remove_account(&genesis_account.address)?;
 
-  let prepared_state_root = state.compute_state_root_for_genesis(None)?;
+  state.apply_changes_to_storage(None)?;
+  drop(state);
+
+  let version = Arc::new(candidate.into_version());
+  let state_root = version.root_with_aux_info();
 
   let transaction_hashes = transactions
     .iter()
@@ -215,7 +219,7 @@ fn execute_genesis_inner(
 
   let mut block = Block::new(
     BlockHeaderBuilder::new()
-      .with_deferred_state_root(prepared_state_root.aux_info.state_root_hash)
+      .with_deferred_state_root(state_root.aux_info.state_root_hash)
       .with_deferred_receipts_root(receipts_root)
       .with_deferred_logs_bloom_hash(logs_bloom_hash)
       .with_gas_limit(GENESIS_GAS_LIMIT.into())
@@ -230,28 +234,12 @@ fn execute_genesis_inner(
   );
 
   let block_hash = block.block_header.compute_hash();
-  let commit_result = state.commit(block_hash, None)?;
-
-  assert_eq!(
-    commit_result.state_root, prepared_state_root,
-    "Genesis commit changed the prepared state root",
-  );
-
-  let committed_state = state_receiver
-    .committed_state()
-    .expect("successful Genesis commit must hand off its state version");
-
-  assert_eq!(
-    committed_state.epoch_id, block_hash,
-    "committed Genesis state must use the block hash as epoch identity",
-  );
-  assert_eq!(
-    committed_state.version.root_with_aux_info(),
-    commit_result.state_root,
-    "handed-off Genesis state must match the committed state root",
-  );
-  let commitment = EpochExecutionCommitment {
-    state_root_with_aux_info: commit_result.state_root,
+  let committed_state = CommittedStateVersion {
+    epoch_id: block_hash,
+    version,
+  };
+  let commitment = ExecutionCommitment {
+    state_root: Some(state_root.aux_info.state_root_hash),
     receipts_root,
     logs_bloom_hash,
   };
@@ -371,7 +359,7 @@ fn execute_genesis_deployment(
   index: usize,
   contract: &'static str,
   transaction: &SignedTransaction,
-  state: &mut State,
+  state: &mut State<'_>,
   machine: &Machine,
 ) -> Result<(), GenesisError> {
   let environment = Env {
@@ -396,7 +384,7 @@ fn execute_genesis_deployment(
 }
 
 fn execute_genesis_pos(
-  state: &mut State,
+  state: &mut State<'_>,
   machine: &Machine,
   definition: &GenesisPosDefinition,
 ) -> Result<(), GenesisError> {
@@ -661,9 +649,8 @@ mod tests {
       transactions,
     )
   }
-  fn open_committed_state(version: &Arc<StateVersion>) -> State {
-    let (database, _) = version.open_database();
-    State::new(database).expect("a committed Genesis state must be readable")
+  fn open_committed_state(version: &Arc<StateVersion>) -> State<'static> {
+    State::new(version.open_database()).expect("a committed Genesis state must be readable")
   }
 
   #[test]
@@ -686,7 +673,8 @@ mod tests {
       "Genesis block hash changed",
     );
     assert_eq!(
-      genesis.commitment.state_root_with_aux_info, expected_state_root,
+      genesis.commitment.state_root,
+      Some(expected_state_root.aux_info.state_root_hash),
       "Genesis state root changed",
     );
     assert_eq!(
@@ -939,10 +927,10 @@ mod tests {
       )),
     );
     assert_eq!(
-      commitment.state_root_with_aux_info.aux_info.state_root_hash,
-      H256(hex!(
+      commitment.state_root,
+      Some(H256(hex!(
         "b783510d8cbe6e6bb27d9402a26a2cae4c51c9920c0d20a7b3af76335a2959ef"
-      )),
+      ))),
     );
 
     let executed_state = open_committed_state(&executed_view.state().version);

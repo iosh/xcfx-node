@@ -1472,7 +1472,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cfx-addr"
 version = "0.2.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-types",
  "lazy_static",
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "cfx-bytes"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "ethcore-bytes",
 ]
@@ -1489,7 +1489,7 @@ dependencies = [
 [[package]]
 name = "cfx-crypto"
 version = "0.3.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "aes 0.8.4",
  "cbc",
@@ -1511,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "cfx-db-errors"
 version = "2.0.2"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-types",
  "primitives",
@@ -1523,7 +1523,7 @@ dependencies = [
 [[package]]
 name = "cfx-executor"
 version = "2.0.2"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "bls-signatures",
  "blst",
@@ -1568,7 +1568,7 @@ dependencies = [
 [[package]]
 name = "cfx-internal-common"
 version = "1.0.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-bytes",
  "cfx-parameters",
@@ -1589,7 +1589,7 @@ dependencies = [
 [[package]]
 name = "cfx-math"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-types",
  "num",
@@ -1600,7 +1600,7 @@ dependencies = [
 [[package]]
 name = "cfx-mpt"
 version = "1.0.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-db-errors",
  "cfx-storage-types",
@@ -1618,7 +1618,7 @@ dependencies = [
 [[package]]
 name = "cfx-parameters"
 version = "1.0.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-bytes",
  "cfx-types",
@@ -1631,7 +1631,7 @@ dependencies = [
 [[package]]
 name = "cfx-parity-trace-types"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-bytes",
  "cfx-internal-common",
@@ -1650,7 +1650,7 @@ dependencies = [
 [[package]]
 name = "cfx-rpc-cfx-types"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "bls-signatures",
  "cfx-addr",
@@ -1682,7 +1682,7 @@ dependencies = [
 [[package]]
 name = "cfx-rpc-eth-types"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "alloy-rpc-types",
  "alloy-rpc-types-trace",
@@ -1708,7 +1708,7 @@ dependencies = [
 [[package]]
 name = "cfx-rpc-primitives"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "rustc-hex",
  "serde",
@@ -1719,7 +1719,7 @@ dependencies = [
 [[package]]
 name = "cfx-rpc-utils"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types",
@@ -1737,7 +1737,7 @@ dependencies = [
 [[package]]
 name = "cfx-statedb"
 version = "1.0.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-db-errors",
  "cfx-internal-common",
@@ -1756,7 +1756,7 @@ dependencies = [
 [[package]]
 name = "cfx-storage-types"
 version = "1.0.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-db-errors",
  "cfx-internal-common",
@@ -1768,7 +1768,7 @@ dependencies = [
 [[package]]
 name = "cfx-tasks"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "auto_impl",
  "dyn-clone",
@@ -1780,7 +1780,7 @@ dependencies = [
 [[package]]
 name = "cfx-types"
 version = "0.2.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "ethereum-types",
  "hex",
@@ -1794,12 +1794,12 @@ dependencies = [
 [[package]]
 name = "cfx-util-macros"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 
 [[package]]
 name = "cfx-vm-interpreter"
 version = "2.0.2"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "bit-set",
  "cfx-bytes",
@@ -1818,7 +1818,7 @@ dependencies = [
 [[package]]
 name = "cfx-vm-types"
 version = "2.0.2"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-bytes",
  "cfx-db-errors",
@@ -1833,7 +1833,7 @@ dependencies = [
 [[package]]
 name = "cfxcore-accounts"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-types",
  "cfxkey",
@@ -1848,7 +1848,7 @@ dependencies = [
 [[package]]
 name = "cfxcore-errors"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -1856,7 +1856,7 @@ dependencies = [
 [[package]]
 name = "cfxkey"
 version = "0.3.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-crypto",
  "cfx-types",
@@ -1877,7 +1877,7 @@ dependencies = [
 [[package]]
 name = "cfxstore"
 version = "0.2.1"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-crypto",
  "cfx-types",
@@ -2397,7 +2397,7 @@ checksum = "3c877555693c14d2f84191cfd3ad8582790fc52b5e2274b40b59cf5f5cea25c7"
 [[package]]
 name = "diem-crypto"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "anyhow",
  "bcs",
@@ -2426,7 +2426,7 @@ dependencies = [
 [[package]]
 name = "diem-crypto-derive"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2436,7 +2436,7 @@ dependencies = [
 [[package]]
 name = "diem-log-derive"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2446,7 +2446,7 @@ dependencies = [
 [[package]]
 name = "diem-logger"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "backtrace",
  "chrono",
@@ -2464,7 +2464,7 @@ dependencies = [
 [[package]]
 name = "diem-types"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "anyhow",
  "bcs",
@@ -2659,7 +2659,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3875,7 +3875,7 @@ dependencies = [
 [[package]]
 name = "malloc_size_of"
 version = "0.0.1"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfg-if 1.0.4",
  "cfx-types",
@@ -3889,7 +3889,7 @@ dependencies = [
 [[package]]
 name = "malloc_size_of_derive"
 version = "0.1.1"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "proc-macro2",
  "syn 1.0.109",
@@ -3920,7 +3920,7 @@ dependencies = [
 [[package]]
 name = "memory-cache"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "lru-cache",
  "malloc_size_of",
@@ -3955,7 +3955,7 @@ checksum = "c9be0862c1b3f26a88803c4a49de6889c10e608b3ee9344e6ef5b45fb37ad3d1"
 [[package]]
 name = "move-core-types"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "anyhow",
  "hex",
@@ -4288,7 +4288,7 @@ dependencies = [
 [[package]]
 name = "parity-version"
 version = "3.3.3"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "anyhow",
  "target_info",
@@ -4607,7 +4607,7 @@ dependencies = [
 [[package]]
 name = "pow-types"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4666,7 +4666,7 @@ dependencies = [
 [[package]]
 name = "primitives"
 version = "0.2.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "byteorder",
  "cfx-bytes",
@@ -4833,7 +4833,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5254,7 +5254,7 @@ dependencies = [
 [[package]]
 name = "rlp-compat"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "malloc_size_of",
  "malloc_size_of_derive",
@@ -5365,7 +5365,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5422,7 +5422,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5671,7 +5671,7 @@ dependencies = [
 [[package]]
 name = "serde-utils"
 version = "3.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "alloy-primitives",
  "cfx-types",
@@ -5821,7 +5821,7 @@ dependencies = [
 [[package]]
 name = "sha3-macro"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "keccak-hash",
  "quote",
@@ -5930,7 +5930,7 @@ dependencies = [
 [[package]]
 name = "solidity-abi"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "cfx-bytes",
  "cfx-types",
@@ -5941,7 +5941,7 @@ dependencies = [
 [[package]]
 name = "solidity-abi-derive"
 version = "0.1.0"
-source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#148022567dcca5da7886a7786f34cc460bfd601d"
+source = "git+https://github.com/iosh/conflux-rust?branch=v3.1.0#4dc2968d0ba1556e8a77ba1e6f0b0f703e7533c6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -6149,7 +6149,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6843,7 +6843,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

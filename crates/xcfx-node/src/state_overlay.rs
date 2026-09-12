@@ -3,10 +3,11 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use cfx_executor::state::State;
+use cfx_statedb::StateDb;
 use cfx_types::{AddressWithSpace, Space, U256, address_util::AddressUtil};
 use thiserror::Error;
 
-use crate::state::state_version::{CommittedStateVersion, StateVersion};
+use crate::state::state_version::{CommittedStateVersion, StateCandidate, StateVersion};
 
 /// A Runtime control intent, not a protocol transaction or committed state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -219,32 +220,22 @@ impl StateOverlay {
       return Ok(Arc::clone(&committed_base.version));
     }
 
-    let (database, state_receiver) = committed_base.version.open_database();
-    let mut state = State::new(database)?;
+    let mut candidate = StateCandidate::new(Arc::clone(&committed_base.version));
+    let mut state = State::new(StateDb::new(&mut candidate))?;
 
     for control in &self.controls {
       apply_control(&mut state, control)?;
     }
 
-    // The fork currently exposes non-committing StateDb root preparation
-    // through this genesis-named wrapper; it does not bind an epoch identity.
-    let root = state.compute_state_root_for_genesis(None)?;
-    let version = state_receiver
-      .prepared_state()
-      .expect("state root preparation must hand off its immutable version");
+    state.apply_changes_to_storage(None)?;
+    drop(state);
 
-    assert_eq!(
-      version.root_with_aux_info(),
-      root,
-      "prepared state must match the computed root",
-    );
-
-    Ok(version)
+    Ok(Arc::new(candidate.into_version()))
   }
 }
 
 fn apply_control(
-  state: &mut State,
+  state: &mut State<'_>,
   control: &StateControl,
 ) -> Result<(), StateControlPreparationError> {
   match control {

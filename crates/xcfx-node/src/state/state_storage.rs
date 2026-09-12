@@ -1,93 +1,27 @@
-//! Adapts layered in-memory MPT state to Conflux StateTrait.
+//! Conflux state storage access over private MPT candidates.
 
-use std::sync::{Arc, OnceLock};
+use cfx_storage_types::{MptKeyValue, Result, StateStorage};
+use primitives::{MptValue, SkipInputCheck, StorageKey, StorageKeyWithSpace};
 
-use cfx_internal_common::StateRootWithAuxInfo;
-use cfx_storage_types::{Error, MptKeyValue, Result, StateTrait};
-use primitives::{EpochId, MptValue, SkipInputCheck, StorageKey, StorageKeyWithSpace};
+use super::state_version::StateCandidate;
 
-use super::state_version::{
-  CommittedStateVersion, StateCandidate, StateVersion, StateVersionReceiver,
-};
-
-enum StateLifecycle {
-  Writable(StateCandidate),
-  Prepared(Arc<StateVersion>),
-  Committed,
-}
-
-pub(super) struct LayeredMptState {
-  lifecycle: StateLifecycle,
-  committed_state: Arc<OnceLock<CommittedStateVersion>>,
-  prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
-}
-
-impl LayeredMptState {
-  pub(super) fn new(candidate: StateCandidate) -> (Self, StateVersionReceiver) {
-    let committed_state = Arc::new(OnceLock::new());
-    let prepared_state = Arc::new(OnceLock::new());
-
-    let state = Self {
-      lifecycle: StateLifecycle::Writable(candidate),
-      committed_state: Arc::clone(&committed_state),
-      prepared_state: Arc::clone(&prepared_state),
-    };
-
-    (
-      state,
-      StateVersionReceiver {
-        committed_state,
-        prepared_state,
-      },
-    )
+impl StateStorage for StateCandidate {
+  fn get(&self, key: StorageKeyWithSpace<'_>) -> Result<Option<Box<[u8]>>> {
+    Ok(StateCandidate::get(self, key).map(Box::<[u8]>::from))
   }
 
-  fn read(&self, key: StorageKeyWithSpace<'_>) -> Option<&[u8]> {
-    match &self.lifecycle {
-      StateLifecycle::Writable(candidate) => candidate.get(key),
-      StateLifecycle::Prepared(version) => version.get(key),
-      StateLifecycle::Committed => panic!("state read is not allowed after commit"),
-    }
-  }
-
-  fn visit_visible_prefix<'a>(
-    &'a self,
-    prefix: StorageKeyWithSpace<'_>,
-    visitor: impl FnMut(Vec<u8>, &'a [u8]),
-  ) {
-    match &self.lifecycle {
-      StateLifecycle::Writable(candidate) => candidate.visit_visible_prefix(prefix, visitor),
-      StateLifecycle::Prepared(version) => version.visit_visible_prefix(prefix, visitor),
-      StateLifecycle::Committed => panic!("state read is not allowed after commit"),
-    }
-  }
-
-  fn writable_mut(&mut self) -> &mut StateCandidate {
-    let StateLifecycle::Writable(candidate) = &mut self.lifecycle else {
-      panic!("state mutation requires the writable lifecycle");
-    };
-
-    candidate
-  }
-}
-
-impl StateTrait for LayeredMptState {
-  fn get(&self, key: StorageKeyWithSpace) -> Result<Option<Box<[u8]>>> {
-    Ok(self.read(key).map(Box::<[u8]>::from))
-  }
-
-  fn set(&mut self, key: StorageKeyWithSpace, value: Box<[u8]>) -> Result<()> {
-    self.writable_mut().set(key, value);
+  fn set(&mut self, key: StorageKeyWithSpace<'_>, value: Box<[u8]>) -> Result<()> {
+    StateCandidate::set(self, key, value);
     Ok(())
   }
 
-  fn delete(&mut self, key: StorageKeyWithSpace) -> Result<()> {
-    self.writable_mut().delete(key);
+  fn delete(&mut self, key: StorageKeyWithSpace<'_>) -> Result<()> {
+    StateCandidate::delete(self, key);
     Ok(())
   }
 
-  fn delete_test_only(&mut self, key: StorageKeyWithSpace) -> Result<Option<Box<[u8]>>> {
-    let value = match self.writable_mut().remove_current_entry(key) {
+  fn delete_test_only(&mut self, key: StorageKeyWithSpace<'_>) -> Result<Option<Box<[u8]>>> {
+    let value = match self.remove_current_entry(key) {
       MptValue::None => None,
       MptValue::TombStone => Some(Box::<[u8]>::default()),
       MptValue::Some(value) => Some(value),
@@ -96,8 +30,8 @@ impl StateTrait for LayeredMptState {
     Ok(value)
   }
 
-  fn delete_all(&mut self, prefix: StorageKeyWithSpace) -> Result<Option<Vec<MptKeyValue>>> {
-    let deleted = self.writable_mut().delete_prefix(prefix);
+  fn delete_all(&mut self, prefix: StorageKeyWithSpace<'_>) -> Result<Option<Vec<MptKeyValue>>> {
+    let deleted = self.delete_prefix(prefix);
 
     Ok(if deleted.is_empty() {
       None
@@ -105,7 +39,8 @@ impl StateTrait for LayeredMptState {
       Some(deleted)
     })
   }
-  fn read_all(&mut self, prefix: StorageKeyWithSpace) -> Result<Option<Vec<MptKeyValue>>> {
+
+  fn read_all(&mut self, prefix: StorageKeyWithSpace<'_>) -> Result<Option<Vec<MptKeyValue>>> {
     let mut entries = Vec::new();
 
     self.visit_visible_prefix(prefix, |key, value| {
@@ -121,7 +56,7 @@ impl StateTrait for LayeredMptState {
 
   fn read_all_with_callback(
     &mut self,
-    prefix: StorageKeyWithSpace,
+    prefix: StorageKeyWithSpace<'_>,
     callback: &mut dyn FnMut(MptKeyValue),
     only_account_key: bool,
   ) -> Result<()> {
@@ -140,73 +75,15 @@ impl StateTrait for LayeredMptState {
 
     Ok(())
   }
-
-  fn compute_state_root(&mut self) -> Result<StateRootWithAuxInfo> {
-    let lifecycle = std::mem::replace(&mut self.lifecycle, StateLifecycle::Committed);
-
-    let version = match lifecycle {
-      StateLifecycle::Writable(candidate) => Arc::new(candidate.into_version()),
-      StateLifecycle::Prepared(version) => version,
-      StateLifecycle::Committed => {
-        panic!("state root computation is not allowed after commit")
-      }
-    };
-
-    let root = version.root_with_aux_info();
-
-    let prepared = self.prepared_state.get_or_init(|| Arc::clone(&version));
-
-    assert!(
-      Arc::ptr_eq(prepared, &version),
-      "prepared state handoff must remain tied to one state version",
-    );
-
-    self.lifecycle = StateLifecycle::Prepared(version);
-
-    Ok(root)
-  }
-
-  fn get_state_root(&self) -> Result<StateRootWithAuxInfo> {
-    match &self.lifecycle {
-      StateLifecycle::Writable(_) => Err(Error::StateCommitWithoutMerkleHash),
-      StateLifecycle::Prepared(version) => Ok(version.root_with_aux_info()),
-      StateLifecycle::Committed => {
-        panic!("state root access is not allowed after commit")
-      }
-    }
-  }
-
-  fn commit(&mut self, epoch_id: EpochId) -> Result<StateRootWithAuxInfo> {
-    let version = match &self.lifecycle {
-      StateLifecycle::Prepared(version) => Arc::clone(version),
-      StateLifecycle::Writable(_) => {
-        panic!("state commit requires a prepared state root")
-      }
-      StateLifecycle::Committed => panic!("state commit may only happen once"),
-    };
-
-    let root = version.root_with_aux_info();
-    let committed_state = CommittedStateVersion { epoch_id, version };
-
-    assert!(
-      self.committed_state.set(committed_state).is_ok(),
-      "committed state was already handed off"
-    );
-
-    self.lifecycle = StateLifecycle::Committed;
-
-    Ok(root)
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use std::{collections::BTreeMap, sync::Arc};
 
-  use cfx_storage_types::StateTrait;
+  use cfx_storage_types::StateStorage;
   use primitives::{DeltaMptKeyPadding, EpochId, StorageKey, StorageKeyWithSpace};
 
-  use super::LayeredMptState;
   use crate::state::{
     delta_mpt::{DeltaMptEntries, DeltaMptVersion},
     snapshot_mpt::SnapshotMptVersion,
@@ -230,7 +107,7 @@ mod tests {
   }
 
   #[test]
-  fn state_trait_preserves_layered_reads_deletes_and_commit_identity() {
+  fn state_storage_preserves_layered_reads_and_deletes() {
     let address = [0x11; 20];
     let current_slot = [0x01; 32];
     let hidden_slot = [0x02; 32];
@@ -283,7 +160,8 @@ mod tests {
       )),
       Arc::new(DeltaMptVersion::new(current_entries)),
     ));
-    let (mut state, receiver) = LayeredMptState::new(StateCandidate::new(parent));
+    let mut candidate = StateCandidate::new(parent);
+    let state: &mut dyn StateStorage = &mut candidate;
 
     state
       .set(storage_key(&address, &candidate_slot), value(0x33))
@@ -380,32 +258,10 @@ mod tests {
     );
     state.delete(storage_key(&address, &hidden_slot)).unwrap();
 
-    let prepared_root = state.compute_state_root().unwrap();
-    assert_eq!(state.compute_state_root().unwrap(), prepared_root);
-    assert_eq!(state.get_state_root().unwrap(), prepared_root);
-    assert_eq!(
-      state.get(storage_key(&address, &current_slot)).unwrap(),
-      None
-    );
     assert_eq!(state.read_all(storage_prefix(&address)).unwrap(), None);
 
-    let epoch_id = EpochId::from([0x61; 32]);
-    assert_eq!(state.commit(epoch_id).unwrap(), prepared_root);
-
-    let committed = receiver
-      .committed_state()
-      .expect("committed state is handed back to the caller");
-    assert_eq!(committed.epoch_id, epoch_id);
-    assert_eq!(committed.version.root_with_aux_info(), prepared_root);
-    assert_eq!(
-      committed.version.get(storage_key(&address, &current_slot)),
-      None
-    );
-    assert_eq!(
-      committed
-        .version
-        .get(storage_key(&address, &candidate_slot)),
-      None
-    );
+    let version = candidate.into_version();
+    assert_eq!(version.get(storage_key(&address, &current_slot)), None);
+    assert_eq!(version.get(storage_key(&address, &candidate_slot)), None);
   }
 }

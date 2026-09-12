@@ -45,7 +45,7 @@ use std::{
 };
 use thiserror::Error;
 
-use cfx_internal_common::EpochExecutionCommitment;
+use crate::execution::ExecutionCommitment;
 use cfx_parameters::{
   consensus::DEFERRED_STATE_EPOCH_COUNT, staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
 };
@@ -119,7 +119,7 @@ pub(crate) enum RuntimeBlockProductionError {
 pub(crate) struct CommittedEpoch {
   start_block_number: BlockNumber,
   ordered_blocks: Vec<RuntimeBlock>,
-  commitment: EpochExecutionCommitment,
+  commitment: ExecutionCommitment,
   block_receipts: Vec<Arc<BlockReceipts>>,
 }
 impl CommittedEpoch {
@@ -135,7 +135,7 @@ impl CommittedEpoch {
     self.pivot_runtime_block().block()
   }
 
-  pub(crate) fn commitment(&self) -> &EpochExecutionCommitment {
+  pub(crate) fn commitment(&self) -> &ExecutionCommitment {
     &self.commitment
   }
 
@@ -704,7 +704,7 @@ impl CommittedChainHistory {
   fn deferred_commitment_for_header_height(
     &self,
     header_height: BlockHeight,
-  ) -> &EpochExecutionCommitment {
+  ) -> &ExecutionCommitment {
     let deferred_epoch_height = header_height.saturating_sub(DEFERRED_STATE_EPOCH_COUNT);
 
     self
@@ -729,14 +729,13 @@ pub(crate) struct RuntimeCommitOutcome {
   pub(crate) transaction_pool_updates: TransactionPoolUpdates,
 }
 
-fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State> {
-  let (database, _) = version.open_database();
-  State::new(database)
+fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State<'static>> {
+  State::new(version.open_database())
 }
 
 /// Derives declared gas and storage covered by sponsorship for pool readiness.
 fn sponsored_gas_and_storage(
-  state: &State,
+  state: &State<'_>,
   transaction: &RuntimeTransaction,
 ) -> StateResult<(U256, u64)> {
   let Transaction::Native(native_transaction) = transaction.transaction() else {
@@ -1361,7 +1360,7 @@ impl NodeRuntime {
 
   /// Opens the current effective version through Conflux's `State` interface
   /// for reading.
-  fn open_effective_state_for_reading(&self) -> StateResult<State> {
+  fn open_effective_state_for_reading(&self) -> StateResult<State<'static>> {
     open_state_version(self.runtime_state.effective_state.state())
   }
 

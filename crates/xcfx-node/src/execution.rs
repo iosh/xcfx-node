@@ -9,9 +9,8 @@ use cfx_executor::{
   machine::Machine,
   state::State,
 };
-use cfx_internal_common::EpochExecutionCommitment;
 use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
-use cfx_statedb::Result as StateResult;
+use cfx_statedb::{Result as StateResult, StateDb};
 use cfx_types::{H256, U256};
 use cfx_vm_types::{Env, Spec};
 use rlp::Encodable;
@@ -21,8 +20,17 @@ use crate::{
   mpt::indexed_mpt_root,
   pos::CommittedPosState,
   runtime_transaction::RuntimeTransaction,
-  state::state_version::{CommittedStateVersion, StateVersion},
+  state::state_version::{CommittedStateVersion, StateCandidate, StateVersion},
 };
+
+/// Known Header summaries for one execution position.
+/// The state root is absent when no real commitment is available.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExecutionCommitment {
+  pub(crate) state_root: Option<H256>,
+  pub(crate) receipts_root: H256,
+  pub(crate) logs_bloom_hash: H256,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransactionExecutionDisposition {
@@ -46,7 +54,7 @@ impl TransactionExecutionDisposition {
 pub(crate) struct ExecutedSingleBlockEpoch {
   pub(crate) runtime_block: RuntimeBlock,
   pub(crate) state: CommittedStateVersion,
-  pub(crate) commitment: EpochExecutionCommitment,
+  pub(crate) commitment: ExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
   pub(crate) transaction_dispositions: Vec<TransactionExecutionDisposition>,
   pub(crate) accounts_for_txpool: Vec<Account>,
@@ -70,7 +78,7 @@ pub(crate) fn compute_epoch_receipts_root(block_receipts: &[Arc<BlockReceipts>])
 }
 
 fn execute_runtime_transaction(
-  state: &mut State,
+  state: &mut State<'_>,
   env: &Env,
   machine: &Machine,
   spec: &Spec,
@@ -91,7 +99,7 @@ fn execute_runtime_transaction(
 /// # Errors
 ///
 /// Returns state errors from initialization, protocol transitions, transaction
-/// execution, or commit. The private candidate is discarded on failure.
+/// execution, or state writeback. The private candidate is discarded on failure.
 pub(crate) fn execute_single_block_epoch(
   machine: &Machine,
   parent_block: &RuntimeBlock,
@@ -179,8 +187,8 @@ pub(crate) fn execute_single_block_epoch(
     "ordered epoch transactions must match the header commitment",
   );
 
-  let (database, state_receiver) = execution_state.open_database();
-  let mut state = State::new(database)?;
+  let mut candidate = StateCandidate::new(Arc::clone(execution_state));
+  let mut state = State::new(StateDb::new(&mut candidate))?;
 
   before_epoch_execution(&mut state, machine, &epoch_block)?;
 
@@ -249,23 +257,15 @@ pub(crate) fn execute_single_block_epoch(
   // With a stable PoS reference, the full node's post-epoch PoS distribution
   // branch is a no-op for this execution path.
   let epoch_id = epoch_block.hash();
-  let commit_result = state.commit(epoch_id, None)?;
-  let committed_state = state_receiver
-    .committed_state()
-    .expect("a successful state commit must hand off its state version");
+  let accounts_for_txpool = state.apply_changes_to_storage(None)?;
+  drop(state);
 
-  assert_eq!(
-    committed_state.epoch_id, epoch_id,
-    "committed candidate state must use the epoch block identity",
-  );
-  assert_eq!(
-    committed_state.version.root_with_aux_info(),
-    commit_result.state_root,
-    "committed candidate state must match the executor state root",
-  );
+  let version = Arc::new(candidate.into_version());
+  let state_root = version.root_with_aux_info();
+  let committed_state = CommittedStateVersion { epoch_id, version };
 
-  let commitment = EpochExecutionCommitment {
-    state_root_with_aux_info: commit_result.state_root,
+  let commitment = ExecutionCommitment {
+    state_root: Some(state_root.aux_info.state_root_hash),
     receipts_root,
     logs_bloom_hash,
   };
@@ -276,6 +276,6 @@ pub(crate) fn execute_single_block_epoch(
     commitment,
     block_receipts,
     transaction_dispositions,
-    accounts_for_txpool: commit_result.accounts_for_txpool,
+    accounts_for_txpool,
   })
 }

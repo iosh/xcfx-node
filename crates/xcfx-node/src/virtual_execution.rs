@@ -201,7 +201,7 @@ pub(crate) fn execute_virtual_transaction(
 
   let VirtualExecutionOverrides { state, environment } = overrides;
   let executor_overrides = state.into_executor_overrides(transaction_space)?;
-  let (database, _state_receiver) = effective_state.open_database();
+  let database = effective_state.open_database();
   let mut state = if executor_overrides.is_empty() {
     State::new(database)?
   } else {

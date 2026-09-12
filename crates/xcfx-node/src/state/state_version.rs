@@ -2,7 +2,7 @@
 
 use std::{
   collections::{BTreeMap, HashSet},
-  sync::{Arc, OnceLock},
+  sync::Arc,
 };
 
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
@@ -14,7 +14,6 @@ use primitives::{
 
 use super::{
   delta_mpt::{CurrentDeltaCandidate, DeltaMptVersion},
-  layered_mpt_state::LayeredMptState,
   snapshot_mpt::SnapshotMptVersion,
   state_proof::StateProof,
 };
@@ -82,15 +81,12 @@ impl StateVersion {
     )
   }
 
-  /// Opens an isolated writable database and the receiver for its resulting version.
+  /// Opens an owned, isolated database for reads or temporary execution.
   ///
-  /// Opening does not read state. Preparation and commit hand off immutable
-  /// versions through the receiver; publication remains the caller's responsibility.
-  pub(crate) fn open_database(self: &Arc<Self>) -> (StateDb, StateVersionReceiver) {
-    let candidate = StateCandidate::new(Arc::clone(self));
-    let (backend, receiver) = LayeredMptState::new(candidate);
-
-    (StateDb::new(Box::new(backend)), receiver)
+  /// To retain a resulting version, keep a `StateCandidate` and borrow it through
+  /// `StateDb::new` instead. Opening does not read state or modify this version.
+  pub(crate) fn open_database(self: &Arc<Self>) -> StateDb<'static> {
+    StateDb::from_owned(Box::new(StateCandidate::new(Arc::clone(self))))
   }
 
   /// Rotates the three Conflux state layers at a snapshot boundary.
@@ -303,24 +299,6 @@ impl StateVersion {
 pub(crate) struct CommittedStateVersion {
   pub(crate) epoch_id: EpochId,
   pub(crate) version: Arc<StateVersion>,
-}
-
-/// Receives prepared and committed versions from one opened database.
-pub(crate) struct StateVersionReceiver {
-  pub(super) committed_state: Arc<OnceLock<CommittedStateVersion>>,
-  pub(super) prepared_state: Arc<OnceLock<Arc<StateVersion>>>,
-}
-
-impl StateVersionReceiver {
-  /// Returns the immutable version produced by successful preparation.
-  pub(crate) fn prepared_state(&self) -> Option<Arc<StateVersion>> {
-    self.prepared_state.get().cloned()
-  }
-
-  /// Returns the version handed off by a successful backend commit.
-  pub(crate) fn committed_state(&self) -> Option<CommittedStateVersion> {
-    self.committed_state.get().cloned()
-  }
 }
 
 fn visit_visible_delta_entry<'a>(

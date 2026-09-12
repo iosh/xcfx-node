@@ -1,9 +1,9 @@
+use crate::execution::ExecutionCommitment;
 use crate::{
   mpt::indexed_mpt_root, production_environment::PreparedProductionEnvironment,
   runtime_transaction::RuntimeTransaction, transaction_selector::BlockTransactionSelection,
 };
 use cfx_executor::spec::CommonParams;
-use cfx_internal_common::EpochExecutionCommitment;
 use cfx_types::U256;
 use primitives::{Block, BlockHeader, BlockHeaderBuilder, Cip112TransitionHeight};
 
@@ -178,7 +178,7 @@ pub(crate) fn produce_block(
   selection: BlockTransactionSelection,
   params: &CommonParams,
   prepared_environment: PreparedProductionEnvironment,
-  deferred_commitment: &EpochExecutionCommitment,
+  deferred_commitment: &ExecutionCommitment,
 ) -> RuntimeBlock {
   let epoch_height = selection.epoch_height();
   let block_gas_limit = prepared_environment.block_gas_limit();
@@ -199,12 +199,7 @@ pub(crate) fn produce_block(
     .with_timestamp(prepared_environment.timestamp())
     .with_author(prepared_environment.author())
     .with_transactions_root(transactions_root)
-    .with_deferred_state_root(
-      deferred_commitment
-        .state_root_with_aux_info
-        .aux_info
-        .state_root_hash,
-    )
+    .with_deferred_state_root(deferred_commitment.state_root.unwrap_or_default())
     .with_deferred_receipts_root(deferred_commitment.receipts_root)
     .with_deferred_logs_bloom_hash(deferred_commitment.logs_bloom_hash)
     .with_blame(0)
