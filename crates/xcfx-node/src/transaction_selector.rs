@@ -18,7 +18,7 @@ use primitives::{
 };
 
 use crate::{
-  block_producer::RuntimeBlock,
+  block_producer::BlockParent,
   runtime_transaction::RuntimeTransaction,
   transaction_ingress::TransactionValidationContext,
   transaction_pool::{AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry},
@@ -209,15 +209,14 @@ impl TransactionSelection {
 
 pub(crate) fn select_transactions(
   input: &PoolSelectionInput,
-  parent: &RuntimeBlock,
+  parent: &BlockParent,
   params: &CommonParams,
   validation: &TransactionValidationContext<'_>,
   block_gas_limit: U256,
   limits: TransactionSelectionLimits,
 ) -> TransactionSelection {
   let epoch_height = parent
-    .header()
-    .height()
+    .height
     .checked_add(1)
     .expect("a parent block must permit a subsequent height");
 
@@ -235,8 +234,7 @@ pub(crate) fn select_transactions(
     params.init_base_price()
   } else {
     parent
-      .header()
-      .base_price()
+      .base_price
       .expect("a post-CIP-1559 parent must contain base prices")
   };
 

@@ -196,7 +196,9 @@ fn execute_genesis_inner(
   drop(state);
 
   let version = Arc::new(candidate.into_version());
-  let state_root = version.root_with_aux_info();
+  let state_root = version
+    .root_with_aux_info()
+    .expect("local Genesis must produce a complete MPT state");
 
   let transaction_hashes = transactions
     .iter()
@@ -480,7 +482,7 @@ mod tests {
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     production_environment::ProductionDefaults,
-    runtime::{CheckpointPolicy, NodeRuntime},
+    runtime::{CheckpointPolicy, NodeRuntime, RuntimeConfig},
     transaction_pool::TransactionPoolPolicy,
   };
 
@@ -703,7 +705,11 @@ mod tests {
       "committed Genesis epoch identity changed",
     );
     assert_eq!(
-      genesis.committed_state.version.root_with_aux_info(),
+      genesis
+        .committed_state
+        .version
+        .root_with_aux_info()
+        .expect("Genesis has an MPT root"),
       expected_state_root,
       "committed Genesis state does not match execution output",
     );
@@ -854,34 +860,42 @@ mod tests {
     let (machine, header) = conflux_compatibility_protocol();
 
     let mut runtime = NodeRuntime::from_genesis(
-      Arc::new(ChainSpec::new(
-        machine.params().clone(),
-        PosParameters::default(),
-        machine.vm_factory(),
-      )),
+      RuntimeConfig {
+        chain_spec: Arc::new(ChainSpec::new(
+          machine.params().clone(),
+          PosParameters::default(),
+          machine.vm_factory(),
+        )),
+        production_defaults: ProductionDefaults::new(1),
+        transaction_pool_policy: TransactionPoolPolicy::new(1_024),
+        checkpoint_policy: CheckpointPolicy::new(1),
+      },
       conflux_compatibility_allocations(),
       header,
       definition,
-      ProductionDefaults::new(1),
-      TransactionPoolPolicy::new(1_024),
-      CheckpointPolicy::new(1),
     )
     .expect("the fixed PoS Genesis must execute");
 
     let sender = DEV_GENESIS_KEY_PAIR.address().with_native_space();
     let receiver = DEV_GENESIS_KEY_PAIR_2.address().with_native_space();
 
-    let parent_view = runtime.optimistic_view();
+    let parent_view = runtime.optimistic_head();
     let parent_state = open_committed_state(&parent_view.state().version);
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
-    let block = first_core_transfer_block(machine.as_ref(), parent_view.epoch().pivot_block());
+    let parent_epoch = parent_view
+      .executed_epoch()
+      .expect("Local Genesis must contain a locally executed epoch");
+    let block = first_core_transfer_block(machine.as_ref(), parent_epoch.pivot_block());
     let commit_outcome = runtime
       .execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block))
       .expect("the fixed Core transfer block must execute");
-    let executed_view = runtime.optimistic_view();
+    let executed_view = runtime.optimistic_head();
+    let executed_epoch = executed_view
+      .executed_epoch()
+      .expect("local block execution must retain its epoch artifacts");
 
-    let receipts = &executed_view.epoch().block_receipts()[0];
+    let receipts = &executed_epoch.block_receipts()[0];
     assert_eq!(receipts.receipts.len(), 1);
     assert_eq!(
       receipts.receipts[0].outcome_status,
@@ -899,7 +913,7 @@ mod tests {
         .is_empty(),
     );
 
-    let executed_block = executed_view.epoch().pivot_block();
+    let executed_block = executed_epoch.pivot_block();
     assert_eq!(
       executed_block.hash(),
       H256(hex!(
@@ -913,7 +927,7 @@ mod tests {
       )),
     );
 
-    let commitment = executed_view.epoch().commitment();
+    let commitment = executed_epoch.commitment();
     assert_eq!(
       commitment.receipts_root,
       H256(hex!(

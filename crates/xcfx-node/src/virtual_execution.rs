@@ -20,9 +20,8 @@ use primitives::{BlockNumber, SignedTransaction, Transaction, transaction::Trans
 use thiserror::Error;
 
 use crate::{
-  block_producer::RuntimeBlock, pos::CommittedPosState,
-  runtime_transaction::fake_sign_for_execution, state::state_version::StateVersion,
-  transaction_ingress::TransactionValidationContext,
+  block_producer::BlockParent, pos::PosContext, runtime_transaction::fake_sign_for_execution,
+  state::state_version::StateVersion, transaction_ingress::TransactionValidationContext,
 };
 
 /// A fully resolved transaction and the sender to use for this execution.
@@ -173,13 +172,16 @@ pub(crate) enum VirtualExecutionError {
 
   #[error("the Native state override address has invalid type bits: {0:?}")]
   InvalidNativeOverrideAddress(Address),
+
+  #[error("the parent epoch height cannot advance for virtual execution")]
+  EpochHeightExhausted,
 }
 
 /// Executes against a private state candidate and discards every state change.
 pub(crate) fn execute_virtual_transaction(
   machine: &Machine,
-  parent_block: &RuntimeBlock,
-  parent_pos_state: &CommittedPosState,
+  parent_block: &BlockParent,
+  parent_pos_context: &PosContext,
   effective_state: &Arc<StateVersion>,
   block_number: BlockNumber,
   request: VirtualExecutionRequest,
@@ -189,10 +191,9 @@ pub(crate) fn execute_virtual_transaction(
   let transaction_space = signed_transaction.space();
 
   let epoch_height = parent_block
-    .header()
-    .height()
+    .height
     .checked_add(1)
-    .expect("a committed parent must permit a virtual execution height");
+    .ok_or(VirtualExecutionError::EpochHeightExhausted)?;
   let params = machine.params();
   let execution_block_number = overrides.environment.number.unwrap_or(block_number);
   let spec = machine.spec(execution_block_number, epoch_height);
@@ -208,25 +209,20 @@ pub(crate) fn execute_virtual_transaction(
     State::new_with_override(database, &executor_overrides, transaction_space)?
   };
 
-  let pos_reference = parent_block
-    .header()
-    .pos_reference()
-    .as_ref()
-    .expect("a committed parent block must contain a PoS reference");
-  let pos_env = parent_pos_state
-    .env_input(pos_reference)
-    .expect("committed PoS state must contain the parent block reference");
-  let base_gas_price = parent_block.header().base_price().unwrap_or_default();
+  let pos_env = parent_pos_context
+    .env_input(&parent_block.pos_reference)
+    .expect("committed PoS context must contain the parent block reference");
+  let base_gas_price = parent_block.base_price.unwrap_or_default();
   let burnt_gas_price = base_gas_price.map_all(|price| state.burnt_gas_price(price));
 
   let mut env = Env {
     chain_id: params.chain_id_map(epoch_height),
     number: block_number,
-    author: *parent_block.header().author(),
-    timestamp: parent_block.header().timestamp(),
+    author: parent_block.author,
+    timestamp: parent_block.timestamp,
     difficulty: U256::zero(),
     gas_limit: *signed_transaction.gas(),
-    last_hash: parent_block.hash(),
+    last_hash: parent_block.hash,
     accumulated_gas_used: U256::zero(),
     epoch_height,
     pos_view: Some(pos_env.pos_view),

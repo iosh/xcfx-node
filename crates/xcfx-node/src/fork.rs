@@ -1,4 +1,16 @@
-//! Loads the remote starting point for a local fork.
+//! Fixed remote baselines and shared reads for local fork execution.
+
+mod cache;
+mod client;
+mod rpc;
+mod service;
+
+pub(crate) use cache::ForkCacheConfig;
+pub(crate) use client::ForkClient;
+pub(crate) use rpc::ForkRpc;
+pub(crate) use service::ForkReadTask;
+
+use std::{fmt, sync::Arc};
 
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::BlockNumberOrTag;
@@ -7,8 +19,8 @@ use cfx_parameters::{
   RATIO_BASE_TEN,
   block::{CIP1559_CORE_TRANSACTION_GAS_RATIO, CIP1559_ESPACE_TRANSACTION_GAS_RATIO},
 };
-use cfx_rpc_cfx_types::{Block as CoreBlock, EpochNumber};
-use cfx_types::{H256, SpaceMap, U256, U512};
+use cfx_rpc_cfx_types::{Block as CoreBlock, EpochNumber, Receipt};
+use cfx_types::{Address, H256, SpaceMap, U256, U512};
 use diem_types::block_info::PivotBlockDecision;
 use primitives::{BlockNumber, block::BlockHeight, pos::PosBlockId};
 use thiserror::Error;
@@ -27,6 +39,12 @@ pub(crate) enum ForkEpoch {
   Number(BlockHeight),
 }
 
+/// The remote epoch and cache policy for one fork.
+pub(crate) struct ForkConfig {
+  pub(crate) epoch: ForkEpoch,
+  pub(crate) cache: ForkCacheConfig,
+}
+
 /// A remote pivot and the parent inputs needed to extend it locally.
 #[derive(Debug)]
 pub(crate) struct ForkBase {
@@ -36,6 +54,7 @@ pub(crate) struct ForkBase {
   /// Core counts all ordered blocks, so this can exceed the epoch height.
   pub(crate) pivot_block_number: BlockNumber,
   pub(crate) timestamp: u64,
+  pub(crate) author: Address,
   /// The lower bound recovered from RPC, within one gas of the remote header.
   pub(crate) header_gas_limit: U256,
   pub(crate) base_price: Option<SpaceMap<U256>>,
@@ -44,7 +63,54 @@ pub(crate) struct ForkBase {
   pub(crate) pivot_decision: PivotBlockDecision,
 }
 
-#[derive(Debug, Error)]
+/// Remote epoch receipts in block execution order, tied to the queried pivot.
+///
+/// `receipts[i]` belongs to `block_hashes[i]`, including blocks with no receipts.
+pub(crate) struct ForkEpochReceipts {
+  pub(crate) pivot_hash: H256,
+  pub(crate) block_hashes: Vec<H256>,
+  pub(crate) receipts: Vec<Vec<Receipt>>,
+}
+
+/// Display and Debug omit raw RPC errors; the source retains the original cause.
+#[derive(Clone, Error)]
+pub(crate) enum ForkReadError {
+  #[error("remote RPC request failed")]
+  Rpc(#[source] Arc<TransportError>),
+
+  #[error("fork read service is closed")]
+  Closed,
+
+  #[error("fork read service stopped unexpectedly")]
+  ServiceStopped,
+
+  #[error("fork data unavailable: {0}")]
+  Unavailable(&'static str),
+
+  #[error("inconsistent fork response: {0}")]
+  Inconsistent(&'static str),
+
+  #[error("fork value exceeds the supported range: {0}")]
+  OutOfRange(&'static str),
+
+  #[error("unsupported fork read: {0}")]
+  Unsupported(&'static str),
+}
+
+impl From<TransportError> for ForkReadError {
+  fn from(error: TransportError) -> Self {
+    Self::Rpc(Arc::new(error))
+  }
+}
+
+impl fmt::Debug for ForkReadError {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(self, formatter)
+  }
+}
+
+/// Display and Debug omit raw RPC errors; the source retains the original cause.
+#[derive(Error)]
 pub(crate) enum ForkLoadError {
   #[error("remote RPC request failed")]
   Rpc(#[from] TransportError),
@@ -65,13 +131,18 @@ pub(crate) enum ForkLoadError {
   Unsupported(&'static str),
 }
 
+impl fmt::Debug for ForkLoadError {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(self, formatter)
+  }
+}
+
 /// Loads a fixed remote epoch and the parent inputs for local execution.
 ///
-/// The caller selects the local execution rules and checks any expected network
-/// identity before starting a runtime.
+/// `LatestState` is resolved once. Core and eSpace must identify the same pivot.
 ///
+/// # Errors
 /// Returns an error if required data is unavailable, inconsistent, or unsupported.
-/// No runtime is created or modified.
 pub(crate) async fn load_fork_base(
   rpc: &ConfluxRpcClient,
   epoch: ForkEpoch,
@@ -104,7 +175,10 @@ pub(crate) async fn load_fork_base(
     .ok_or(ForkLoadError::MissingField("Core blockNumber"))?;
   let block_number = BlockNumber::try_from(block_number)
     .map_err(|_| ForkLoadError::OutOfRange("Core blockNumber"))?;
-  if epoch_height == BlockHeight::MAX || block_number == BlockNumber::MAX {
+  // The first local epoch and block each advance by one.
+  // BlockReceipts preserves Conflux's historical extra increment, so the
+  // first local execution needs room for two block-number increments.
+  if epoch_height == BlockHeight::MAX || block_number.checked_add(2).is_none() {
     return Err(ForkLoadError::Unsupported(
       "fork epoch or block number cannot advance",
     ));
@@ -160,6 +234,7 @@ pub(crate) async fn load_fork_base(
     pivot_hash: pivot.hash,
     pivot_block_number: block_number,
     timestamp,
+    author: pivot.miner.hex_address,
     header_gas_limit,
     base_price,
     pos_reference,

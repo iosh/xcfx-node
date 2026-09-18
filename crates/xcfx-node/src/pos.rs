@@ -1,4 +1,6 @@
 //! Applies one deterministic Conflux PoS view transition.
+use std::sync::Arc;
+
 use cfx_types::{Address, H256};
 use diem_crypto::{HashValue, traits::VRFProof};
 use diem_types::{
@@ -20,10 +22,33 @@ use primitives::{pos::PosBlockId, transaction::native_transaction::NativeTransac
 
 pub(crate) const GENESIS_POS_REFERENCE: PosBlockId = H256([0; 32]);
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PosEnvInput {
   pub(crate) pos_view: u64,
   pub(crate) finalized_epoch: u64,
+}
+
+/// Execution can use a complete local PoS state or a fixed remote environment.
+/// A fixed environment cannot be used to advance the PoS state machine.
+#[derive(Clone)]
+pub(crate) enum PosContext {
+  Full(Arc<CommittedPosState>),
+  Fixed {
+    reference: PosBlockId,
+    environment: PosEnvInput,
+  },
+}
+
+impl PosContext {
+  pub(crate) fn env_input(&self, reference: &PosBlockId) -> Option<PosEnvInput> {
+    match self {
+      Self::Full(state) => state.env_input(reference),
+      Self::Fixed {
+        reference: fixed,
+        environment,
+      } => (*reference == *fixed).then_some(*environment),
+    }
+  }
 }
 
 pub(crate) struct PosTransitionInput<'a> {

@@ -1,13 +1,38 @@
+use std::time::Duration;
+
 use alloy_provider::RootProvider;
-use alloy_rpc_client::RpcClient;
-use alloy_transport::TransportResult;
+use alloy_rpc_client::{ClientBuilder, RpcClient};
+use alloy_transport::{TransportResult, layers::RetryBackoffLayer};
 use cfx_rpc_cfx_types::{
-  Account, Block, BlockHashOrEpochNumber, Bytes, EpochNumber, PoSEconomics, RpcAddress,
+  Account, Block, BlockHashOrEpochNumber, Bytes, EpochNumber, PoSEconomics, Receipt, RpcAddress,
   SponsorInfo, Status, StorageCollateralInfo, TokenSupplyInfo, VoteParamsInfo,
 };
 use cfx_types::{H256, U64, U256};
 use primitives::{DepositInfo, VoteStakeInfo};
 use serde::Deserialize;
+
+/// HTTP timeout and retry policy shared by the Core and eSpace endpoints.
+#[derive(Debug)]
+pub(crate) struct HttpRpcConfig {
+  /// Timeout for one HTTP attempt, including its complete response body.
+  /// Retry delays and subsequent attempts are outside this timeout.
+  pub(crate) request_timeout: Duration,
+  /// Retries after the initial attempt, for errors Alloy marks as retryable.
+  /// Zero disables retries.
+  pub(crate) max_retries: u32,
+  /// Fallback delay between retries in milliseconds; remote hints take precedence.
+  pub(crate) retry_backoff_ms: u64,
+}
+
+impl Default for HttpRpcConfig {
+  fn default() -> Self {
+    Self {
+      request_timeout: Duration::from_secs(45),
+      max_retries: 5,
+      retry_backoff_ms: 1_000,
+    }
+  }
+}
 
 /// RPC connections for Conflux Core Space, PoS, and eSpace.
 #[derive(Clone)]
@@ -19,11 +44,45 @@ pub(crate) struct ConfluxRpcClient {
 // Keep protocol method names at the RPC boundary.
 #[allow(non_snake_case)]
 impl ConfluxRpcClient {
+  /// Uses caller-configured transports, including their timeout and retry policy.
   pub(crate) fn new(core: RpcClient, espace: RpcClient) -> Self {
     Self {
       core,
       espace: RootProvider::new(espace),
     }
+  }
+
+  /// Builds HTTP clients for both endpoints with the supplied timeout and retry policy.
+  /// No RPC requests are sent during construction.
+  ///
+  /// # Errors
+  /// Returns the underlying error if the HTTP client cannot be built.
+  pub(crate) fn http(
+    core: reqwest::Url,
+    espace: reqwest::Url,
+    config: &HttpRpcConfig,
+  ) -> Result<Self, reqwest::Error> {
+    let http = reqwest::Client::builder()
+      .timeout(config.request_timeout)
+      // Alloy owns retries; disable reqwest's independent retry policy.
+      .retry(reqwest::retry::never())
+      .build()?;
+    let rpc = |url| {
+      let builder = ClientBuilder::default();
+      if config.max_retries == 0 {
+        builder.http_with_client(http.clone(), url)
+      } else {
+        builder
+          .layer(RetryBackoffLayer::new(
+            config.max_retries,
+            config.retry_backoff_ms,
+            // Do not add a provider-specific compute-unit delay.
+            u64::MAX,
+          ))
+          .http_with_client(http.clone(), url)
+      }
+    };
+    Ok(Self::new(rpc(core), rpc(espace)))
   }
 
   pub(crate) async fn cfx_getBlocksByEpoch(
@@ -45,6 +104,17 @@ impl ConfluxRpcClient {
         "cfx_getBlockByHashWithPivotAssumption",
         (hash, pivot, epoch),
       )
+      .await
+  }
+
+  pub(crate) async fn cfx_getEpochReceipts(
+    &self,
+    epoch: BlockHashOrEpochNumber,
+    include_espace: bool,
+  ) -> TransportResult<Option<Vec<Vec<Receipt>>>> {
+    self
+      .core
+      .request("cfx_getEpochReceipts", (epoch, include_espace))
       .await
   }
 

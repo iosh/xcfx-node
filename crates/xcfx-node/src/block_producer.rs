@@ -4,8 +4,40 @@ use crate::{
   runtime_transaction::RuntimeTransaction, transaction_selector::BlockTransactionSelection,
 };
 use cfx_executor::spec::CommonParams;
-use cfx_types::U256;
-use primitives::{Block, BlockHeader, BlockHeaderBuilder, Cip112TransitionHeight};
+use cfx_types::{Address, H256, SpaceMap, U256};
+use primitives::{
+  Block, BlockHeader, BlockHeaderBuilder, Cip112TransitionHeight, block::BlockHeight,
+  pos::PosBlockId,
+};
+
+/// Inputs needed to extend a local block or a fixed remote pivot.
+/// The remote hash is preserved without reconstructing a header or block body.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockParent {
+  pub(crate) hash: H256,
+  pub(crate) height: BlockHeight,
+  pub(crate) timestamp: u64,
+  pub(crate) author: Address,
+  pub(crate) gas_limit: U256,
+  pub(crate) base_price: Option<SpaceMap<U256>>,
+  pub(crate) pos_reference: PosBlockId,
+}
+
+impl BlockParent {
+  pub(crate) fn from_header(header: &BlockHeader) -> Self {
+    Self {
+      hash: header.hash(),
+      height: header.height(),
+      timestamp: header.timestamp(),
+      author: *header.author(),
+      gas_limit: *header.gas_limit(),
+      base_price: header.base_price(),
+      pos_reference: header
+        .pos_reference()
+        .expect("a committed execution parent must contain a PoS reference"),
+    }
+  }
+}
 
 /// A Runtime block keeps local transaction identity separate from the
 /// optional standard fork representation.
@@ -174,7 +206,7 @@ impl RuntimeBlock {
 
 /// Constructs one linear block without executing or committing it.
 pub(crate) fn produce_block(
-  parent: &RuntimeBlock,
+  parent: &BlockParent,
   selection: BlockTransactionSelection,
   params: &CommonParams,
   prepared_environment: PreparedProductionEnvironment,
@@ -194,7 +226,7 @@ pub(crate) fn produce_block(
 
   let custom = params.custom_prefix(epoch_height).unwrap_or_default();
   let block_header = BlockHeaderBuilder::new()
-    .with_parent_hash(parent.hash())
+    .with_parent_hash(parent.hash)
     .with_height(epoch_height)
     .with_timestamp(prepared_environment.timestamp())
     .with_author(prepared_environment.author())
@@ -209,7 +241,7 @@ pub(crate) fn produce_block(
     .with_referee_hashes(Vec::new())
     .with_custom(custom)
     .with_nonce(U256::zero())
-    .with_pos_reference(parent.header().pos_reference().to_owned())
+    .with_pos_reference(Some(parent.pos_reference))
     .with_base_price(Some(base_price))
     .build_with_cip112(Cip112TransitionHeight::new(
       params.transition_heights.cip112,

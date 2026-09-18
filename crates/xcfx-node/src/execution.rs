@@ -16,9 +16,9 @@ use cfx_vm_types::{Env, Spec};
 use rlp::Encodable;
 
 use crate::{
-  block_producer::RuntimeBlock,
+  block_producer::{BlockParent, RuntimeBlock},
   mpt::indexed_mpt_root,
-  pos::CommittedPosState,
+  pos::PosContext,
   runtime_transaction::RuntimeTransaction,
   state::state_version::{CommittedStateVersion, StateCandidate, StateVersion},
 };
@@ -102,10 +102,10 @@ fn execute_runtime_transaction(
 /// execution, or state writeback. The private candidate is discarded on failure.
 pub(crate) fn execute_single_block_epoch(
   machine: &Machine,
-  parent_block: &RuntimeBlock,
+  parent_block: &BlockParent,
   parent_state: &CommittedStateVersion,
   execution_state: &Arc<StateVersion>,
-  parent_pos_state: &CommittedPosState,
+  parent_pos_context: &PosContext,
   block_number: BlockNumber,
   runtime_block: RuntimeBlock,
 ) -> StateResult<ExecutedSingleBlockEpoch> {
@@ -136,7 +136,7 @@ pub(crate) fn execute_single_block_epoch(
     }
   }
 
-  let parent_hash = parent_block.hash();
+  let parent_hash = parent_block.hash;
 
   assert_eq!(
     parent_state.epoch_id, parent_hash,
@@ -149,8 +149,7 @@ pub(crate) fn execute_single_block_epoch(
   );
 
   let expected_height = parent_block
-    .header()
-    .height()
+    .height
     .checked_add(1)
     .expect("a committed parent height must permit a child block");
   assert_eq!(
@@ -159,18 +158,13 @@ pub(crate) fn execute_single_block_epoch(
     "ordered epoch block height must follow the parent height",
   );
 
-  let parent_pos_reference = parent_block
-    .header()
-    .pos_reference()
-    .as_ref()
-    .expect("a committed parent block must contain a PoS reference");
-  let pos_env = parent_pos_state
-    .env_input(parent_pos_reference)
-    .expect("committed PoS state must contain the parent block reference");
+  let pos_env = parent_pos_context
+    .env_input(&parent_block.pos_reference)
+    .expect("committed PoS context must contain the parent block reference");
 
   assert_eq!(
     epoch_block.block_header.pos_reference(),
-    parent_block.header().pos_reference(),
+    &Some(parent_block.pos_reference),
     "the initial ordered execution path requires a stable PoS reference",
   );
 
@@ -245,7 +239,9 @@ pub(crate) fn execute_single_block_epoch(
   // Match the full node's historical BlockReceipts numbering behavior.
   let block_receipt = Arc::new(BlockReceipts {
     receipts,
-    block_number: block_number + 1,
+    block_number: block_number
+      .checked_add(1)
+      .expect("the executed Core block number must permit its receipt collection number"),
     secondary_reward,
     tx_execution_error_messages: execution_errors,
   });
@@ -265,7 +261,7 @@ pub(crate) fn execute_single_block_epoch(
   let committed_state = CommittedStateVersion { epoch_id, version };
 
   let commitment = ExecutionCommitment {
-    state_root: Some(state_root.aux_info.state_root_hash),
+    state_root: state_root.map(|root| root.aux_info.state_root_hash),
     receipts_root,
     logs_bloom_hash,
   };
