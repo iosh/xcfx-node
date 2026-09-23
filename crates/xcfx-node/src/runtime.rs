@@ -3,19 +3,17 @@
 use crate::{
   block_producer::{RuntimeBlock, produce_block},
   chain::{
-    CommittedChainHistory, CommittedChainView, EpochHistoryView, MinedBlockView,
+    BlockGraph, CommittedChainHistory, CommittedChainView, EpochHistoryView, MinedBlockView,
     MinedTransactionView, TransactionReceiptView,
   },
   chain_spec::ChainSpec,
-  execution::{
-    ExecutedSingleBlockEpoch, TransactionExecutionDisposition, execute_single_block_epoch,
-  },
+  execution::{ExecutedEpoch, TransactionExecutionDisposition, execute_ordered_epoch},
   fork::{ForkBase, ForkClient, ForkReadError},
   genesis::{GenesisError, GenesisHeaderInput, execute_genesis_with_pos},
   pos::GenesisPosDefinition,
   production_environment::{
-    InvalidBlockDifficulty, PreparedProductionEnvironment, ProductionDefaults,
-    ProductionEnvironment, ProductionTimeError, block_gas_limit_bounds,
+    InvalidBlockDifficulty, ProductionDefaults, ProductionEnvironment, ProductionTimeError,
+    block_gas_limit_bounds,
   },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
@@ -109,6 +107,8 @@ pub(crate) enum RuntimeTransactionError {
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeBlockProductionError {
   #[error(transparent)]
+  Graph(#[from] crate::chain::GraphError),
+  #[error(transparent)]
   State(#[from] cfx_statedb::Error),
 
   #[error(transparent)]
@@ -119,6 +119,11 @@ pub(crate) enum RuntimeBlockProductionError {
 
   #[error("local execution cannot advance {0} beyond the supported integer range")]
   PositionExhausted(&'static str),
+}
+
+struct PreparedBlock {
+  block: RuntimeBlock,
+  transactions_to_drop: Vec<RuntimeTransaction>,
 }
 
 pub(crate) struct TransactionPoolUpdates {
@@ -185,6 +190,37 @@ fn sponsored_gas_and_storage(
   Ok((sponsored_gas, sponsored_storage))
 }
 
+fn load_pool_accounts_and_costs(
+  state: &State<'_>,
+  pool_view: &TransactionPoolView,
+) -> StateResult<PoolReadinessInputs> {
+  let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
+  let mut transaction_costs = BTreeMap::new();
+
+  for entry in &pool_view.entries {
+    let transaction = &entry.transaction;
+    let sender = transaction.sender();
+    let space = transaction.space();
+    let account_key = (sender, space);
+
+    if let Entry::Vacant(entry) = account_states.entry(account_key) {
+      let address = sender.with_space(space);
+
+      entry.insert(PoolAccountState {
+        state_nonce: state.nonce(&address)?,
+        balance: state.balance(&address)?,
+      });
+    }
+
+    let (sponsored_gas, sponsored_storage) = sponsored_gas_and_storage(state, transaction)?;
+    let transaction_cost = pool_transaction_cost(transaction, sponsored_gas, sponsored_storage);
+
+    transaction_costs.insert(transaction.hash(), transaction_cost);
+  }
+
+  Ok(PoolReadinessInputs::new(account_states, transaction_costs))
+}
+
 /// The state currently used by Runtime consumers.
 #[derive(Clone)]
 struct EffectiveState {
@@ -214,6 +250,7 @@ impl EffectiveState {
 
 struct RuntimeState {
   history: CommittedChainHistory,
+  graph: BlockGraph,
   transaction_pool: TransactionPool,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -229,12 +266,14 @@ impl ResetState {
     &self,
     transaction_pool_policy: TransactionPoolPolicy,
     production_defaults: &ProductionDefaults,
+    max_blocks: usize,
   ) -> RuntimeState {
     let reset_base_timestamp = self.initial_view.execution_parent().timestamp;
     let history = CommittedChainHistory::from_initial(Arc::clone(&self.initial_view));
     let effective_state = EffectiveState::from_committed(history.optimistic_head().state());
 
     RuntimeState {
+      graph: BlockGraph::new(self.initial_view.execution_parent(), max_blocks),
       history,
       transaction_pool: TransactionPool::new(transaction_pool_policy),
       production_environment: production_defaults.build_environment(reset_base_timestamp),
@@ -246,6 +285,7 @@ impl ResetState {
 
 struct Checkpoint {
   history_head: Arc<CommittedChainView>,
+  graph: BlockGraph,
   transaction_pool: TransactionPoolCheckpoint,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -256,6 +296,7 @@ impl Checkpoint {
   fn capture(runtime_state: &RuntimeState) -> Self {
     Self {
       history_head: runtime_state.history.capture_checkpoint_head(),
+      graph: runtime_state.graph.clone(),
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
       production_environment: runtime_state.production_environment,
       state_overlay: runtime_state.state_overlay.clone(),
@@ -274,6 +315,7 @@ impl Checkpoint {
 
     RuntimeState {
       history,
+      graph: self.graph.clone(),
       transaction_pool: TransactionPool::from_checkpoint(
         transaction_pool_policy,
         &self.transaction_pool,
@@ -296,6 +338,7 @@ pub(crate) struct RuntimeConfig {
   pub(crate) production_defaults: ProductionDefaults,
   pub(crate) transaction_pool_policy: TransactionPoolPolicy,
   pub(crate) checkpoint_policy: CheckpointPolicy,
+  pub(crate) max_blocks: usize,
 }
 
 pub(crate) struct NodeRuntime {
@@ -305,6 +348,7 @@ pub(crate) struct NodeRuntime {
   impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
   checkpoint_policy: CheckpointPolicy,
+  max_blocks: usize,
   reset_state: ResetState,
   runtime_state: RuntimeState,
   checkpoints: BTreeMap<u64, Checkpoint>,
@@ -352,10 +396,11 @@ impl NodeRuntime {
       production_defaults,
       transaction_pool_policy,
       checkpoint_policy,
+      max_blocks,
     } = config;
     let reset_state = ResetState { initial_view };
     let runtime_state =
-      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults);
+      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults, max_blocks);
 
     Self {
       chain_spec,
@@ -364,6 +409,7 @@ impl NodeRuntime {
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
       checkpoint_policy,
+      max_blocks,
       reset_state,
       runtime_state,
       checkpoints: BTreeMap::new(),
@@ -423,9 +469,11 @@ impl NodeRuntime {
   }
 
   pub(crate) fn reset(&mut self) {
-    let next_runtime_state = self
-      .reset_state
-      .build_runtime_state(self.transaction_pool_policy, &self.production_defaults);
+    let next_runtime_state = self.reset_state.build_runtime_state(
+      self.transaction_pool_policy,
+      &self.production_defaults,
+      self.max_blocks,
+    );
 
     self.runtime_state = next_runtime_state;
     self.checkpoints.clear();
@@ -757,31 +805,7 @@ impl NodeRuntime {
     pool_view: &TransactionPoolView,
   ) -> StateResult<PoolReadinessInputs> {
     let state = self.open_effective_state_for_reading()?;
-    let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
-    let mut transaction_costs = BTreeMap::new();
-
-    for entry in &pool_view.entries {
-      let transaction = &entry.transaction;
-      let sender = transaction.sender();
-      let space = transaction.space();
-      let account_key = (sender, space);
-
-      if let Entry::Vacant(entry) = account_states.entry(account_key) {
-        let address = sender.with_space(space);
-
-        entry.insert(PoolAccountState {
-          state_nonce: state.nonce(&address)?,
-          balance: state.balance(&address)?,
-        });
-      }
-
-      let (sponsored_gas, sponsored_storage) = sponsored_gas_and_storage(&state, transaction)?;
-      let transaction_cost = pool_transaction_cost(transaction, sponsored_gas, sponsored_storage);
-
-      transaction_costs.insert(transaction.hash(), transaction_cost);
-    }
-
-    Ok(PoolReadinessInputs::new(account_states, transaction_costs))
+    load_pool_accounts_and_costs(&state, pool_view)
   }
 
   /// Opens the current effective version through Conflux's `State` interface
@@ -793,7 +817,33 @@ impl NodeRuntime {
   pub(crate) fn produce_and_commit_block(
     &mut self,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
-    let parent = Arc::clone(self.runtime_state.history.optimistic_head());
+    self.runtime_state.graph.check_capacity()?;
+    let prepared = self.prepare_block(
+      &self.runtime_state.history,
+      self.runtime_state.effective_state.state(),
+      &self.runtime_state.transaction_pool,
+      &self.runtime_state.production_environment,
+      Vec::new(),
+      U256::zero(),
+      1,
+    )?;
+    self.execute_and_commit_single_block_epoch_with_selection_drops(
+      prepared.block,
+      prepared.transactions_to_drop,
+    )
+  }
+
+  fn prepare_block(
+    &self,
+    history: &CommittedChainHistory,
+    execution_state: &Arc<StateVersion>,
+    pool: &TransactionPool,
+    environment: &ProductionEnvironment,
+    referee_hashes: Vec<H256>,
+    nonce: U256,
+    execution_block_count: usize,
+  ) -> Result<PreparedBlock, RuntimeBlockProductionError> {
+    let parent = Arc::clone(history.optimistic_head());
     let parent_block = parent.execution_parent();
 
     let epoch_height =
@@ -805,25 +855,28 @@ impl NodeRuntime {
         ))?;
     let block_number = parent
       .pivot_block_number()
-      .checked_add(1)
+      .checked_add(execution_block_count as u64)
       .filter(|number| *number < BlockNumber::MAX)
       .ok_or(RuntimeBlockProductionError::PositionExhausted(
         "Core block number",
       ))?;
 
     let params = self.chain_spec.machine().params();
-    let prepared_environment = self
-      .runtime_state
-      .production_environment
-      .prepare_next_block(
-        &self.production_defaults,
-        parent_block.timestamp,
-        parent_block.gas_limit,
-        epoch_height,
-        params,
-      )?;
+    let prepared_environment = environment.prepare_next_block(
+      &self.production_defaults,
+      parent_block.timestamp,
+      parent_block.gas_limit,
+      epoch_height,
+      params,
+    )?;
 
-    let selection_input = self.transaction_pool_selection_input()?;
+    let state = open_state_version(execution_state)?;
+    let view = pool.view();
+    let inputs = load_pool_accounts_and_costs(&state, &view)?;
+    let selection_input = PoolSelectionInput {
+      view,
+      entry_states: pool.derive_entry_states(&inputs),
+    };
     let spec = self.chain_spec.machine().spec(block_number, epoch_height);
     let validation = TransactionValidationContext::new(params, &spec, epoch_height);
 
@@ -839,10 +892,7 @@ impl NodeRuntime {
     let (block_selection, transactions_to_drop) =
       selection.into_block_selection_and_transactions_to_drop();
 
-    let deferred_commitment = self
-      .runtime_state
-      .history
-      .deferred_commitment_for_header_height(epoch_height)?;
+    let deferred_commitment = history.deferred_commitment_for_header_height(epoch_height)?;
 
     let runtime_block = produce_block(
       &parent_block,
@@ -850,36 +900,35 @@ impl NodeRuntime {
       params,
       prepared_environment,
       &deferred_commitment,
+      referee_hashes,
+      nonce,
     );
 
-    let outcome = self.execute_and_commit_single_block_epoch_with_selection_drops(
-      runtime_block,
+    Ok(PreparedBlock {
+      block: runtime_block,
       transactions_to_drop,
-      Some(prepared_environment),
-    )?;
-
-    Ok(outcome)
+    })
   }
 
   /// Executes a constructed block and publishes its complete result on success.
   ///
   /// # Errors
   ///
-  /// Returns state errors without changing the active history, pool, controls,
-  /// or production environment.
+  /// Returns capacity or state errors without changing the active history,
+  /// pool, controls, or production environment.
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     runtime_block: RuntimeBlock,
-  ) -> StateResult<RuntimeCommitOutcome> {
-    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new(), None)
+  ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
+    self.runtime_state.graph.check_capacity()?;
+    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new())
   }
 
   fn execute_and_commit_single_block_epoch_with_selection_drops(
     &mut self,
     runtime_block: RuntimeBlock,
     transactions_to_drop: Vec<RuntimeTransaction>,
-    prepared_environment: Option<PreparedProductionEnvironment>,
-  ) -> StateResult<RuntimeCommitOutcome> {
+  ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
     let parent = Arc::clone(self.runtime_state.history.optimistic_head());
     let parent_block = parent.execution_parent();
     let block_timestamp = runtime_block.header().timestamp();
@@ -909,32 +958,24 @@ impl NodeRuntime {
       "block gas limit {block_gas_limit} must be within [{gas_lower}, {gas_upper}]",
     );
 
-    if let Some(prepared_environment) = prepared_environment.as_ref() {
-      assert_eq!(
-        block_timestamp,
-        prepared_environment.timestamp(),
-        "a produced block must use its prepared timestamp",
-      );
-    }
-
     let previous_latest_state_height = self.runtime_state.history.latest_state_height();
     let previous_latest_header_committed_height =
       self.runtime_state.history.latest_header_committed_height();
     let start_block_number = parent.next_epoch_start_block_number();
     let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
-    let executed = execute_single_block_epoch(
+    let executed = execute_ordered_epoch(
       self.chain_spec.machine().as_ref(),
       &parent_block,
       parent.state(),
       &execution_state,
       parent.pos_context(),
       start_block_number,
-      runtime_block,
+      vec![runtime_block],
     )?;
 
-    let ExecutedSingleBlockEpoch {
-      runtime_block,
+    let ExecutedEpoch {
+      mut ordered_blocks,
       state,
       commitment,
       block_receipts,
@@ -942,6 +983,13 @@ impl NodeRuntime {
       accounts_for_txpool,
     } = executed;
 
+    let runtime_block = ordered_blocks
+      .pop()
+      .expect("single-block execution returns its block");
+    let transaction_dispositions = transaction_dispositions
+      .into_iter()
+      .next()
+      .expect("single-block execution returns its transaction dispositions");
     let mut transaction_hashes_to_remove = transactions_to_drop
       .iter()
       .map(|transaction| transaction.hash())
@@ -975,9 +1023,15 @@ impl NodeRuntime {
       .transaction_pool
       .prepare_reconciliation(transaction_hashes_to_remove, &accounts_for_txpool);
 
-    let next_head = Arc::new(CommittedChainView::from_executed_block(
+    self
+      .runtime_state
+      .graph
+      .insert(runtime_block.clone())
+      .expect("a locally produced block has known predecessors and a stable PoS reference");
+    let next_head = Arc::new(CommittedChainView::from_executed_epoch(
       &parent,
-      runtime_block,
+      vec![runtime_block],
+      Vec::new(),
       state,
       commitment,
       block_receipts,
@@ -992,16 +1046,10 @@ impl NodeRuntime {
       .transaction_pool
       .apply_reconciliation(pool_reconciliation);
 
-    match prepared_environment {
-      Some(prepared_environment) => self
-        .runtime_state
-        .production_environment
-        .commit_prepared(prepared_environment),
-      None => self
-        .runtime_state
-        .production_environment
-        .synchronize_committed_timestamp(block_timestamp),
-    }
+    self
+      .runtime_state
+      .production_environment
+      .synchronize_committed_timestamp(block_timestamp);
 
     self.runtime_state.state_overlay = StateOverlay::empty();
     self.runtime_state.effective_state = EffectiveState::from_committed(next_head.state());

@@ -51,12 +51,12 @@ impl TransactionExecutionDisposition {
   }
 }
 
-pub(crate) struct ExecutedSingleBlockEpoch {
-  pub(crate) runtime_block: RuntimeBlock,
+pub(crate) struct ExecutedEpoch {
+  pub(crate) ordered_blocks: Vec<RuntimeBlock>,
   pub(crate) state: CommittedStateVersion,
   pub(crate) commitment: ExecutionCommitment,
   pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
-  pub(crate) transaction_dispositions: Vec<TransactionExecutionDisposition>,
+  pub(crate) transaction_dispositions: Vec<Vec<TransactionExecutionDisposition>>,
   pub(crate) accounts_for_txpool: Vec<Account>,
 }
 
@@ -90,188 +90,143 @@ fn execute_runtime_transaction(
   })
 }
 
-/// Executes an internally constructed block against an isolated state.
+/// Executes the graph's ordered blocks in one private state candidate.
 ///
-/// `parent_state` supplies the committed parent identity. `execution_state`
-/// may be an effective state prepared on top of that parent and therefore must
-/// remain separate from the committed identity.
+/// The pivot is last. Its parent supplies the execution identity, while
+/// `execution_state` may include local state controls on that parent.
 ///
 /// # Errors
 ///
-/// Returns state errors from initialization, protocol transitions, transaction
-/// execution, or state writeback. The private candidate is discarded on failure.
-pub(crate) fn execute_single_block_epoch(
+/// Any database or protocol-transition error discards the whole epoch.
+pub(crate) fn execute_ordered_epoch(
   machine: &Machine,
   parent_block: &BlockParent,
   parent_state: &CommittedStateVersion,
   execution_state: &Arc<StateVersion>,
   parent_pos_context: &PosContext,
-  block_number: BlockNumber,
-  runtime_block: RuntimeBlock,
-) -> StateResult<ExecutedSingleBlockEpoch> {
-  // The current fork pre-execution hooks consume only the header and block hash.
-  // A local Runtime block therefore needs no invented transaction body here.
-  let epoch_block = runtime_block
-    .standard_block()
-    .cloned()
-    .unwrap_or_else(|| Block::new(runtime_block.header().clone(), Vec::new()));
-  let runtime_transactions = runtime_block.transactions();
-
-  if let Some(standard_block) = runtime_block.standard_block() {
-    assert_eq!(
-      standard_block.transactions.len(),
-      runtime_transactions.len(),
-      "a standard Runtime block must preserve every fork transaction",
-    );
-
-    for (runtime_transaction, block_transaction) in runtime_transactions
-      .iter()
-      .zip(&standard_block.transactions)
-    {
-      assert_eq!(
-        runtime_transaction.hash(),
-        block_transaction.hash(),
-        "Runtime and fork transaction order must have matching hashes",
-      );
-    }
-  }
-
-  let parent_hash = parent_block.hash;
-
+  start_block_number: BlockNumber,
+  ordered_blocks: Vec<RuntimeBlock>,
+) -> StateResult<ExecutedEpoch> {
+  let pivot = ordered_blocks
+    .last()
+    .expect("an ordered epoch contains its pivot");
   assert_eq!(
-    parent_state.epoch_id, parent_hash,
-    "ordered epoch parent state must belong to the parent block",
+    parent_state.epoch_id, parent_block.hash,
+    "the parent state must belong to the execution parent"
   );
   assert_eq!(
-    epoch_block.block_header.parent_hash(),
-    &parent_hash,
-    "ordered epoch block must extend the supplied parent",
+    *pivot.header().parent_hash(),
+    parent_block.hash,
+    "the pivot must extend the execution parent"
   );
-
-  let expected_height = parent_block
-    .height
-    .checked_add(1)
-    .expect("a committed parent height must permit a child block");
   assert_eq!(
-    epoch_block.block_header.height(),
-    expected_height,
-    "ordered epoch block height must follow the parent height",
+    pivot.header().height(),
+    parent_block.height + 1,
+    "the pivot must advance the epoch height"
   );
 
   let pos_env = parent_pos_context
     .env_input(&parent_block.pos_reference)
-    .expect("committed PoS context must contain the parent block reference");
-
-  assert_eq!(
-    epoch_block.block_header.pos_reference(),
-    &Some(parent_block.pos_reference),
-    "the initial ordered execution path requires a stable PoS reference",
-  );
-
-  let transaction_hashes = runtime_transactions
-    .iter()
-    .map(RuntimeTransaction::hash)
-    .collect::<Vec<_>>();
-
-  let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
-
-  assert_eq!(
-    *epoch_block.block_header.transactions_root(),
-    transactions_root,
-    "ordered epoch transactions must match the header commitment",
-  );
-
+    .expect("the parent PoS context must resolve its reference");
+  let epoch_height = pivot.header().height();
+  let epoch_timestamp = pivot.header().timestamp();
+  let epoch_id = pivot.hash();
+  let pivot_block = protocol_block(pivot);
   let mut candidate = StateCandidate::new(Arc::clone(execution_state));
   let mut state = State::new(StateDb::new(&mut candidate))?;
+  before_epoch_execution(&mut state, machine, &pivot_block)?;
 
-  before_epoch_execution(&mut state, machine, &epoch_block)?;
-
-  let epoch_height = epoch_block.block_header.height();
-  let base_gas_price = epoch_block.block_header.base_price().unwrap_or_default();
+  let base_gas_price = pivot.header().base_price().unwrap_or_default();
   let burnt_gas_price = base_gas_price.map_all(|price| state.burnt_gas_price(price));
+  let mut block_receipts = Vec::with_capacity(ordered_blocks.len());
+  let mut transaction_dispositions = Vec::with_capacity(ordered_blocks.len());
+  let mut last_hash = parent_block.hash;
 
-  let secondary_reward = before_block_execution(&mut state, machine, block_number, &epoch_block)?;
+  for (index, runtime_block) in ordered_blocks.iter().enumerate() {
+    assert_eq!(
+      *runtime_block.header().pos_reference(),
+      Some(parent_block.pos_reference),
+      "ordered execution requires a stable PoS reference",
+    );
+    let block_number = start_block_number
+      .checked_add(index as u64)
+      .expect("a prepared epoch must fit the Core block number range");
+    let block = protocol_block(runtime_block);
+    let secondary_reward = before_block_execution(&mut state, machine, block_number, &block)?;
+    let mut env = Env {
+      chain_id: machine.params().chain_id_map(epoch_height),
+      number: block_number,
+      author: *block.block_header.author(),
+      timestamp: epoch_timestamp,
+      difficulty: *block.block_header.difficulty(),
+      gas_limit: *block.block_header.gas_limit(),
+      last_hash,
+      accumulated_gas_used: U256::zero(),
+      epoch_height,
+      pos_view: Some(pos_env.pos_view),
+      finalized_epoch: Some(pos_env.finalized_epoch),
+      transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
+      base_gas_price,
+      burnt_gas_price,
+      transaction_hash: H256::zero(),
+    };
+    let spec = machine.spec(block_number, epoch_height);
+    let mut receipts = Vec::with_capacity(runtime_block.transactions().len());
+    let mut execution_errors = Vec::with_capacity(runtime_block.transactions().len());
+    let mut dispositions = Vec::with_capacity(runtime_block.transactions().len());
 
-  let mut env = Env {
-    chain_id: machine.params().chain_id_map(epoch_height),
-    number: block_number,
-    author: *epoch_block.block_header.author(),
-    timestamp: epoch_block.block_header.timestamp(),
-    difficulty: *epoch_block.block_header.difficulty(),
-    gas_limit: *epoch_block.block_header.gas_limit(),
-    last_hash: parent_hash,
-    accumulated_gas_used: U256::zero(),
-    epoch_height,
-    pos_view: Some(pos_env.pos_view),
-    finalized_epoch: Some(pos_env.finalized_epoch),
-    transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
-    base_gas_price,
-    burnt_gas_price,
-    transaction_hash: H256::zero(),
-  };
-
-  let spec = machine.spec(block_number, epoch_height);
-  let mut receipts = Vec::with_capacity(runtime_transactions.len());
-  let mut execution_errors = Vec::with_capacity(runtime_transactions.len());
-  let mut transaction_dispositions = Vec::with_capacity(runtime_transactions.len());
-
-  for transaction in runtime_transactions {
-    env.transaction_hash = transaction.hash();
-
-    let outcome = execute_runtime_transaction(&mut state, &env, machine, &spec, transaction)?;
-
-    state.update_state_post_tx_execution(!spec.cip645.fix_eip1153);
-
-    if let Some(burnt_fee) = outcome
-      .try_as_executed()
-      .and_then(|executed| executed.burnt_fee)
-    {
-      state.burn_by_cip1559(burnt_fee);
+    for transaction in runtime_block.transactions() {
+      env.transaction_hash = transaction.hash();
+      let outcome = execute_runtime_transaction(&mut state, &env, machine, &spec, transaction)?;
+      state.update_state_post_tx_execution(!spec.cip645.fix_eip1153);
+      if let Some(burnt_fee) = outcome
+        .try_as_executed()
+        .and_then(|executed| executed.burnt_fee)
+      {
+        state.burn_by_cip1559(burnt_fee);
+      }
+      dispositions.push(TransactionExecutionDisposition::from_outcome(&outcome));
+      execution_errors.push(outcome.error_message());
+      receipts.push(outcome.make_receipt(&mut env.accumulated_gas_used, &spec));
     }
 
-    let disposition = TransactionExecutionDisposition::from_outcome(&outcome);
-
-    transaction_dispositions.push(disposition);
-    execution_errors.push(outcome.error_message());
-    receipts.push(outcome.make_receipt(&mut env.accumulated_gas_used, &spec));
+    block_receipts.push(Arc::new(BlockReceipts {
+      receipts,
+      // The full node numbers each receipt collection one after its VM block.
+      block_number: block_number
+        .checked_add(1)
+        .expect("the receipt number must fit"),
+      secondary_reward,
+      tx_execution_error_messages: execution_errors,
+    }));
+    transaction_dispositions.push(dispositions);
+    last_hash = runtime_block.hash();
   }
 
-  // Match the full node's historical BlockReceipts numbering behavior.
-  let block_receipt = Arc::new(BlockReceipts {
-    receipts,
-    block_number: block_number
-      .checked_add(1)
-      .expect("the executed Core block number must permit its receipt collection number"),
-    secondary_reward,
-    tx_execution_error_messages: execution_errors,
-  });
-  let block_receipts = vec![block_receipt];
-
-  let receipts_root = compute_epoch_receipts_root(&block_receipts);
-  let logs_bloom_hash = BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts);
-
-  // With a stable PoS reference, the full node's post-epoch PoS distribution
-  // branch is a no-op for this execution path.
-  let epoch_id = epoch_block.hash();
   let accounts_for_txpool = state.apply_changes_to_storage(None)?;
   drop(state);
-
   let version = Arc::new(candidate.into_version());
-  let state_root = version.root_with_aux_info();
-  let committed_state = CommittedStateVersion { epoch_id, version };
-
   let commitment = ExecutionCommitment {
-    state_root: state_root.map(|root| root.aux_info.state_root_hash),
-    receipts_root,
-    logs_bloom_hash,
+    state_root: version
+      .root_with_aux_info()
+      .map(|root| root.aux_info.state_root_hash),
+    receipts_root: compute_epoch_receipts_root(&block_receipts),
+    logs_bloom_hash: BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts),
   };
-
-  Ok(ExecutedSingleBlockEpoch {
-    runtime_block,
-    state: committed_state,
+  Ok(ExecutedEpoch {
+    ordered_blocks,
+    state: CommittedStateVersion { epoch_id, version },
     commitment,
     block_receipts,
     transaction_dispositions,
     accounts_for_txpool,
   })
+}
+
+/// Shared protocol hooks consume the header/hash, not local transaction metadata.
+fn protocol_block(block: &RuntimeBlock) -> Block {
+  block
+    .standard_block()
+    .cloned()
+    .unwrap_or_else(|| Block::new(block.header().clone(), Vec::new()))
 }

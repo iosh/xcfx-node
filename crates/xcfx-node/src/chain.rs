@@ -1,7 +1,9 @@
 //! Immutable chain views and their execution artifacts.
 
+mod graph;
 mod history;
 
+pub(crate) use graph::{BlockGraph, GraphError, OrderedEpoch};
 pub(crate) use history::CommittedChainHistory;
 
 use std::sync::Arc;
@@ -23,10 +25,23 @@ use crate::{
 pub(crate) struct CommittedEpoch {
   start_block_number: BlockNumber,
   ordered_blocks: Vec<RuntimeBlock>,
+  skipped_blocks: Vec<RuntimeBlock>,
   commitment: ExecutionCommitment,
   block_receipts: Vec<Arc<BlockReceipts>>,
 }
 impl CommittedEpoch {
+  pub(crate) fn ordered_blocks(&self) -> &[RuntimeBlock] {
+    &self.ordered_blocks
+  }
+
+  pub(crate) fn skipped_blocks(&self) -> &[RuntimeBlock] {
+    &self.skipped_blocks
+  }
+
+  pub(crate) fn all_blocks(&self) -> impl Iterator<Item = &RuntimeBlock> {
+    self.skipped_blocks.iter().chain(&self.ordered_blocks)
+  }
+
   pub(crate) fn pivot_runtime_block(&self) -> &RuntimeBlock {
     self
       .ordered_blocks
@@ -90,6 +105,7 @@ impl CommittedChainView {
       epoch: ChainEpoch::Executed(CommittedEpoch {
         start_block_number: 0,
         ordered_blocks: vec![RuntimeBlock::from_system_block(block)],
+        skipped_blocks: Vec::new(),
         commitment,
         block_receipts,
       }),
@@ -119,9 +135,10 @@ impl CommittedChainView {
     }
   }
 
-  pub(crate) fn from_executed_block(
+  pub(crate) fn from_executed_epoch(
     parent: &Self,
-    runtime_block: RuntimeBlock,
+    ordered_blocks: Vec<RuntimeBlock>,
+    skipped_blocks: Vec<RuntimeBlock>,
     state: CommittedStateVersion,
     commitment: ExecutionCommitment,
     block_receipts: Vec<Arc<BlockReceipts>>,
@@ -129,7 +146,8 @@ impl CommittedChainView {
     Self {
       epoch: ChainEpoch::Executed(CommittedEpoch {
         start_block_number: parent.next_epoch_start_block_number(),
-        ordered_blocks: vec![runtime_block],
+        ordered_blocks,
+        skipped_blocks,
         commitment,
         block_receipts,
       }),
@@ -240,16 +258,23 @@ impl EpochHistoryView {
 #[derive(Clone)]
 pub(crate) struct MinedBlockView {
   chain_view: Arc<CommittedChainView>,
-  block_index: usize,
+  block_index: BlockIndex,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockIndex {
+  Executed(usize),
+  Skipped(usize),
+}
+
 impl MinedBlockView {
   pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
-    self
-      .chain_view
-      .local_epoch()
-      .ordered_blocks
-      .get(self.block_index)
-      .expect("an indexed block must exist in its committed chain view")
+    let epoch = self.chain_view.local_epoch();
+    let block = match self.block_index {
+      BlockIndex::Executed(index) => epoch.ordered_blocks.get(index),
+      BlockIndex::Skipped(index) => epoch.skipped_blocks.get(index),
+    };
+    block.expect("an indexed block must exist in its committed chain view")
   }
 
   /// Returns the Conflux block without runtime transaction metadata.
@@ -355,12 +380,15 @@ impl TransactionReceiptView {
   }
 
   fn block_receipts_for(transaction: &MinedTransactionView) -> &BlockReceipts {
+    let BlockIndex::Executed(index) = transaction.block.block_index else {
+      unreachable!("transaction indexes only contain executed blocks");
+    };
     transaction
       .block
       .chain_view
       .local_epoch()
       .block_receipts
-      .get(transaction.block.block_index)
+      .get(index)
       .expect("an indexed block must have committed receipts")
   }
 }

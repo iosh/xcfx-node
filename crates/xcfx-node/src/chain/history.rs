@@ -9,14 +9,14 @@ use primitives::block::BlockHeight;
 use crate::{execution::ExecutionCommitment, fork::ForkReadError};
 
 use super::{
-  ChainEpoch, CommittedChainView, EpochHistoryView, MinedBlockView, MinedTransactionView,
-  TransactionReceiptView,
+  BlockIndex, ChainEpoch, CommittedChainView, EpochHistoryView, MinedBlockView,
+  MinedTransactionView, TransactionReceiptView,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BlockLocation {
   epoch_height: BlockHeight,
-  block_index: usize,
+  block_index: BlockIndex,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,7 +45,7 @@ impl CommittedChainHistory {
     let transactions = block.transactions();
     let block_location = BlockLocation {
       epoch_height: initial.epoch_height(),
-      block_index: 0,
+      block_index: BlockIndex::Executed(0),
     };
     let block_locations = HashMap::from([(block.hash(), block_location)]);
     let mut transaction_locations = HashMap::with_capacity(transactions.len());
@@ -174,7 +174,7 @@ impl CommittedChainHistory {
       let block_hash = runtime_block.hash();
       let block_location = BlockLocation {
         epoch_height,
-        block_index,
+        block_index: BlockIndex::Executed(block_index),
       };
 
       assert!(
@@ -208,6 +208,26 @@ impl CommittedChainHistory {
           "a committed epoch must not execute a transaction hash twice",
         );
       }
+    }
+
+    for (index, block) in epoch.skipped_blocks.iter().enumerate() {
+      let hash = block.hash();
+      assert!(
+        !self.block_locations.contains_key(&hash),
+        "a skipped block cannot already belong to history"
+      );
+      assert!(
+        block_locations
+          .insert(
+            hash,
+            BlockLocation {
+              epoch_height,
+              block_index: BlockIndex::Skipped(index),
+            }
+          )
+          .is_none(),
+        "a skipped block cannot also execute in the epoch"
+      );
     }
 
     self.views.reserve(1);

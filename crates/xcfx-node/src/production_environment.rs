@@ -198,16 +198,8 @@ impl ProductionEnvironment {
     })
   }
 
-  pub(crate) fn commit_prepared(&mut self, prepared: PreparedProductionEnvironment) {
-    self.commit_timestamp(prepared.timestamp);
-  }
-
-  /// Synchronizes a successfully committed block supplied outside production.
+  /// Records a committed block's timestamp and clears the next-block timestamp override.
   pub(crate) fn synchronize_committed_timestamp(&mut self, committed_timestamp: u64) {
-    self.commit_timestamp(committed_timestamp);
-  }
-
-  fn commit_timestamp(&mut self, committed_timestamp: u64) {
     self.logical_timestamp = committed_timestamp;
     self.next_block_timestamp = None;
   }

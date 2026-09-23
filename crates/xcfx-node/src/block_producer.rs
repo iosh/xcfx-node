@@ -211,6 +211,8 @@ pub(crate) fn produce_block(
   params: &CommonParams,
   prepared_environment: PreparedProductionEnvironment,
   deferred_commitment: &ExecutionCommitment,
+  referee_hashes: Vec<H256>,
+  nonce: U256,
 ) -> RuntimeBlock {
   let epoch_height = selection.epoch_height();
   let block_gas_limit = prepared_environment.block_gas_limit();
@@ -238,9 +240,9 @@ pub(crate) fn produce_block(
     .with_difficulty(prepared_environment.difficulty())
     .with_adaptive(false)
     .with_gas_limit(block_gas_limit)
-    .with_referee_hashes(Vec::new())
+    .with_referee_hashes(referee_hashes)
     .with_custom(custom)
-    .with_nonce(U256::zero())
+    .with_nonce(nonce)
     .with_pos_reference(Some(parent.pos_reference))
     .with_base_price(Some(base_price))
     .build_with_cip112(Cip112TransitionHeight::new(

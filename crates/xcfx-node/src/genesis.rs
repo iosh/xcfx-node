@@ -869,6 +869,7 @@ mod tests {
         production_defaults: ProductionDefaults::new(1),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
         checkpoint_policy: CheckpointPolicy::new(1),
+        max_blocks: 1_024,
       },
       conflux_compatibility_allocations(),
       header,
