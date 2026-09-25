@@ -1,5 +1,12 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
 
+mod reorg;
+mod stability;
+
+pub(crate) use reorg::PoolDropReason;
+pub(crate) use reorg::{ChainChange, ChainChangeReason};
+pub(crate) use stability::{Stability, StabilityKind, StabilitySource, StablePosition};
+
 use crate::{
   block_producer::{RuntimeBlock, produce_block},
   chain::{
@@ -134,6 +141,7 @@ pub(crate) struct TransactionPoolUpdates {
 
 /// Facts exposed after one Runtime transition has updated history, indexes, and the pool.
 pub(crate) struct RuntimeCommitOutcome {
+  pub(crate) change: ChainChange,
   pub(crate) optimistic_head: Arc<CommittedChainView>,
   pub(crate) latest_state_advanced_to: Option<Arc<CommittedChainView>>,
   pub(crate) latest_header_committed_advanced_to: Option<EpochHistoryView>,
@@ -251,6 +259,7 @@ impl EffectiveState {
 struct RuntimeState {
   history: CommittedChainHistory,
   graph: BlockGraph,
+  stability: Stability,
   transaction_pool: TransactionPool,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -274,6 +283,7 @@ impl ResetState {
 
     RuntimeState {
       graph: BlockGraph::new(self.initial_view.execution_parent(), max_blocks),
+      stability: Stability::initial(&self.initial_view),
       history,
       transaction_pool: TransactionPool::new(transaction_pool_policy),
       production_environment: production_defaults.build_environment(reset_base_timestamp),
@@ -286,6 +296,7 @@ impl ResetState {
 struct Checkpoint {
   history_head: Arc<CommittedChainView>,
   graph: BlockGraph,
+  stability: Stability,
   transaction_pool: TransactionPoolCheckpoint,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -297,6 +308,7 @@ impl Checkpoint {
     Self {
       history_head: runtime_state.history.capture_checkpoint_head(),
       graph: runtime_state.graph.clone(),
+      stability: runtime_state.stability,
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
       production_environment: runtime_state.production_environment,
       state_overlay: runtime_state.state_overlay.clone(),
@@ -316,6 +328,7 @@ impl Checkpoint {
     RuntimeState {
       history,
       graph: self.graph.clone(),
+      stability: self.stability,
       transaction_pool: TransactionPool::from_checkpoint(
         transaction_pool_policy,
         &self.transaction_pool,
@@ -326,12 +339,6 @@ impl Checkpoint {
     }
   }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RevertCheckpointOutcome {
-  Reverted,
-  Unavailable,
-}
-
 /// Execution rules and local policies shared by Genesis and Fork startup.
 pub(crate) struct RuntimeConfig {
   pub(crate) chain_spec: Arc<ChainSpec>,
@@ -451,28 +458,40 @@ impl NodeRuntime {
   pub(crate) fn revert_to_checkpoint(
     &mut self,
     checkpoint_id: CheckpointId,
-  ) -> RevertCheckpointOutcome {
+  ) -> Option<ChainChange> {
     let next_runtime_state = {
       let Some(checkpoint) = self.resolve_checkpoint(checkpoint_id) else {
-        return RevertCheckpointOutcome::Unavailable;
+        return None;
       };
 
       checkpoint.build_runtime_state(&self.runtime_state, self.transaction_pool_policy)
     };
+
+    let change = ChainChange::between(
+      ChainChangeReason::Revert,
+      &self.runtime_state,
+      &next_runtime_state,
+    );
 
     // The target and every checkpoint created after it become unavailable.
     let _invalidated_checkpoints = self.checkpoints.split_off(&checkpoint_id.sequence);
 
     self.runtime_state = next_runtime_state;
 
-    RevertCheckpointOutcome::Reverted
+    Some(change)
   }
 
-  pub(crate) fn reset(&mut self) {
+  pub(crate) fn reset(&mut self) -> ChainChange {
     let next_runtime_state = self.reset_state.build_runtime_state(
       self.transaction_pool_policy,
       &self.production_defaults,
       self.max_blocks,
+    );
+
+    let change = ChainChange::between(
+      ChainChangeReason::Reset,
+      &self.runtime_state,
+      &next_runtime_state,
     );
 
     self.runtime_state = next_runtime_state;
@@ -480,6 +499,7 @@ impl NodeRuntime {
     self.impersonation.clear();
 
     // Keep checkpoint IDs monotonic so cleared IDs are never reused.
+    change
   }
 
   /// Applies a validated control batch to the effective state and removes pool
@@ -1063,6 +1083,18 @@ impl NodeRuntime {
         .then(|| self.runtime_state.history.latest_header_committed_epoch());
 
     Ok(RuntimeCommitOutcome {
+      change: ChainChange {
+        reason: ChainChangeReason::Advance,
+        old_head: Arc::clone(&parent),
+        new_head: Arc::clone(&next_head),
+        common_ancestor: parent,
+        removed: Vec::new(),
+        added: vec![Arc::clone(&next_head)],
+        old_stability: self.runtime_state.stability,
+        new_stability: self.runtime_state.stability,
+        reinserted: Vec::new(),
+        dropped: Vec::new(),
+      },
       optimistic_head: next_head,
       latest_state_advanced_to,
       latest_header_committed_advanced_to,

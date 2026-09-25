@@ -198,6 +198,21 @@ impl ProductionEnvironment {
     })
   }
 
+  /// Preserves pending controls when the execution parent changes.
+  pub(crate) fn rebase(&self, parent_timestamp: u64) -> Result<Self, ProductionTimeError> {
+    if let Some(proposed) = self.next_block_timestamp {
+      if proposed < parent_timestamp {
+        return Err(ProductionTimeError::TimestampBeforeParent {
+          proposed,
+          parent: parent_timestamp,
+        });
+      }
+    }
+    let mut next = *self;
+    next.logical_timestamp = next.logical_timestamp.max(parent_timestamp);
+    Ok(next)
+  }
+
   /// Records a committed block's timestamp and clears the next-block timestamp override.
   pub(crate) fn synchronize_committed_timestamp(&mut self, committed_timestamp: u64) {
     self.logical_timestamp = committed_timestamp;

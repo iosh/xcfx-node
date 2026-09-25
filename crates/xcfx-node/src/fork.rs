@@ -25,7 +25,10 @@ use diem_types::block_info::PivotBlockDecision;
 use primitives::{BlockNumber, block::BlockHeight, pos::PosBlockId};
 use thiserror::Error;
 
-use crate::rpc_client::ConfluxRpcClient;
+use crate::{
+  rpc_client::ConfluxRpcClient,
+  runtime::{Stability, StabilitySource, StablePosition},
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct NetworkIdentity {
@@ -48,6 +51,7 @@ pub(crate) struct ForkConfig {
 /// A remote pivot and the parent inputs needed to extend it locally.
 #[derive(Debug)]
 pub(crate) struct ForkBase {
+  pub(crate) stability: Stability,
   pub(crate) network: NetworkIdentity,
   pub(crate) epoch_height: BlockHeight,
   pub(crate) pivot_hash: H256,
@@ -229,6 +233,20 @@ pub(crate) async fn load_fork_base(
   }
 
   Ok(ForkBase {
+    stability: Stability {
+      confirmed: StablePosition {
+        height: status.latest_confirmed.as_u64().min(epoch_height),
+        source: StabilitySource::Fork,
+      },
+      finalized: StablePosition {
+        height: status.latest_finalized.as_u64().min(epoch_height),
+        source: StabilitySource::Fork,
+      },
+      checkpoint: StablePosition {
+        height: status.latest_checkpoint.as_u64().min(epoch_height),
+        source: StabilitySource::Fork,
+      },
+    },
     network,
     epoch_height,
     pivot_hash: pivot.hash,

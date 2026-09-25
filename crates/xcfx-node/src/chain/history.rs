@@ -74,6 +74,16 @@ impl CommittedChainHistory {
     Arc::clone(self.optimistic_head())
   }
 
+  pub(crate) fn views(&self) -> &[Arc<CommittedChainView>] {
+    &self.views
+  }
+
+  pub(crate) fn contains_view(&self, view: &Arc<CommittedChainView>) -> bool {
+    self
+      .epoch_at_height(view.epoch_height())
+      .is_some_and(|current| Arc::ptr_eq(current, view))
+  }
+
   pub(crate) fn rebuild_through_checkpoint_head(
     &self,
     checkpoint_head: &Arc<CommittedChainView>,

@@ -168,6 +168,11 @@ pub(crate) struct TransactionPool {
   next_arrival_sequence: u64,
 }
 
+enum ReplacementPolicy {
+  RequirePriceBump,
+  ReplaceExisting,
+}
+
 impl TransactionPool {
   pub(crate) fn new(policy: TransactionPoolPolicy) -> Self {
     Self {
@@ -245,6 +250,25 @@ impl TransactionPool {
     &mut self,
     transaction: RuntimeTransaction,
   ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
+    self.insert_with_replacement_policy(transaction, ReplacementPolicy::RequirePriceBump)
+  }
+
+  /// Reinserts a transaction revalidated against the new execution view after a reorg.
+  ///
+  /// Same-key replacement does not require a gas-price bump. Duplicate hashes
+  /// and the pool's capacity limit are still enforced.
+  pub(crate) fn reinsert_after_reorg(
+    &mut self,
+    transaction: RuntimeTransaction,
+  ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
+    self.insert_with_replacement_policy(transaction, ReplacementPolicy::ReplaceExisting)
+  }
+
+  fn insert_with_replacement_policy(
+    &mut self,
+    transaction: RuntimeTransaction,
+    replacement_policy: ReplacementPolicy,
+  ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
     assert!(
       !matches!(&transaction, RuntimeTransaction::System(_)),
       "system transactions must not enter the user transaction pool",
@@ -261,7 +285,9 @@ impl TransactionPool {
       .get(&key)
       .map(|entry| (entry.transaction.clone(), entry.transaction.hash()))
     {
-      if !Self::replacement_is_sufficient(&transaction, &previous) {
+      if matches!(replacement_policy, ReplacementPolicy::RequirePriceBump)
+        && !Self::replacement_is_sufficient(&transaction, &previous)
+      {
         return Err(TransactionError::TooCheapToReplace);
       }
 
@@ -339,7 +365,7 @@ impl TransactionPool {
     required_price.is_some_and(|required| *replacement.gas_price() >= required)
   }
 
-  fn remove_by_hash(&mut self, hash: H256) -> Option<RuntimeTransaction> {
+  pub(crate) fn remove_by_hash(&mut self, hash: H256) -> Option<RuntimeTransaction> {
     let key = self.key_by_hash.remove(&hash)?;
     let entry = self
       .by_key

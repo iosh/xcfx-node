@@ -223,4 +223,28 @@ impl BlockGraph {
     }
     Ok((seen.len() + 1).min(EPOCH_EXECUTED_BLOCK_BOUND))
   }
+
+  /// Drops detached topology while preserving every predecessor of retained tips.
+  pub(crate) fn retain_ancestors(&mut self, tips: impl IntoIterator<Item = H256>) {
+    let mut keep = HashSet::new();
+    let mut pending: Vec<_> = tips.into_iter().collect();
+    while let Some(hash) = pending.pop() {
+      if hash == self.origin.hash || !keep.insert(hash) {
+        continue;
+      }
+      if let Some(block) = self.blocks.get(&hash) {
+        pending.push(*block.header().parent_hash());
+        pending.extend(block.header().referee_hashes());
+      }
+    }
+    let discarded: Vec<_> = self
+      .blocks
+      .keys()
+      .filter(|hash| !keep.contains(hash))
+      .copied()
+      .collect();
+    for hash in discarded {
+      self.blocks.remove(&hash);
+    }
+  }
 }
