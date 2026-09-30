@@ -9,8 +9,8 @@ use primitives::block::BlockHeight;
 use crate::{execution::ExecutionCommitment, fork::ForkReadError};
 
 use super::{
-  BlockIndex, ChainEpoch, CommittedChainView, EpochHistoryView, MinedBlockView,
-  MinedTransactionView, TransactionReceiptView,
+  BlockIndex, EpochHistoryView, EpochSource, EpochView, MinedBlockView, MinedTransactionView,
+  TransactionReceiptView,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,15 +25,16 @@ struct TransactionLocation {
   transaction_index: usize,
 }
 
-pub(crate) struct CommittedChainHistory {
-  views: Vec<Arc<CommittedChainView>>,
+/// The active epoch sequence and its local block and transaction indexes.
+pub(crate) struct ChainHistory {
+  views: Vec<Arc<EpochView>>,
   block_locations: HashMap<H256, BlockLocation>,
   transaction_locations: HashMap<H256, TransactionLocation>,
 }
 
-impl CommittedChainHistory {
-  pub(crate) fn from_initial(initial: Arc<CommittedChainView>) -> Self {
-    let Some(genesis) = initial.executed_epoch() else {
+impl ChainHistory {
+  pub(crate) fn from_initial(initial: Arc<EpochView>) -> Self {
+    let Some(genesis) = initial.artifacts() else {
       return Self {
         views: vec![initial],
         block_locations: HashMap::new(),
@@ -70,44 +71,42 @@ impl CommittedChainHistory {
       transaction_locations,
     }
   }
-  pub(crate) fn capture_checkpoint_head(&self) -> Arc<CommittedChainView> {
-    Arc::clone(self.optimistic_head())
-  }
 
-  pub(crate) fn views(&self) -> &[Arc<CommittedChainView>] {
+  pub(crate) fn views(&self) -> &[Arc<EpochView>] {
     &self.views
   }
 
-  pub(crate) fn contains_view(&self, view: &Arc<CommittedChainView>) -> bool {
+  pub(crate) fn contains_view(&self, view: &Arc<EpochView>) -> bool {
     self
       .epoch_at_height(view.epoch_height())
       .is_some_and(|current| Arc::ptr_eq(current, view))
   }
 
-  pub(crate) fn rebuild_through_checkpoint_head(
-    &self,
-    checkpoint_head: &Arc<CommittedChainView>,
-  ) -> Self {
-    let checkpoint_height = checkpoint_head.epoch_height();
-    let offset = checkpoint_height
+  /// Shares the retained prefix through an ancestor and rebuilds its indexes.
+  ///
+  /// # Panics
+  ///
+  /// The ancestor must be the same retained view, not another view at the same height.
+  pub(crate) fn rebuild_through(&self, ancestor: &Arc<EpochView>) -> Self {
+    let offset = ancestor
+      .epoch_height()
       .checked_sub(self.initial_epoch().epoch_height())
-      .expect("a checkpoint must not precede the initial view");
-    let checkpoint_index =
-      usize::try_from(offset).expect("a checkpoint offset must fit in the retained history");
-    let ancestor = self
+      .expect("a history ancestor must not precede the initial view");
+    let index =
+      usize::try_from(offset).expect("an ancestor offset must fit in the retained history");
+    let retained = self
       .views
-      .get(checkpoint_index)
-      .expect("a checkpoint history head must exist in the current history");
+      .get(index)
+      .expect("a history ancestor must exist in the retained history");
 
     assert!(
-      Arc::ptr_eq(ancestor, checkpoint_head),
-      "a checkpoint history head must be an ancestor of the current history",
+      Arc::ptr_eq(retained, ancestor),
+      "a history ancestor must be the same retained epoch view",
     );
 
-    let checkpoint_views = &self.views[..=checkpoint_index];
-    let (initial, remaining_views) = checkpoint_views
+    let (initial, remaining_views) = self.views[..=index]
       .split_first()
-      .expect("a checkpoint history must contain the initial view");
+      .expect("a history prefix must contain the initial view");
 
     let mut history = Self::from_initial(Arc::clone(initial));
 
@@ -118,14 +117,14 @@ impl CommittedChainHistory {
     history
   }
 
-  fn initial_epoch(&self) -> &Arc<CommittedChainView> {
+  fn initial_epoch(&self) -> &Arc<EpochView> {
     self
       .views
       .first()
       .expect("committed chain history always contains its initial view")
   }
 
-  pub(crate) fn optimistic_head(&self) -> &Arc<CommittedChainView> {
+  pub(crate) fn optimistic_head(&self) -> &Arc<EpochView> {
     self
       .views
       .last()
@@ -136,8 +135,8 @@ impl CommittedChainHistory {
     self.optimistic_head().epoch_height()
   }
 
-  pub(crate) fn append_executed_epoch(&mut self, view: Arc<CommittedChainView>) {
-    let epoch = view.local_epoch();
+  pub(crate) fn append_executed_epoch(&mut self, view: Arc<EpochView>) {
+    let artifacts = view.local_artifacts();
     let epoch_height = view.epoch_height();
     let expected_epoch_height = self
       .optimistic_height()
@@ -149,23 +148,23 @@ impl CommittedChainHistory {
       "an executed epoch append must contain the next epoch height",
     );
     assert_eq!(
-      epoch.ordered_blocks.len(),
-      epoch.block_receipts.len(),
+      artifacts.ordered_blocks.len(),
+      artifacts.block_receipts.len(),
       "every executed block must have one block receipt collection",
     );
     assert_eq!(
-      epoch.start_block_number,
+      artifacts.start_block_number,
       self.optimistic_head().next_epoch_start_block_number(),
       "an executed epoch must continue the cumulative Core block number",
     );
 
-    let mut block_locations = HashMap::with_capacity(epoch.ordered_blocks.len());
+    let mut block_locations = HashMap::with_capacity(artifacts.ordered_blocks.len());
     let mut transaction_locations = HashMap::new();
 
-    for (block_index, (runtime_block, block_receipts)) in epoch
+    for (block_index, (runtime_block, block_receipts)) in artifacts
       .ordered_blocks
       .iter()
-      .zip(&epoch.block_receipts)
+      .zip(&artifacts.block_receipts)
       .enumerate()
     {
       let runtime_transactions = runtime_block.transactions();
@@ -220,7 +219,7 @@ impl CommittedChainHistory {
       }
     }
 
-    for (index, block) in epoch.skipped_blocks.iter().enumerate() {
+    for (index, block) in artifacts.skipped_blocks.iter().enumerate() {
       let hash = block.hash();
       assert!(
         !self.block_locations.contains_key(&hash),
@@ -251,10 +250,7 @@ impl CommittedChainHistory {
     self.transaction_locations.extend(transaction_locations);
   }
 
-  pub(crate) fn epoch_at_height(
-    &self,
-    epoch_height: BlockHeight,
-  ) -> Option<&Arc<CommittedChainView>> {
+  pub(crate) fn epoch_at_height(&self, epoch_height: BlockHeight) -> Option<&Arc<EpochView>> {
     let offset = epoch_height.checked_sub(self.initial_epoch().epoch_height())?;
     let index = usize::try_from(offset).ok()?;
     self.views.get(index)
@@ -264,7 +260,7 @@ impl CommittedChainHistory {
     &self,
     epoch_height: BlockHeight,
   ) -> Option<EpochHistoryView> {
-    if let ChainEpoch::ForkBase(client) = &self.initial_epoch().epoch {
+    if let EpochSource::ForkBase(client) = &self.initial_epoch().source {
       if epoch_height <= client.base().epoch_height {
         return Some(EpochHistoryView::Fork {
           client: client.clone(),
@@ -287,7 +283,7 @@ impl CommittedChainHistory {
     )
   }
 
-  pub(crate) fn latest_state_epoch(&self) -> &Arc<CommittedChainView> {
+  pub(crate) fn latest_state_epoch(&self) -> &Arc<EpochView> {
     self
       .epoch_at_height(self.latest_state_height())
       .expect("a complete linear history must contain its latest state view")
@@ -310,14 +306,14 @@ impl CommittedChainHistory {
   }
 
   fn mined_block_at(&self, location: BlockLocation) -> MinedBlockView {
-    let chain_view = Arc::clone(
+    let epoch_view = Arc::clone(
       self
         .epoch_at_height(location.epoch_height)
         .expect("an indexed block must reference a committed epoch"),
     );
 
     MinedBlockView {
-      chain_view,
+      epoch_view,
       block_index: location.block_index,
     }
   }

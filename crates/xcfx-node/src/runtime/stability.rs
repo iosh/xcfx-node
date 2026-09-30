@@ -38,7 +38,7 @@ pub(crate) struct InvalidStabilityHeight {
 }
 
 impl Stability {
-  pub(crate) fn initial(view: &CommittedChainView) -> Self {
+  pub(crate) fn initial(view: &EpochView) -> Self {
     if let Some(base) = view.fork_base() {
       return base.stability;
     }

@@ -1,10 +1,10 @@
-//! Immutable chain views and their execution artifacts.
+//! Immutable epoch views, retained execution artifacts, and indexed queries.
 
 mod graph;
 mod history;
 
 pub(crate) use graph::{BlockGraph, GraphError, OrderedEpoch};
-pub(crate) use history::CommittedChainHistory;
+pub(crate) use history::ChainHistory;
 
 use std::sync::Arc;
 
@@ -22,14 +22,15 @@ use crate::{
   state::state_version::{CommittedStateVersion, StateVersion},
 };
 
-pub(crate) struct CommittedEpoch {
+/// Blocks, receipts, and execution commitments retained for one local epoch.
+pub(crate) struct EpochArtifacts {
   start_block_number: BlockNumber,
   ordered_blocks: Vec<RuntimeBlock>,
   skipped_blocks: Vec<RuntimeBlock>,
   commitment: ExecutionCommitment,
   block_receipts: Vec<Arc<BlockReceipts>>,
 }
-impl CommittedEpoch {
+impl EpochArtifacts {
   pub(crate) fn ordered_blocks(&self) -> &[RuntimeBlock] {
     &self.ordered_blocks
   }
@@ -76,18 +77,21 @@ impl CommittedEpoch {
       .expect("the committed pivot block number must fit in BlockNumber")
   }
 }
-enum ChainEpoch {
+enum EpochSource {
   ForkBase(ForkClient),
-  Executed(CommittedEpoch),
+  Executed(EpochArtifacts),
 }
 
-pub(crate) struct CommittedChainView {
-  epoch: ChainEpoch,
+/// Immutable state and execution context for one retained epoch.
+///
+/// A Fork origin carries remote parent metadata without local execution artifacts.
+pub(crate) struct EpochView {
+  source: EpochSource,
   state: CommittedStateVersion,
   pos_context: PosContext,
 }
 
-impl CommittedChainView {
+impl EpochView {
   pub(crate) fn from_genesis(genesis: ExecutedGenesisWithPos) -> Self {
     let ExecutedGenesisWithPos {
       execution,
@@ -102,7 +106,7 @@ impl CommittedChainView {
     } = execution;
 
     Self {
-      epoch: ChainEpoch::Executed(CommittedEpoch {
+      source: EpochSource::Executed(EpochArtifacts {
         start_block_number: 0,
         ordered_blocks: vec![RuntimeBlock::from_system_block(block)],
         skipped_blocks: Vec::new(),
@@ -129,7 +133,7 @@ impl CommittedChainView {
     };
 
     Self {
-      epoch: ChainEpoch::ForkBase(client),
+      source: EpochSource::ForkBase(client),
       state,
       pos_context,
     }
@@ -144,7 +148,7 @@ impl CommittedChainView {
     block_receipts: Vec<Arc<BlockReceipts>>,
   ) -> Self {
     Self {
-      epoch: ChainEpoch::Executed(CommittedEpoch {
+      source: EpochSource::Executed(EpochArtifacts {
         start_block_number: parent.next_epoch_start_block_number(),
         ordered_blocks,
         skipped_blocks,
@@ -157,29 +161,29 @@ impl CommittedChainView {
   }
 
   /// The remote base has state and parent inputs, but no local execution artifacts.
-  pub(crate) fn executed_epoch(&self) -> Option<&CommittedEpoch> {
-    match &self.epoch {
-      ChainEpoch::Executed(epoch) => Some(epoch),
-      ChainEpoch::ForkBase(_) => None,
+  pub(crate) fn artifacts(&self) -> Option<&EpochArtifacts> {
+    match &self.source {
+      EpochSource::Executed(artifacts) => Some(artifacts),
+      EpochSource::ForkBase(_) => None,
     }
   }
 
-  fn local_epoch(&self) -> &CommittedEpoch {
+  fn local_artifacts(&self) -> &EpochArtifacts {
     self
-      .executed_epoch()
+      .artifacts()
       .expect("local history indexes must reference a locally executed epoch")
   }
 
   pub(crate) fn epoch_height(&self) -> BlockHeight {
-    match &self.epoch {
-      ChainEpoch::ForkBase(client) => client.base().epoch_height,
-      ChainEpoch::Executed(epoch) => epoch.pivot_runtime_block().header().height(),
+    match &self.source {
+      EpochSource::ForkBase(client) => client.base().epoch_height,
+      EpochSource::Executed(artifacts) => artifacts.pivot_runtime_block().header().height(),
     }
   }
 
   pub(crate) fn execution_parent(&self) -> BlockParent {
-    match &self.epoch {
-      ChainEpoch::ForkBase(client) => {
+    match &self.source {
+      EpochSource::ForkBase(client) => {
         let base = client.base();
         BlockParent {
           hash: base.pivot_hash,
@@ -191,14 +195,16 @@ impl CommittedChainView {
           pos_reference: base.pos_reference,
         }
       }
-      ChainEpoch::Executed(epoch) => BlockParent::from_header(epoch.pivot_runtime_block().header()),
+      EpochSource::Executed(artifacts) => {
+        BlockParent::from_header(artifacts.pivot_runtime_block().header())
+      }
     }
   }
 
   pub(crate) fn pivot_block_number(&self) -> BlockNumber {
-    match &self.epoch {
-      ChainEpoch::ForkBase(client) => client.base().pivot_block_number,
-      ChainEpoch::Executed(epoch) => epoch.pivot_block_number(),
+    match &self.source {
+      EpochSource::ForkBase(client) => client.base().pivot_block_number,
+      EpochSource::Executed(artifacts) => artifacts.pivot_block_number(),
     }
   }
 
@@ -218,9 +224,9 @@ impl CommittedChainView {
   }
 
   pub(crate) fn fork_base(&self) -> Option<&ForkBase> {
-    match &self.epoch {
-      ChainEpoch::ForkBase(client) => Some(client.base()),
-      ChainEpoch::Executed(_) => None,
+    match &self.source {
+      EpochSource::ForkBase(client) => Some(client.base()),
+      EpochSource::Executed(_) => None,
     }
   }
 }
@@ -229,7 +235,7 @@ impl CommittedChainView {
 /// Only locally executed history includes a local state version and artifacts.
 #[derive(Clone)]
 pub(crate) enum EpochHistoryView {
-  Local(Arc<CommittedChainView>),
+  Local(Arc<EpochView>),
   Fork {
     client: ForkClient,
     epoch_height: BlockHeight,
@@ -246,7 +252,7 @@ impl EpochHistoryView {
 
   pub(crate) fn commitment(&self) -> Result<ExecutionCommitment, ForkReadError> {
     match self {
-      Self::Local(view) => Ok(view.local_epoch().commitment().clone()),
+      Self::Local(view) => Ok(view.local_artifacts().commitment().clone()),
       Self::Fork {
         client,
         epoch_height,
@@ -257,7 +263,7 @@ impl EpochHistoryView {
 
 #[derive(Clone)]
 pub(crate) struct MinedBlockView {
-  chain_view: Arc<CommittedChainView>,
+  epoch_view: Arc<EpochView>,
   block_index: BlockIndex,
 }
 
@@ -269,12 +275,12 @@ enum BlockIndex {
 
 impl MinedBlockView {
   pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
-    let epoch = self.chain_view.local_epoch();
+    let artifacts = self.epoch_view.local_artifacts();
     let block = match self.block_index {
-      BlockIndex::Executed(index) => epoch.ordered_blocks.get(index),
-      BlockIndex::Skipped(index) => epoch.skipped_blocks.get(index),
+      BlockIndex::Executed(index) => artifacts.ordered_blocks.get(index),
+      BlockIndex::Skipped(index) => artifacts.skipped_blocks.get(index),
     };
-    block.expect("an indexed block must exist in its committed chain view")
+    block.expect("an indexed block must exist in its retained epoch view")
   }
 
   /// Returns the Conflux block without runtime transaction metadata.
@@ -295,7 +301,22 @@ impl MinedBlockView {
   }
 
   pub(crate) fn epoch_height(&self) -> BlockHeight {
-    self.chain_view.epoch_height()
+    self.epoch_view.epoch_height()
+  }
+
+  /// Pivot hash of the epoch containing this block in the retained view.
+  pub(crate) fn epoch_id(&self) -> H256 {
+    self.epoch_view.state().epoch_id
+  }
+
+  /// Core execution-order number; skipped blocks have no number.
+  pub(crate) fn block_number(&self) -> Option<BlockNumber> {
+    match self.block_index {
+      BlockIndex::Executed(index) => {
+        Some(self.epoch_view.local_artifacts().start_block_number + index as u64)
+      }
+      BlockIndex::Skipped(_) => None,
+    }
   }
 }
 
@@ -346,6 +367,7 @@ pub(crate) struct TransactionReceiptView {
 
 impl TransactionReceiptView {
   fn new(transaction: MinedTransactionView) -> Option<Self> {
+    // Genesis transactions are indexed, but Genesis retains no transaction receipts.
     Self::block_receipts_for(&transaction)
       .receipts
       .get(transaction.transaction_index)?;
@@ -385,8 +407,8 @@ impl TransactionReceiptView {
     };
     transaction
       .block
-      .chain_view
-      .local_epoch()
+      .epoch_view
+      .local_artifacts()
       .block_receipts
       .get(index)
       .expect("an indexed block must have committed receipts")

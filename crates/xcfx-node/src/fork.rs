@@ -2,11 +2,13 @@
 
 mod cache;
 mod client;
+mod history;
 mod rpc;
 mod service;
 
 pub(crate) use cache::ForkCacheConfig;
 pub(crate) use client::ForkClient;
+pub(crate) use history::{HistoryBlockId, HistoryQuery, HistoryResult};
 pub(crate) use rpc::ForkRpc;
 pub(crate) use service::ForkReadTask;
 

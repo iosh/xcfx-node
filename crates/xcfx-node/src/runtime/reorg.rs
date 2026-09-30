@@ -29,11 +29,11 @@ pub(crate) struct PoolDrop {
 /// Stable old/new views let adapters derive removed and added query results.
 pub(crate) struct ChainChange {
   pub(crate) reason: ChainChangeReason,
-  pub(crate) old_head: Arc<CommittedChainView>,
-  pub(crate) new_head: Arc<CommittedChainView>,
-  pub(crate) common_ancestor: Arc<CommittedChainView>,
-  pub(crate) removed: Vec<Arc<CommittedChainView>>,
-  pub(crate) added: Vec<Arc<CommittedChainView>>,
+  pub(crate) old_head: Arc<EpochView>,
+  pub(crate) new_head: Arc<EpochView>,
+  pub(crate) common_ancestor: Arc<EpochView>,
+  pub(crate) removed: Vec<Arc<EpochView>>,
+  pub(crate) added: Vec<Arc<EpochView>>,
   pub(crate) old_stability: Stability,
   pub(crate) new_stability: Stability,
   pub(crate) reinserted: Vec<H256>,
@@ -66,7 +66,7 @@ impl ChainChange {
 }
 
 struct PreparedHistory {
-  history: CommittedChainHistory,
+  history: ChainHistory,
   shared: usize,
   rejected: BTreeMap<H256, String>,
 }
@@ -131,8 +131,8 @@ impl NodeRuntime {
     }
     let mut past = HashSet::from([self.reset_state.initial_view.state().epoch_id]);
     for view in history.views() {
-      if let Some(epoch) = view.executed_epoch() {
-        past.extend(epoch.all_blocks().map(RuntimeBlock::hash));
+      if let Some(artifacts) = view.artifacts() {
+        past.extend(artifacts.all_blocks().map(RuntimeBlock::hash));
       }
     }
     let count = self
@@ -194,12 +194,12 @@ impl NodeRuntime {
     if ancestor.epoch_height() < boundary {
       return Err(ReorgError::StableBoundary { boundary });
     }
-    let mut history = current.rebuild_through_checkpoint_head(ancestor);
+    let mut history = current.rebuild_through(ancestor);
     let mut rejected = BTreeMap::new();
     let mut past = HashSet::from([self.reset_state.initial_view.state().epoch_id]);
     for view in history.views() {
-      if let Some(epoch) = view.executed_epoch() {
-        past.extend(epoch.all_blocks().map(RuntimeBlock::hash));
+      if let Some(artifacts) = view.artifacts() {
+        past.extend(artifacts.all_blocks().map(RuntimeBlock::hash));
       }
     }
 
@@ -251,7 +251,7 @@ impl NodeRuntime {
           .chain(&skipped)
           .map(RuntimeBlock::hash),
       );
-      let next = Arc::new(CommittedChainView::from_executed_epoch(
+      let next = Arc::new(EpochView::from_executed_epoch(
         &parent,
         executed.ordered_blocks,
         skipped,
@@ -340,8 +340,8 @@ impl NodeRuntime {
 
   fn reconcile_reorg_pool(
     &self,
-    history: &CommittedChainHistory,
-    removed: &[Arc<CommittedChainView>],
+    history: &ChainHistory,
+    removed: &[Arc<EpochView>],
     rejected: &BTreeMap<H256, String>,
     effective: &Arc<StateVersion>,
   ) -> StateResult<(TransactionPool, Vec<H256>, Vec<PoolDrop>)> {
@@ -390,10 +390,14 @@ impl NodeRuntime {
     let mut reinserted = BTreeSet::new();
     let mut reconsidered = BTreeSet::new();
     for view in removed {
-      let epoch = view
-        .executed_epoch()
+      let artifacts = view
+        .artifacts()
         .expect("removed local epochs have execution artifacts");
-      for (block, receipts) in epoch.ordered_blocks().iter().zip(epoch.block_receipts()) {
+      for (block, receipts) in artifacts
+        .ordered_blocks()
+        .iter()
+        .zip(artifacts.block_receipts())
+      {
         for (transaction, receipt) in block.transactions().iter().zip(&receipts.receipts) {
           if receipt.tx_skipped() || matches!(transaction, RuntimeTransaction::System(_)) {
             continue;

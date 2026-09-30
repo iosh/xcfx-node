@@ -18,7 +18,7 @@ use tokio::{
 use crate::execution::ExecutionCommitment;
 
 use super::{
-  ForkEpochReceipts, ForkReadError,
+  ForkEpochReceipts, ForkReadError, HistoryQuery, HistoryResult,
   cache::{ForkCache, ForkCacheConfig},
   client::{ForkClient, ReadRequest, Reply},
   rpc::{ForkRpc, StateKey},
@@ -130,6 +130,21 @@ impl ForkService {
 
   fn start_read(&mut self, request: ReadRequest) {
     match request {
+      ReadRequest::History { query, reply } => {
+        let should_start_rpc = register_waiter(
+          &mut self.pending.history,
+          &mut self.pending.waiter_count,
+          query,
+          reply,
+        );
+        if should_start_rpc {
+          let rpc = Arc::clone(&self.rpc);
+          self.reads.spawn(async move {
+            let result = rpc.history(query).await;
+            CompletedRead::History { query, result }
+          });
+        }
+      }
       ReadRequest::Balance { address, reply } => {
         if let Some(value) = self.cache.balance(&address) {
           let _ = reply.send(Ok(value));
@@ -264,6 +279,14 @@ impl ForkService {
 
   fn complete_read(&mut self, completed: CompletedRead) {
     match completed {
+      CompletedRead::History { query, result } => {
+        reply_to_waiters(
+          &mut self.pending.history,
+          &mut self.pending.waiter_count,
+          &query,
+          result,
+        );
+      }
       CompletedRead::Balance { address, result } => {
         if let Ok(value) = &result {
           self.cache.insert_balance(address, *value);
@@ -342,6 +365,10 @@ impl ForkService {
 }
 
 enum CompletedRead {
+  History {
+    query: HistoryQuery,
+    result: Result<HistoryResult, ForkReadError>,
+  },
   Balance {
     address: AddressWithSpace,
     result: Result<U256, ForkReadError>,
@@ -377,6 +404,7 @@ enum CompletedRead {
 #[derive(Default)]
 struct PendingReads {
   waiter_count: usize,
+  history: HashMap<HistoryQuery, Vec<Reply<HistoryResult>>>,
   balances: HashMap<AddressWithSpace, Vec<Reply<U256>>>,
   state_values: HashMap<StateKey, Vec<Reply<Option<Arc<[u8]>>>>>,
   pivots: HashMap<BlockHeight, Vec<Reply<Arc<Block>>>>,

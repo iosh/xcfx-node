@@ -28,7 +28,7 @@ use super::{ForkBase, ForkEpoch, ForkEpochReceipts, ForkLoadError, ForkReadError
 
 pub(crate) struct ForkRpc {
   pub(super) base: Arc<ForkBase>,
-  rpc: ConfluxRpcClient,
+  pub(super) rpc: ConfluxRpcClient,
 }
 
 impl ForkRpc {
@@ -159,13 +159,7 @@ impl ForkRpc {
   pub(super) async fn block(&self, epoch: u64, hash: H256) -> Result<Arc<Block>, ForkReadError> {
     self.validate_history(epoch).await?;
     let pivot = self.load_historical_pivot(epoch).await?;
-    let block = self
-      .rpc
-      .cfx_getBlockByHashWithPivotAssumption(hash, pivot.hash, epoch.into())
-      .await?;
-    if block.hash != hash || block.epoch_number != Some(epoch.into()) {
-      return Err(ForkReadError::Inconsistent("block execution identity"));
-    }
+    let block = self.load_block_at_pivot(epoch, pivot.hash, hash).await?;
     self.check_block_number(&block)?;
     self.validate_base().await?;
     Ok(Arc::new(block))
@@ -186,27 +180,11 @@ impl ForkRpc {
   ) -> Result<Arc<ForkEpochReceipts>, ForkReadError> {
     self.validate_history(epoch).await?;
     let pivot = self.load_historical_pivot(epoch).await?;
-    let block_hashes = self.load_block_hashes(epoch, pivot.hash).await?;
     let receipts = self
-      .rpc
-      .cfx_getEpochReceipts(core_hash_selector(pivot.hash), include_espace)
-      .await?
-      .ok_or(ForkReadError::Unavailable("epoch receipts"))?;
-    if receipts.len() != block_hashes.len()
-      || receipts.iter().zip(&block_hashes).any(|(receipts, hash)| {
-        receipts
-          .iter()
-          .any(|receipt| receipt.block_hash != *hash || receipt.epoch_number != Some(epoch.into()))
-      })
-    {
-      return Err(ForkReadError::Inconsistent("epoch receipt identity"));
-    }
+      .load_receipts_at_pivot(epoch, pivot.hash, include_espace)
+      .await?;
     self.validate_base().await?;
-    Ok(Arc::new(ForkEpochReceipts {
-      pivot_hash: pivot.hash,
-      block_hashes,
-      receipts,
-    }))
+    Ok(Arc::new(receipts))
   }
 
   pub(super) async fn commitment(&self, epoch: u64) -> Result<ExecutionCommitment, ForkReadError> {
@@ -238,7 +216,7 @@ impl ForkRpc {
     self.validate_base().await
   }
 
-  async fn validate_base(&self) -> Result<(), ForkReadError> {
+  pub(super) async fn validate_base(&self) -> Result<(), ForkReadError> {
     let pivot = self.load_pivot(self.base.epoch_height).await?;
     if pivot.hash != self.base.pivot_hash
       || pivot.block_number != Some(self.base.pivot_block_number.into())
@@ -280,10 +258,56 @@ impl ForkRpc {
       .ok_or(ForkReadError::Unavailable("pivot header"))
   }
 
-  async fn load_historical_pivot(&self, epoch: u64) -> Result<Block, ForkReadError> {
+  pub(super) async fn load_historical_pivot(&self, epoch: u64) -> Result<Block, ForkReadError> {
     let pivot = self.load_pivot(epoch).await?;
     self.check_block_number(&pivot)?;
     Ok(pivot)
+  }
+
+  // Compound reads own the surrounding base checks; these helpers bind their data
+  // to a pivot without starting another independently checked operation.
+  pub(super) async fn load_block_at_pivot(
+    &self,
+    epoch: u64,
+    pivot_hash: H256,
+    hash: H256,
+  ) -> Result<Block, ForkReadError> {
+    let block = self
+      .rpc
+      .cfx_getBlockByHashWithPivotAssumption(hash, pivot_hash, epoch.into())
+      .await?;
+    if block.hash != hash || block.epoch_number != Some(epoch.into()) {
+      return Err(ForkReadError::Inconsistent("block execution identity"));
+    }
+    Ok(block)
+  }
+
+  pub(super) async fn load_receipts_at_pivot(
+    &self,
+    epoch: u64,
+    pivot_hash: H256,
+    include_espace: bool,
+  ) -> Result<ForkEpochReceipts, ForkReadError> {
+    let block_hashes = self.load_block_hashes(epoch, pivot_hash).await?;
+    let receipts = self
+      .rpc
+      .cfx_getEpochReceipts(core_hash_selector(pivot_hash), include_espace)
+      .await?
+      .ok_or(ForkReadError::Unavailable("epoch receipts"))?;
+    if receipts.len() != block_hashes.len()
+      || receipts.iter().zip(&block_hashes).any(|(receipts, hash)| {
+        receipts
+          .iter()
+          .any(|receipt| receipt.block_hash != *hash || receipt.epoch_number != Some(epoch.into()))
+      })
+    {
+      return Err(ForkReadError::Inconsistent("epoch receipt identity"));
+    }
+    Ok(ForkEpochReceipts {
+      pivot_hash,
+      block_hashes,
+      receipts,
+    })
   }
 
   fn check_block_number(&self, block: &Block) -> Result<(), ForkReadError> {
@@ -505,7 +529,11 @@ impl ForkRpc {
     Ok(exists.then(|| STORAGE_LAYOUT_REGULAR_V0.to_bytes().into()))
   }
 
-  async fn load_block_hashes(&self, epoch: u64, pivot: H256) -> Result<Vec<H256>, ForkReadError> {
+  pub(super) async fn load_block_hashes(
+    &self,
+    epoch: u64,
+    pivot: H256,
+  ) -> Result<Vec<H256>, ForkReadError> {
     let hashes = self
       .rpc
       .cfx_getBlocksByEpoch(EpochNumber::Num(epoch.into()))

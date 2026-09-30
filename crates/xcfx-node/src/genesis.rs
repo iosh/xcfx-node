@@ -884,19 +884,19 @@ mod tests {
     let parent_state = open_committed_state(&parent_view.state().version);
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
 
-    let parent_epoch = parent_view
-      .executed_epoch()
-      .expect("Local Genesis must contain a locally executed epoch");
-    let block = first_core_transfer_block(machine.as_ref(), parent_epoch.pivot_block());
+    let parent_artifacts = parent_view
+      .artifacts()
+      .expect("Local Genesis must retain its execution artifacts");
+    let block = first_core_transfer_block(machine.as_ref(), parent_artifacts.pivot_block());
     let commit_outcome = runtime
       .execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block))
       .expect("the fixed Core transfer block must execute");
     let executed_view = runtime.optimistic_head();
-    let executed_epoch = executed_view
-      .executed_epoch()
+    let artifacts = executed_view
+      .artifacts()
       .expect("local block execution must retain its epoch artifacts");
 
-    let receipts = &executed_epoch.block_receipts()[0];
+    let receipts = &artifacts.block_receipts()[0];
     assert_eq!(receipts.receipts.len(), 1);
     assert_eq!(
       receipts.receipts[0].outcome_status,
@@ -914,7 +914,7 @@ mod tests {
         .is_empty(),
     );
 
-    let executed_block = executed_epoch.pivot_block();
+    let executed_block = artifacts.pivot_block();
     assert_eq!(
       executed_block.hash(),
       H256(hex!(
@@ -928,7 +928,7 @@ mod tests {
       )),
     );
 
-    let commitment = executed_epoch.commitment();
+    let commitment = artifacts.commitment();
     assert_eq!(
       commitment.receipts_root,
       H256(hex!(

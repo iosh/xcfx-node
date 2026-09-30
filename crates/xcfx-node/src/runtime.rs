@@ -1,21 +1,14 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
-
+mod query;
 mod reorg;
 mod stability;
 
-pub(crate) use reorg::PoolDropReason;
-pub(crate) use reorg::{ChainChange, ChainChangeReason};
-pub(crate) use stability::{Stability, StabilityKind, StabilitySource, StablePosition};
-
 use crate::{
   block_producer::{RuntimeBlock, produce_block},
-  chain::{
-    BlockGraph, CommittedChainHistory, CommittedChainView, EpochHistoryView, MinedBlockView,
-    MinedTransactionView, TransactionReceiptView,
-  },
+  chain::{BlockGraph, ChainHistory, EpochHistoryView, EpochView},
   chain_spec::ChainSpec,
   execution::{ExecutedEpoch, TransactionExecutionDisposition, execute_ordered_epoch},
-  fork::{ForkBase, ForkClient, ForkReadError},
+  fork::{ForkClient, ForkReadError},
   genesis::{GenesisError, GenesisHeaderInput, execute_genesis_with_pos},
   pos::GenesisPosDefinition,
   production_environment::{
@@ -44,6 +37,10 @@ use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, address_util::AddressUtil,
 };
 use cfxkey::KeyPair;
+pub(crate) use query::{EpochSelector, StateUnavailable};
+pub(crate) use reorg::PoolDropReason;
+pub(crate) use reorg::{ChainChange, ChainChangeReason};
+pub(crate) use stability::{Stability, StabilityKind, StabilitySource, StablePosition};
 use std::{
   collections::{BTreeMap, btree_map::Entry},
   sync::{
@@ -142,8 +139,8 @@ pub(crate) struct TransactionPoolUpdates {
 /// Facts exposed after one Runtime transition has updated history, indexes, and the pool.
 pub(crate) struct RuntimeCommitOutcome {
   pub(crate) change: ChainChange,
-  pub(crate) optimistic_head: Arc<CommittedChainView>,
-  pub(crate) latest_state_advanced_to: Option<Arc<CommittedChainView>>,
+  pub(crate) optimistic_head: Arc<EpochView>,
+  pub(crate) latest_state_advanced_to: Option<Arc<EpochView>>,
   pub(crate) latest_header_committed_advanced_to: Option<EpochHistoryView>,
   pub(crate) transaction_pool_updates: TransactionPoolUpdates,
 }
@@ -257,7 +254,7 @@ impl EffectiveState {
 }
 
 struct RuntimeState {
-  history: CommittedChainHistory,
+  history: ChainHistory,
   graph: BlockGraph,
   stability: Stability,
   transaction_pool: TransactionPool,
@@ -267,7 +264,7 @@ struct RuntimeState {
 }
 
 struct ResetState {
-  initial_view: Arc<CommittedChainView>,
+  initial_view: Arc<EpochView>,
 }
 
 impl ResetState {
@@ -278,7 +275,7 @@ impl ResetState {
     max_blocks: usize,
   ) -> RuntimeState {
     let reset_base_timestamp = self.initial_view.execution_parent().timestamp;
-    let history = CommittedChainHistory::from_initial(Arc::clone(&self.initial_view));
+    let history = ChainHistory::from_initial(Arc::clone(&self.initial_view));
     let effective_state = EffectiveState::from_committed(history.optimistic_head().state());
 
     RuntimeState {
@@ -294,7 +291,7 @@ impl ResetState {
 }
 
 struct Checkpoint {
-  history_head: Arc<CommittedChainView>,
+  history_head: Arc<EpochView>,
   graph: BlockGraph,
   stability: Stability,
   transaction_pool: TransactionPoolCheckpoint,
@@ -306,7 +303,7 @@ struct Checkpoint {
 impl Checkpoint {
   fn capture(runtime_state: &RuntimeState) -> Self {
     Self {
-      history_head: runtime_state.history.capture_checkpoint_head(),
+      history_head: Arc::clone(runtime_state.history.optimistic_head()),
       graph: runtime_state.graph.clone(),
       stability: runtime_state.stability,
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
@@ -323,7 +320,7 @@ impl Checkpoint {
   ) -> RuntimeState {
     let history = current_runtime_state
       .history
-      .rebuild_through_checkpoint_head(&self.history_head);
+      .rebuild_through(&self.history_head);
 
     RuntimeState {
       history,
@@ -380,7 +377,7 @@ impl NodeRuntime {
 
     Ok(Self::from_initial(
       config,
-      Arc::new(CommittedChainView::from_genesis(genesis)),
+      Arc::new(EpochView::from_genesis(genesis)),
     ))
   }
 
@@ -391,13 +388,10 @@ impl NodeRuntime {
     client: ForkClient,
     globals: [U256; TOTAL_GLOBAL_PARAMS],
   ) -> Self {
-    Self::from_initial(
-      config,
-      Arc::new(CommittedChainView::from_fork(client, globals)),
-    )
+    Self::from_initial(config, Arc::new(EpochView::from_fork(client, globals)))
   }
 
-  fn from_initial(config: RuntimeConfig, initial_view: Arc<CommittedChainView>) -> Self {
+  fn from_initial(config: RuntimeConfig, initial_view: Arc<EpochView>) -> Self {
     let RuntimeConfig {
       chain_spec,
       production_defaults,
@@ -855,7 +849,7 @@ impl NodeRuntime {
 
   fn prepare_block(
     &self,
-    history: &CommittedChainHistory,
+    history: &ChainHistory,
     execution_state: &Arc<StateVersion>,
     pool: &TransactionPool,
     environment: &ProductionEnvironment,
@@ -1048,7 +1042,7 @@ impl NodeRuntime {
       .graph
       .insert(runtime_block.clone())
       .expect("a locally produced block has known predecessors and a stable PoS reference");
-    let next_head = Arc::new(CommittedChainView::from_executed_epoch(
+    let next_head = Arc::new(EpochView::from_executed_epoch(
       &parent,
       vec![runtime_block],
       Vec::new(),
@@ -1104,72 +1098,5 @@ impl NodeRuntime {
         modified_accounts: accounts_for_txpool,
       },
     })
-  }
-
-  pub(crate) fn optimistic_head(&self) -> Arc<CommittedChainView> {
-    Arc::clone(self.runtime_state.history.optimistic_head())
-  }
-
-  /// The original remote identity, unchanged by local execution or reset.
-  pub(crate) fn fork_base(&self) -> Option<&ForkBase> {
-    self.reset_state.initial_view.fork_base()
-  }
-
-  /// A retained state view, starting at Local Genesis or the fixed Fork Base.
-  /// Earlier remote epochs are available only through `epoch_history_at_height`.
-  pub(crate) fn epoch_at_height(
-    &self,
-    epoch_height: BlockHeight,
-  ) -> Option<Arc<CommittedChainView>> {
-    self
-      .runtime_state
-      .history
-      .epoch_at_height(epoch_height)
-      .map(Arc::clone)
-  }
-
-  /// Resolves history by execution height. Positions through the fixed Fork
-  /// Base use remote history; later positions must exist in local history.
-  pub(crate) fn epoch_history_at_height(
-    &self,
-    epoch_height: BlockHeight,
-  ) -> Option<EpochHistoryView> {
-    self
-      .runtime_state
-      .history
-      .epoch_history_at_height(epoch_height)
-  }
-
-  /// Looks up local mined artifacts. Remote history requires an epoch-bound view.
-  pub(crate) fn mined_block_by_hash(&self, block_hash: &H256) -> Option<MinedBlockView> {
-    self.runtime_state.history.mined_block_by_hash(block_hash)
-  }
-
-  pub(crate) fn mined_transaction_by_hash(
-    &self,
-    transaction_hash: &H256,
-  ) -> Option<MinedTransactionView> {
-    self
-      .runtime_state
-      .history
-      .mined_transaction_by_hash(transaction_hash)
-  }
-
-  pub(crate) fn transaction_receipt_by_hash(
-    &self,
-    transaction_hash: &H256,
-  ) -> Option<TransactionReceiptView> {
-    self
-      .runtime_state
-      .history
-      .transaction_receipt_by_hash(transaction_hash)
-  }
-
-  pub(crate) fn latest_state_epoch(&self) -> Arc<CommittedChainView> {
-    Arc::clone(self.runtime_state.history.latest_state_epoch())
-  }
-
-  pub(crate) fn latest_header_committed_epoch(&self) -> EpochHistoryView {
-    self.runtime_state.history.latest_header_committed_epoch()
   }
 }

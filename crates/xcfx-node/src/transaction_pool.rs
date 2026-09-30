@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::runtime_transaction::RuntimeTransaction;
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-use cfx_types::{Address, H256, Space, U128, U256, U512};
+use cfx_types::{Address, AddressWithSpace, H256, Space, U128, U256, U512};
 use primitives::{Account, transaction::TransactionError};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -244,6 +244,30 @@ impl TransactionPool {
 
   pub(crate) fn get_by_key(&self, key: &TransactionKey) -> Option<&PoolEntry> {
     self.by_key.get(key)
+  }
+
+  /// Finds the first unoccupied nonce at or above `state_nonce`.
+  /// Returns `None` if the contiguous sequence exhausts the `U256` range.
+  pub(crate) fn next_nonce(&self, address: AddressWithSpace, state_nonce: U256) -> Option<U256> {
+    let first = TransactionKey {
+      sender: address.address,
+      space: address.space,
+      nonce: state_nonce,
+    };
+    let last = TransactionKey {
+      nonce: U256::max_value(),
+      ..first
+    };
+
+    let mut nonce = state_nonce;
+    for (key, _) in self.by_key.range(first..=last) {
+      if key.nonce != nonce {
+        break;
+      }
+      nonce = nonce.checked_add(U256::one())?;
+    }
+
+    Some(nonce)
   }
 
   pub(crate) fn insert(
@@ -509,12 +533,10 @@ impl TransactionPool {
           state
         } else {
           *balance -= cost;
-          next_nonce.insert(
-            account_key,
-            expected_nonce
-              .checked_add(U256::one())
-              .expect("transaction nonce sequence exhausted"),
-          );
+          // Unique, ordered keys make U256::MAX this account's final entry.
+          if let Some(nonce) = expected_nonce.checked_add(U256::one()) {
+            next_nonce.insert(account_key, nonce);
+          }
           PoolEntryState::Pending
         }
       };

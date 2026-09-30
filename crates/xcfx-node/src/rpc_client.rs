@@ -1,15 +1,24 @@
+mod response;
+
+pub(crate) use response::EthereumBlock;
+
 use std::time::Duration;
 
-use alloy_provider::RootProvider;
+use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_client::{ClientBuilder, RpcClient};
 use alloy_transport::{TransportResult, layers::RetryBackoffLayer};
+
 use cfx_rpc_cfx_types::{
-  Account, Block, BlockHashOrEpochNumber, Bytes, EpochNumber, PoSEconomics, Receipt, RpcAddress,
-  SponsorInfo, Status, StorageCollateralInfo, TokenSupplyInfo, VoteParamsInfo,
+  Account, Block, BlockHashOrEpochNumber, Bytes, EpochNumber, Log, PoSEconomics, Receipt,
+  RpcAddress, SponsorInfo, Status, StorageCollateralInfo, TokenSupplyInfo, Transaction,
+  VoteParamsInfo,
 };
+
 use cfx_types::{H256, U64, U256};
 use primitives::{DepositInfo, VoteStakeInfo};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use response::EthereumReceiptResponse;
 
 /// HTTP timeout and retry policy shared by the Core and eSpace endpoints.
 #[derive(Debug)]
@@ -120,6 +129,117 @@ impl ConfluxRpcClient {
 
   pub(crate) fn espace(&self) -> &RootProvider {
     &self.espace
+  }
+
+  /// Returns the block with transaction hashes.
+  pub(crate) async fn cfx_getBlockByHash(&self, hash: H256) -> TransportResult<Option<Block>> {
+    self.core.request("cfx_getBlockByHash", (hash, false)).await
+  }
+
+  /// Returns the block with transaction hashes.
+  pub(crate) async fn cfx_getBlockByBlockNumber(
+    &self,
+    number: U64,
+  ) -> TransportResult<Option<Block>> {
+    self
+      .core
+      .request("cfx_getBlockByBlockNumber", (number, false))
+      .await
+  }
+
+  pub(crate) async fn cfx_getTransactionByHash(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Option<Transaction>> {
+    self.core.request("cfx_getTransactionByHash", (hash,)).await
+  }
+
+  pub(crate) async fn cfx_getTransactionReceipt(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Option<Receipt>> {
+    self
+      .core
+      .request("cfx_getTransactionReceipt", (hash,))
+      .await
+  }
+
+  pub(crate) async fn cfx_getLogs(&self, block_hashes: Vec<H256>) -> TransportResult<Vec<Log>> {
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BlockHashFilter {
+      block_hashes: Vec<H256>,
+    }
+
+    self
+      .core
+      .request("cfx_getLogs", (BlockHashFilter { block_hashes },))
+      .await
+  }
+
+  pub(crate) async fn eth_getBlockByNumber(
+    &self,
+    number: U64,
+    full_transactions: bool,
+  ) -> TransportResult<Option<EthereumBlock>> {
+    self
+      .espace
+      .client()
+      .request("eth_getBlockByNumber", (number, full_transactions))
+      .await
+  }
+
+  pub(crate) async fn eth_getBlockByHash(
+    &self,
+    hash: H256,
+    full_transactions: bool,
+  ) -> TransportResult<Option<EthereumBlock>> {
+    self
+      .espace
+      .client()
+      .request("eth_getBlockByHash", (hash, full_transactions))
+      .await
+  }
+
+  pub(crate) async fn eth_getTransactionByHash(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Option<cfx_rpc_eth_types::Transaction>> {
+    self
+      .espace
+      .client()
+      .request("eth_getTransactionByHash", (hash,))
+      .await
+  }
+
+  pub(crate) async fn eth_getTransactionReceipt(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Option<cfx_rpc_eth_types::Receipt>> {
+    let receipt: Option<EthereumReceiptResponse> = self
+      .espace
+      .client()
+      .request("eth_getTransactionReceipt", (hash,))
+      .await?;
+
+    Ok(receipt.map(|response| response.0))
+  }
+
+  pub(crate) async fn eth_getLogs(
+    &self,
+    block_hash: H256,
+  ) -> TransportResult<Vec<cfx_rpc_eth_types::Log>> {
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BlockHashFilter {
+      block_hash: H256,
+    }
+
+    self
+      .espace
+      .client()
+      .request("eth_getLogs", (BlockHashFilter { block_hash },))
+      .await
   }
 
   pub(crate) async fn cfx_getStatus(&self) -> TransportResult<Status> {

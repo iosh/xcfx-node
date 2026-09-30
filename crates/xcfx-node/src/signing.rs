@@ -3,7 +3,7 @@ use std::{
   sync::Arc,
 };
 
-use cfx_types::{AddressSpaceUtil, AddressWithSpace};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, Space};
 use cfxkey::KeyPair;
 use primitives::{SignedTransaction, Transaction};
 use thiserror::Error;
@@ -52,6 +52,15 @@ impl SigningKeys {
 
   pub(crate) fn can_sign_for(&self, address: AddressWithSpace) -> bool {
     self.keys.contains_key(&address)
+  }
+
+  pub(crate) fn addresses(&self, space: Space) -> Vec<Address> {
+    self
+      .keys
+      .keys()
+      .filter(|address| address.space == space)
+      .map(|address| address.address)
+      .collect()
   }
 
   pub(crate) fn sign(

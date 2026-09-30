@@ -9,7 +9,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::execution::ExecutionCommitment;
 
-use super::{ForkBase, ForkEpochReceipts, ForkReadError, rpc::StateKey};
+use super::{
+  ForkBase, ForkEpochReceipts, ForkReadError, HistoryQuery, HistoryResult, rpc::StateKey,
+};
 
 pub(super) type Reply<T> = oneshot::Sender<Result<T, ForkReadError>>;
 
@@ -102,6 +104,18 @@ impl ForkClient {
     self.receive(response)
   }
 
+  /// Reads history only from the fixed remote prefix.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if required remote data is unavailable or inconsistent,
+  /// or if the read service cannot complete the request.
+  pub(crate) fn history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
+    let (reply, response) = oneshot::channel();
+    self.send(ReadRequest::History { query, reply })?;
+    self.receive(response)
+  }
+
   fn send(&self, request: ReadRequest) -> Result<(), ForkReadError> {
     if *self.stopping.borrow() {
       return Err(ForkReadError::Closed);
@@ -131,6 +145,10 @@ impl ForkClient {
 }
 
 pub(super) enum ReadRequest {
+  History {
+    query: HistoryQuery,
+    reply: Reply<HistoryResult>,
+  },
   Balance {
     address: AddressWithSpace,
     reply: Reply<U256>,

@@ -18,12 +18,12 @@ use crate::runtime_transaction::RuntimeTransaction;
 
 /// Protocol inputs required to validate a transaction at one chain view.
 pub(crate) struct TransactionValidationContext<'a> {
-  pub(crate) chain_id: AllChainID,
-  pub(crate) height: BlockHeight,
-  pub(crate) transitions: &'a TransitionsEpochHeight,
-  pub(crate) transaction_epoch_bound: u64,
-  pub(crate) max_nonce: Option<U256>,
-  pub(crate) spec: &'a Spec,
+  chain_id: AllChainID,
+  height: BlockHeight,
+  transitions: &'a TransitionsEpochHeight,
+  transaction_epoch_bound: u64,
+  max_nonce: Option<U256>,
+  spec: &'a Spec,
 }
 
 impl<'a> TransactionValidationContext<'a> {
@@ -36,7 +36,9 @@ impl<'a> TransactionValidationContext<'a> {
       height,
       transitions: &params.transition_heights,
       transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
-      max_nonce: None,
+      // Non-skipped executions must consume a nonce; the executor cannot
+      // increment an account nonce at u64::MAX.
+      max_nonce: Some(U256::from(u64::MAX - 1)),
       spec,
     }
   }
