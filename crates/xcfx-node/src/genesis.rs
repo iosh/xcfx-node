@@ -482,7 +482,7 @@ mod tests {
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     production_environment::ProductionDefaults,
-    runtime::{CheckpointPolicy, NodeRuntime, RuntimeConfig},
+    runtime::{NodeRuntime, RuntimeConfig},
     transaction_pool::TransactionPoolPolicy,
   };
 
@@ -868,8 +868,6 @@ mod tests {
         )),
         production_defaults: ProductionDefaults::new(1),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
-        checkpoint_policy: CheckpointPolicy::new(1),
-        max_blocks: 1_024,
       },
       conflux_compatibility_allocations(),
       header,

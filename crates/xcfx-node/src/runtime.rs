@@ -76,23 +76,6 @@ pub(crate) struct CheckpointId {
   sequence: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CheckpointPolicy {
-  max_checkpoints: usize,
-}
-
-impl CheckpointPolicy {
-  pub(crate) const fn new(max_checkpoints: usize) -> Self {
-    Self { max_checkpoints }
-  }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("checkpoint limit reached ({max_checkpoints})")]
-pub(crate) struct CheckpointLimitError {
-  pub(crate) max_checkpoints: usize,
-}
-
 #[derive(Debug, Error, Eq, PartialEq)]
 pub(crate) enum RuntimeTransactionError {
   #[error(transparent)]
@@ -110,8 +93,6 @@ pub(crate) enum RuntimeTransactionError {
 
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeBlockProductionError {
-  #[error(transparent)]
-  Graph(#[from] crate::chain::GraphError),
   #[error(transparent)]
   State(#[from] cfx_statedb::Error),
 
@@ -272,14 +253,13 @@ impl ResetState {
     &self,
     transaction_pool_policy: TransactionPoolPolicy,
     production_defaults: &ProductionDefaults,
-    max_blocks: usize,
   ) -> RuntimeState {
     let reset_base_timestamp = self.initial_view.execution_parent().timestamp;
     let history = ChainHistory::from_initial(Arc::clone(&self.initial_view));
     let effective_state = EffectiveState::from_committed(history.optimistic_head().state());
 
     RuntimeState {
-      graph: BlockGraph::new(self.initial_view.execution_parent(), max_blocks),
+      graph: BlockGraph::new(self.initial_view.execution_parent()),
       stability: Stability::initial(&self.initial_view),
       history,
       transaction_pool: TransactionPool::new(transaction_pool_policy),
@@ -341,8 +321,6 @@ pub(crate) struct RuntimeConfig {
   pub(crate) chain_spec: Arc<ChainSpec>,
   pub(crate) production_defaults: ProductionDefaults,
   pub(crate) transaction_pool_policy: TransactionPoolPolicy,
-  pub(crate) checkpoint_policy: CheckpointPolicy,
-  pub(crate) max_blocks: usize,
 }
 
 pub(crate) struct NodeRuntime {
@@ -351,8 +329,6 @@ pub(crate) struct NodeRuntime {
   signing_keys: SigningKeys,
   impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
-  checkpoint_policy: CheckpointPolicy,
-  max_blocks: usize,
   reset_state: ResetState,
   runtime_state: RuntimeState,
   checkpoints: BTreeMap<u64, Checkpoint>,
@@ -396,12 +372,10 @@ impl NodeRuntime {
       chain_spec,
       production_defaults,
       transaction_pool_policy,
-      checkpoint_policy,
-      max_blocks,
     } = config;
     let reset_state = ResetState { initial_view };
     let runtime_state =
-      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults, max_blocks);
+      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults);
 
     Self {
       chain_spec,
@@ -409,8 +383,6 @@ impl NodeRuntime {
       signing_keys: SigningKeys::default(),
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
-      checkpoint_policy,
-      max_blocks,
       reset_state,
       runtime_state,
       checkpoints: BTreeMap::new(),
@@ -419,13 +391,13 @@ impl NodeRuntime {
     }
   }
 
-  pub(crate) fn create_checkpoint(&mut self) -> Result<CheckpointId, CheckpointLimitError> {
-    if self.checkpoints.len() >= self.checkpoint_policy.max_checkpoints {
-      return Err(CheckpointLimitError {
-        max_checkpoints: self.checkpoint_policy.max_checkpoints,
-      });
-    }
-
+  /// Captures the recoverable Runtime state and returns an instance-local handle.
+  /// Creating a checkpoint does not evict earlier checkpoints.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the checkpoint ID sequence is exhausted.
+  pub(crate) fn create_checkpoint(&mut self) -> CheckpointId {
     let next_checkpoint_sequence = self
       .next_checkpoint_sequence
       .checked_add(1)
@@ -446,7 +418,7 @@ impl NodeRuntime {
 
     self.next_checkpoint_sequence = next_checkpoint_sequence;
 
-    Ok(checkpoint_id)
+    checkpoint_id
   }
 
   pub(crate) fn revert_to_checkpoint(
@@ -476,11 +448,9 @@ impl NodeRuntime {
   }
 
   pub(crate) fn reset(&mut self) -> ChainChange {
-    let next_runtime_state = self.reset_state.build_runtime_state(
-      self.transaction_pool_policy,
-      &self.production_defaults,
-      self.max_blocks,
-    );
+    let next_runtime_state = self
+      .reset_state
+      .build_runtime_state(self.transaction_pool_policy, &self.production_defaults);
 
     let change = ChainChange::between(
       ChainChangeReason::Reset,
@@ -831,7 +801,6 @@ impl NodeRuntime {
   pub(crate) fn produce_and_commit_block(
     &mut self,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
-    self.runtime_state.graph.check_capacity()?;
     let prepared = self.prepare_block(
       &self.runtime_state.history,
       self.runtime_state.effective_state.state(),
@@ -928,13 +897,12 @@ impl NodeRuntime {
   ///
   /// # Errors
   ///
-  /// Returns capacity or state errors without changing the active history,
-  /// pool, controls, or production environment.
+  /// Returns state errors without changing the active history, pool, controls,
+  /// or production environment.
   pub(crate) fn execute_and_commit_single_block_epoch(
     &mut self,
     runtime_block: RuntimeBlock,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
-    self.runtime_state.graph.check_capacity()?;
     self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new())
   }
 

@@ -101,7 +101,6 @@ impl NodeRuntime {
     timestamp: Option<u64>,
     nonce: U256,
   ) -> Result<H256, ReorgError> {
-    self.runtime_state.graph.check_capacity()?;
     let PreparedHistory { history, .. } =
       self.prepare_history(&self.runtime_state.graph, parent)?;
     let head = history.optimistic_head();

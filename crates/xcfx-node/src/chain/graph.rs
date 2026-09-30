@@ -14,8 +14,6 @@ use crate::block_producer::{BlockParent, RuntimeBlock};
 
 #[derive(Debug, Error)]
 pub(crate) enum GraphError {
-  #[error("local block retention limit reached ({0}); prune detached blocks or reset the node")]
-  Capacity(usize),
   #[error("unknown local block {0:?}")]
   UnknownBlock(H256),
   #[error("block does not extend its parent at the next height")]
@@ -35,7 +33,6 @@ pub(crate) enum GraphError {
 pub(crate) struct BlockGraph {
   origin: BlockParent,
   blocks: OrdMap<H256, Arc<RuntimeBlock>>,
-  max_blocks: usize,
 }
 
 pub(crate) struct OrderedEpoch {
@@ -44,23 +41,15 @@ pub(crate) struct OrderedEpoch {
 }
 
 impl BlockGraph {
-  pub(crate) fn new(origin: BlockParent, max_blocks: usize) -> Self {
+  pub(crate) fn new(origin: BlockParent) -> Self {
     Self {
       origin,
       blocks: OrdMap::new(),
-      max_blocks,
     }
   }
 
   pub(crate) fn len(&self) -> usize {
     self.blocks.len()
-  }
-
-  pub(crate) fn check_capacity(&self) -> Result<(), GraphError> {
-    if self.len() >= self.max_blocks {
-      return Err(GraphError::Capacity(self.max_blocks));
-    }
-    Ok(())
   }
 
   pub(crate) fn block(&self, hash: &H256) -> Option<&Arc<RuntimeBlock>> {
@@ -85,7 +74,6 @@ impl BlockGraph {
     if hash == self.origin.hash || self.blocks.contains_key(&hash) {
       return Ok(false);
     }
-    self.check_capacity()?;
     let header = block.header();
     let parent = self.parent_input(*header.parent_hash())?;
     if parent.height.checked_add(1) != Some(header.height()) {
