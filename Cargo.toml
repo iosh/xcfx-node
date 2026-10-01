@@ -15,6 +15,8 @@ alloy-provider = { version = "2.4.1", default-features = false, features = ["req
 alloy-rpc-client = { version = "2.4.1", default-features = false, features = ["reqwest"] }
 alloy-rpc-types-eth = { version = "2.4.1", default-features = false }
 alloy-transport = { version = "2.4.1", default-features = false }
+coins-bip32 = { version = "0.12", default-features = false }
+coins-bip39 = { version = "0.12", default-features = false, features = ["english"] }
 cfx-addr = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfxkey = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-executor = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }

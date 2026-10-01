@@ -204,7 +204,7 @@ impl NodeRuntime {
 
     for (offset, hash) in path.iter().skip(shared).enumerate() {
       let parent = Arc::clone(history.optimistic_head());
-      let OrderedEpoch { blocks, skipped } = graph.ordered_epoch(*hash, &past)?;
+      let OrderedEpoch { blocks, skipped } = graph.ordered_epoch(*hash, &past);
       let start = parent
         .pivot_block_number()
         .checked_add(1)

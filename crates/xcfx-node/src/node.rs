@@ -1,11 +1,14 @@
 //! Startup, Runtime ownership, and shutdown for local and fork nodes.
 
-use std::{collections::BTreeMap, mem};
+use std::{collections::BTreeMap, fmt, mem, sync::Arc};
 
 use cfx_parameters::consensus_internal::ELASTICITY_MULTIPLIER;
 use cfx_types::{AddressWithSpace, U256};
 use thiserror::Error;
-use tokio::{runtime::Handle, task::JoinHandle};
+use tokio::{
+  runtime::Handle,
+  task::{JoinError, JoinHandle},
+};
 
 use crate::{
   fork::{ForkBase, ForkConfig, ForkLoadError, ForkReadError, ForkReadTask, ForkRpc},
@@ -28,14 +31,22 @@ pub(crate) enum ForkStartError {
   UnsupportedConfiguration(&'static str),
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+/// Display and Debug omit task panic payloads; sources retain join failures.
+#[derive(Clone, Error)]
 pub(crate) enum NodeError {
   #[error("node is closing or closed")]
   Closed,
+  /// Runtime access detects termination synchronously; `close` can attach a join failure.
   #[error("fork read service stopped unexpectedly")]
-  ForkServiceStopped,
+  ForkServiceStopped(#[source] Option<Arc<JoinError>>),
   #[error("runtime disposal task did not complete normally")]
-  RuntimeDisposalFailed,
+  RuntimeDisposalFailed(#[source] Arc<JoinError>),
+}
+
+impl fmt::Debug for NodeError {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Display::fmt(self, formatter)
+  }
 }
 
 /// Owns one Runtime and, in fork mode, its remote read service.
@@ -116,7 +127,7 @@ impl Node {
       {
         Ok(runtime)
       }
-      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped),
+      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped(None)),
       NodeState::Stopping { .. } | NodeState::Closed(_) => Err(NodeError::Closed),
     }
   }
@@ -128,12 +139,12 @@ impl Node {
       {
         Ok(runtime)
       }
-      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped),
+      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped(None)),
       NodeState::Stopping { .. } | NodeState::Closed(_) => Err(NodeError::Closed),
     }
   }
 
-  /// Waits for the read service and Runtime disposal, returning any task failure.
+  /// Waits for the read service and Runtime disposal, retaining the first join failure.
   /// Cancelling this wait preserves progress; a later call continues the close.
   pub(crate) async fn close(&mut self) -> Result<(), NodeError> {
     self.begin_close();
@@ -143,20 +154,23 @@ impl Node {
         disposal,
         result,
       } => {
-        if let Some(read_task) = read_task {
-          if read_task.close().await.is_err() && result.is_ok() {
-            *result = Err(NodeError::ForkServiceStopped);
-          }
+        if let Some(read_task) = read_task
+          && let Err(source) = read_task.close().await
+          && result.is_ok()
+        {
+          *result = Err(NodeError::ForkServiceStopped(Some(Arc::new(source))));
         }
-        if disposal.await.is_err() && result.is_ok() {
-          *result = Err(NodeError::RuntimeDisposalFailed);
+        if let Err(source) = disposal.await
+          && result.is_ok()
+        {
+          *result = Err(NodeError::RuntimeDisposalFailed(Arc::new(source)));
         }
-        *result
+        result.clone()
       }
-      NodeState::Closed(result) => return *result,
+      NodeState::Closed(result) => return result.clone(),
       NodeState::Running { .. } => unreachable!("close must first stop Runtime access"),
     };
-    self.state = NodeState::Closed(result);
+    self.state = NodeState::Closed(result.clone());
     result
   }
 

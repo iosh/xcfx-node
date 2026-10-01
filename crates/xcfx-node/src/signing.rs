@@ -1,7 +1,10 @@
-use std::{
-  collections::{BTreeMap, BTreeSet},
-  sync::Arc,
+mod accounts;
+
+pub(crate) use accounts::{
+  AccountConfigError, AccountSource, DerivationPathPrefix, MnemonicAccountConfig, MnemonicPhrase,
 };
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, Space};
 use cfxkey::KeyPair;
@@ -21,10 +24,15 @@ pub(crate) struct SigningKeyConflict {
 /// replace private key material.
 #[derive(Default)]
 pub(crate) struct SigningKeys {
-  keys: BTreeMap<AddressWithSpace, Arc<KeyPair>>,
+  keys: Vec<KeyPair>,
+  by_address: BTreeMap<AddressWithSpace, usize>,
 }
 
 impl SigningKeys {
+  fn len(&self) -> usize {
+    self.keys.len()
+  }
+
   pub(crate) fn add(&mut self, key_pair: KeyPair) -> Result<(), SigningKeyConflict> {
     let addresses = [
       key_pair.address().with_native_space(),
@@ -32,34 +40,40 @@ impl SigningKeys {
     ];
 
     for address in addresses {
-      if let Some(existing) = self.keys.get(&address)
-        && existing.as_ref() != &key_pair
+      if let Some(index) = self.by_address.get(&address)
+        && self.keys[*index] != key_pair
       {
         return Err(SigningKeyConflict { address });
       }
     }
 
-    let key_pair = Arc::new(key_pair);
+    // Both addresses are installed together; a duplicate keeps its original position.
+    if self.by_address.contains_key(&addresses[0]) {
+      return Ok(());
+    }
+
+    let index = self.keys.len();
+    self.keys.push(key_pair);
     for address in addresses {
-      self
-        .keys
-        .entry(address)
-        .or_insert_with(|| Arc::clone(&key_pair));
+      self.by_address.insert(address, index);
     }
 
     Ok(())
   }
 
   pub(crate) fn can_sign_for(&self, address: AddressWithSpace) -> bool {
-    self.keys.contains_key(&address)
+    self.by_address.contains_key(&address)
   }
 
+  /// Returns addresses in the order their keys were first registered.
   pub(crate) fn addresses(&self, space: Space) -> Vec<Address> {
     self
       .keys
-      .keys()
-      .filter(|address| address.space == space)
-      .map(|address| address.address)
+      .iter()
+      .map(|key| match space {
+        Space::Native => key.address(),
+        Space::Ethereum => key.evm_address(),
+      })
       .collect()
   }
 
@@ -71,9 +85,9 @@ impl SigningKeys {
     debug_assert_eq!(transaction.space(), sender.space);
 
     self
-      .keys
+      .by_address
       .get(&sender)
-      .map(|key_pair| transaction.sign(key_pair.secret()))
+      .map(|index| transaction.sign(self.keys[*index].secret()))
   }
 }
 

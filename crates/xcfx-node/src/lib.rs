@@ -1,6 +1,7 @@
 mod block_producer;
 mod chain;
 mod chain_spec;
+mod config;
 mod execution;
 mod fork;
 mod genesis;

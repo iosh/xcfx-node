@@ -867,6 +867,7 @@ mod tests {
           machine.vm_factory(),
         )),
         production_defaults: ProductionDefaults::new(1),
+        signing_keys: Default::default(),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
       },
       conflux_compatibility_allocations(),

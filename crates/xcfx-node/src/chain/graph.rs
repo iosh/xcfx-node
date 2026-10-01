@@ -24,8 +24,6 @@ pub(crate) enum GraphError {
   UnsupportedPosReference,
   #[error("local block production supports only blame-zero headers")]
   UnsupportedBlame,
-  #[error("the pivot parent must already belong to the execution history")]
-  MissingExecutionParent,
 }
 
 /// A fixed origin and immutable blocks; choosing a pivot is a separate operation.
@@ -112,23 +110,21 @@ impl BlockGraph {
     Ok(path)
   }
 
-  /// Computes the execution order for the selected pivot's epoch.
+  /// Computes the execution order for a pivot in a validated parent path.
   ///
-  /// `past` must include all blocks assigned to preceding epochs, including
-  /// skipped blocks and the pivot parent. Only the pivot's referee past can
-  /// introduce additional members.
-  pub(crate) fn ordered_epoch(
-    &self,
-    pivot: H256,
-    past: &HashSet<H256>,
-  ) -> Result<OrderedEpoch, GraphError> {
+  /// `pivot` must be registered in this graph. `past` must include all blocks
+  /// assigned to preceding epochs, including skipped blocks and the pivot parent.
+  /// Only the pivot's referee past can introduce additional members.
+  pub(crate) fn ordered_epoch(&self, pivot: H256, past: &HashSet<H256>) -> OrderedEpoch {
     let pivot_block = self
       .blocks
       .get(&pivot)
-      .ok_or(GraphError::UnknownBlock(pivot))?;
-    if !past.contains(pivot_block.header().parent_hash()) {
-      return Err(GraphError::MissingExecutionParent);
-    }
+      .unwrap_or_else(|| panic!("pivot {pivot:?} from a validated parent path must exist"));
+    let parent = pivot_block.header().parent_hash();
+    assert!(
+      past.contains(parent),
+      "execution history for pivot {pivot:?} must include parent {parent:?}",
+    );
     let mut pending = pivot_block.header().referee_hashes().clone();
     let mut members = HashSet::new();
     while let Some(hash) = pending.pop() {
@@ -174,7 +170,7 @@ impl BlockGraph {
     // belongs to this epoch and must be included in subsequent `past` sets.
     let cut = order.len().saturating_sub(EPOCH_EXECUTED_BLOCK_BOUND);
     let blocks = order.split_off(cut);
-    Ok(OrderedEpoch {
+    OrderedEpoch {
       blocks: blocks
         .into_iter()
         .map(|hash| self.blocks[&hash].as_ref().clone())
@@ -183,7 +179,7 @@ impl BlockGraph {
         .into_iter()
         .map(|hash| self.blocks[&hash].as_ref().clone())
         .collect(),
-    })
+    }
   }
 
   fn predecessors(&self, hash: &H256) -> impl Iterator<Item = H256> + '_ {

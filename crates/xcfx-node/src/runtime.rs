@@ -316,9 +316,10 @@ impl Checkpoint {
     }
   }
 }
-/// Execution rules and local policies shared by Genesis and Fork startup.
+/// Execution rules, signing keys, and local policies for Genesis and Fork startup.
 pub(crate) struct RuntimeConfig {
   pub(crate) chain_spec: Arc<ChainSpec>,
+  pub(crate) signing_keys: SigningKeys,
   pub(crate) production_defaults: ProductionDefaults,
   pub(crate) transaction_pool_policy: TransactionPoolPolicy,
 }
@@ -370,6 +371,7 @@ impl NodeRuntime {
   fn from_initial(config: RuntimeConfig, initial_view: Arc<EpochView>) -> Self {
     let RuntimeConfig {
       chain_spec,
+      signing_keys,
       production_defaults,
       transaction_pool_policy,
     } = config;
@@ -380,7 +382,7 @@ impl NodeRuntime {
     Self {
       chain_spec,
       production_defaults,
-      signing_keys: SigningKeys::default(),
+      signing_keys,
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
       reset_state,
@@ -426,7 +428,7 @@ impl NodeRuntime {
     checkpoint_id: CheckpointId,
   ) -> Option<ChainChange> {
     let next_runtime_state = {
-      let Some(checkpoint) = self.resolve_checkpoint(checkpoint_id) else {
+      let Some(checkpoint) = self.checkpoint(checkpoint_id) else {
         return None;
       };
 
@@ -590,7 +592,7 @@ impl NodeRuntime {
       .timestamp
   }
 
-  fn resolve_checkpoint(&self, checkpoint_id: CheckpointId) -> Option<&Checkpoint> {
+  fn checkpoint(&self, checkpoint_id: CheckpointId) -> Option<&Checkpoint> {
     if checkpoint_id.runtime_instance_id != self.runtime_instance_id {
       return None;
     }
