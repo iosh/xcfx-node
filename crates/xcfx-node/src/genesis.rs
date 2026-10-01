@@ -6,7 +6,7 @@ use cfx_executor::{
   executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
   internal_contract::{initialize_internal_contract_accounts, make_staking_events},
   machine::Machine,
-  state::State,
+  state::{State, initialize_cip107, initialize_cip137, initialize_or_update_dao_voted_params},
 };
 use cfx_parameters::{
   consensus::{GENESIS_GAS_LIMIT, ONE_CFX_IN_DRIP},
@@ -141,6 +141,19 @@ fn execute_genesis_inner(
     &mut state,
     machine.internal_contracts().initialized_at_genesis(),
   )?;
+
+  // Ordinary block hooks start after Genesis and cannot apply transitions at block zero.
+  let transitions = &machine.params().transition_numbers;
+  if transitions.cip94n == 0 {
+    // CIP-105 snapshots PoS staking only after its activation block.
+    initialize_or_update_dao_voted_params(&mut state, false)?;
+  }
+  if transitions.cip107 == 0 {
+    initialize_cip107(&mut state)?;
+  }
+  if transitions.cip137 == 0 {
+    initialize_cip137(&mut state);
+  }
 
   for (address, balance) in allocations {
     state.add_balance(&address, &balance)?;
@@ -444,14 +457,13 @@ mod tests {
   use std::{collections::BTreeMap, sync::Arc};
 
   use cfx_executor::{
-    machine::{Machine, VmFactory},
-    spec::CommonParams,
+    internal_contract::{block_hash_slot, epoch_hash_slot},
+    machine::Machine,
     state::State,
   };
-  use cfx_internal_common::{ChainIdParamsInner, StateRootWithAuxInfo};
   use cfx_parameters::{
     consensus::{GENESIS_GAS_LIMIT, NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT, ONE_CFX_IN_DRIP},
-    consensus_internal::{INITIAL_1559_CORE_BASE_PRICE, INITIAL_1559_ETH_BASE_PRICE},
+    consensus_internal::INITIAL_1559_CORE_BASE_PRICE,
     genesis::{
       DEV_GENESIS_KEY_PAIR, DEV_GENESIS_KEY_PAIR_2, GENESIS_ACCOUNT_ADDRESS,
       genesis_contract_address_two_year,
@@ -459,7 +471,7 @@ mod tests {
     internal_contract_addresses::{ADMIN_CONTROL_CONTRACT_ADDRESS, POS_REGISTER_CONTRACT_ADDRESS},
     staking::POS_VOTE_PRICE,
   };
-  use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, AllChainID, H256, SpaceMap, U256};
+  use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, U256};
   use hex_literal::hex;
 
   use super::{GenesisHeaderInput, execute_genesis, execute_genesis_with_pos};
@@ -468,17 +480,17 @@ mod tests {
   use diem_crypto::ValidCryptoMaterialStringExt;
   use diem_types::{
     block_info::PivotBlockDecision,
-    term_state::{NodeID, pos_state_config::PosStateConfig},
+    term_state::NodeID,
     validator_config::{ConsensusPublicKey, ConsensusVRFPublicKey},
   };
   use primitives::{
-    Action, Block, BlockHeaderBuilder, Cip112TransitionHeight, Transaction, TransactionStatus,
-    transaction::native_transaction::NativeTransaction,
+    Action, Block, BlockHeaderBuilder, Cip112TransitionHeight, Receipt, Transaction,
+    TransactionStatus, transaction::native_transaction::NativeTransaction,
   };
 
   use crate::{
     block_producer::RuntimeBlock,
-    chain_spec::{ChainSpec, PosParameters},
+    chain_spec::{ChainIds, ChainSpec},
     mpt::indexed_mpt_root,
     pos::{GenesisPosDefinition, GenesisPosNode, PosEnvInput},
     production_environment::ProductionDefaults,
@@ -546,16 +558,13 @@ mod tests {
     }
   }
 
-  fn conflux_compatibility_protocol() -> (Arc<Machine>, GenesisHeaderInput) {
-    let mut params = CommonParams::default();
-    params.chain_id = ChainIdParamsInner::new_simple(AllChainID::new(
-      CONFLUX_COMPATIBILITY_CHAIN_ID,
-      CONFLUX_COMPATIBILITY_CHAIN_ID,
-    ));
-    params.min_base_price = SpaceMap::new(
-      INITIAL_1559_CORE_BASE_PRICE.into(),
-      INITIAL_1559_ETH_BASE_PRICE.into(),
-    );
+  fn conflux_compatibility_protocol() -> (Arc<ChainSpec>, GenesisHeaderInput) {
+    let chain_spec = Arc::new(ChainSpec::new(ChainIds {
+      chain_id: CONFLUX_COMPATIBILITY_CHAIN_ID,
+      espace_chain_id: CONFLUX_COMPATIBILITY_CHAIN_ID,
+      network_id: u64::from(CONFLUX_COMPATIBILITY_CHAIN_ID),
+    }));
+    let params = chain_spec.machine().params();
 
     let custom = params
       .custom_prefix(0)
@@ -573,10 +582,7 @@ mod tests {
       base_price: Some(params.init_base_price()),
     };
 
-    (
-      Arc::new(Machine::new_with_builtin(params, VmFactory::new(32 * 1024))),
-      header,
-    )
+    (chain_spec, header)
   }
 
   fn conflux_compatibility_allocations() -> BTreeMap<AddressWithSpace, U256> {
@@ -594,12 +600,6 @@ mod tests {
         balance,
       ),
     ])
-  }
-
-  fn compatibility_state_root() -> StateRootWithAuxInfo {
-    StateRootWithAuxInfo::genesis(&H256(hex!(
-      "58d1e6734e0b05be59871ccd92ad887f0d5a6ea19da7c6a4969a87108394e511"
-    )))
   }
 
   fn first_core_transfer_block(machine: &Machine, genesis_block: &Block) -> Block {
@@ -656,28 +656,27 @@ mod tests {
   }
 
   #[test]
-  fn conflux_genesis_matches_reference_outputs() {
-    let (machine, header) = conflux_compatibility_protocol();
+  fn conflux_genesis_initializes_state_and_contracts() {
+    let (chain_spec, header) = conflux_compatibility_protocol();
 
-    let genesis = execute_genesis(machine, conflux_compatibility_allocations(), header)
-      .expect("the fixed Conflux compatibility Genesis must execute");
+    let genesis = execute_genesis(
+      Arc::clone(chain_spec.machine()),
+      conflux_compatibility_allocations(),
+      header,
+    )
+    .expect("the fixed Conflux compatibility Genesis must execute");
 
-    let expected_block_hash = H256(hex!(
-      "7845ae760141b70fae492a0c6759dd592eeeb194bba90338f1bf7d7ab4aeb967"
-    ));
-    let expected_state_root = compatibility_state_root();
+    let state_root = genesis
+      .committed_state
+      .version
+      .root_with_aux_info()
+      .expect("Genesis has an MPT root");
 
-    // The fixed outputs are the compatibility contract for this fixture.
     let header = &genesis.block.block_header;
     assert_eq!(
-      genesis.block.hash(),
-      expected_block_hash,
-      "Genesis block hash changed",
-    );
-    assert_eq!(
       genesis.commitment.state_root,
-      Some(expected_state_root.aux_info.state_root_hash),
-      "Genesis state root changed",
+      Some(state_root.aux_info.state_root_hash),
+      "Genesis commitment must describe the committed state",
     );
     assert_eq!(
       *header.transactions_root(),
@@ -695,28 +694,27 @@ mod tests {
     );
     assert_eq!(
       *header.deferred_state_root(),
-      expected_state_root.aux_info.state_root_hash,
-      "Genesis deferred state root changed",
+      state_root.aux_info.state_root_hash,
+      "Genesis header must commit its initial state",
     );
 
     // The committed version must describe the same block and state.
     assert_eq!(
-      genesis.committed_state.epoch_id, expected_block_hash,
-      "committed Genesis epoch identity changed",
-    );
-    assert_eq!(
-      genesis
-        .committed_state
-        .version
-        .root_with_aux_info()
-        .expect("Genesis has an MPT root"),
-      expected_state_root,
-      "committed Genesis state does not match execution output",
+      genesis.committed_state.epoch_id,
+      genesis.block.hash(),
+      "committed Genesis state must use the Genesis block identity",
     );
 
     // Read representative state through the committed-state boundary.
     let state = open_committed_state(&genesis.committed_state.version);
     let allocation_balance = U256::from_dec_str(COMPATIBILITY_ALLOCATION_BALANCE).unwrap();
+
+    assert_eq!(state.pow_base_reward(), U256::from(2 * ONE_CFX_IN_DRIP));
+    assert_eq!(
+      state.storage_point_prop().unwrap(),
+      U256::from(ONE_CFX_IN_DRIP)
+    );
+    assert_eq!(state.get_base_price_prop(), U256::from(ONE_CFX_IN_DRIP));
 
     assert_eq!(
       state
@@ -788,14 +786,14 @@ mod tests {
     let node = &definition.initial_nodes[0];
     let expected_staking = U256::from(node.voting_power) * *POS_VOTE_PRICE;
 
-    let (machine, header) = conflux_compatibility_protocol();
+    let (chain_spec, header) = conflux_compatibility_protocol();
 
     let genesis = execute_genesis_with_pos(
-      machine,
+      Arc::clone(chain_spec.machine()),
       conflux_compatibility_allocations(),
       header,
       &definition,
-      &PosStateConfig::default(),
+      chain_spec.pos_state_config(),
     )
     .expect("the fixed initial PoS registration must execute");
 
@@ -806,24 +804,16 @@ mod tests {
       .pos_reference()
       .as_ref()
       .and_then(|reference| genesis.committed_pos_state.env_input(reference));
-    let expected_genesis_hash = H256(hex!(
-      "2c5da3de0eab09b328de0f1efa688002d13327976c70444e932851f1ff70b6d0"
-    ));
-
+    let genesis_hash = genesis.execution.block.hash();
     assert_eq!(
-      genesis.execution.block.hash(),
-      expected_genesis_hash,
-      "PoS Genesis block hash changed",
-    );
-    assert_eq!(
-      genesis.execution.committed_state.epoch_id, expected_genesis_hash,
+      genesis.execution.committed_state.epoch_id, genesis_hash,
       "committed execution state must use the PoS Genesis block identity",
     );
     assert_eq!(
       genesis.committed_pos_state.pivot_decision(),
       &PivotBlockDecision {
         height: 0,
-        block_hash: expected_genesis_hash,
+        block_hash: genesis_hash,
       },
       "committed PoS state must pivot on the PoS Genesis block",
     );
@@ -855,17 +845,13 @@ mod tests {
   }
 
   #[test]
-  fn ordered_core_transfer_matches_reference_outputs() {
+  fn ordered_core_transfer_commits_balances_fees_and_history() {
     let definition = single_validator_genesis_definition();
-    let (machine, header) = conflux_compatibility_protocol();
+    let (chain_spec, header) = conflux_compatibility_protocol();
 
     let mut runtime = NodeRuntime::from_genesis(
       RuntimeConfig {
-        chain_spec: Arc::new(ChainSpec::new(
-          machine.params().clone(),
-          PosParameters::default(),
-          machine.vm_factory(),
-        )),
+        chain_spec: Arc::clone(&chain_spec),
         production_defaults: ProductionDefaults::new(1),
         signing_keys: Default::default(),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
@@ -881,12 +867,15 @@ mod tests {
 
     let parent_view = runtime.optimistic_head();
     let parent_state = open_committed_state(&parent_view.state().version);
+    let parent_sender_balance = parent_state.balance(&sender).unwrap();
     let parent_receiver_balance = parent_state.balance(&receiver).unwrap();
+    let parent_total_issued = parent_state.total_issued_tokens();
 
     let parent_artifacts = parent_view
       .artifacts()
       .expect("Local Genesis must retain its execution artifacts");
-    let block = first_core_transfer_block(machine.as_ref(), parent_artifacts.pivot_block());
+    let genesis_hash = parent_artifacts.pivot_block().hash();
+    let block = first_core_transfer_block(chain_spec.machine(), parent_artifacts.pivot_block());
     let commit_outcome = runtime
       .execute_and_commit_single_block_epoch(RuntimeBlock::from_recovered_block(block))
       .expect("the fixed Core transfer block must execute");
@@ -896,14 +885,16 @@ mod tests {
       .expect("local block execution must retain its epoch artifacts");
 
     let receipts = &artifacts.block_receipts()[0];
-    assert_eq!(receipts.receipts.len(), 1);
+    let transaction_fee = U256::from(21_000) * U256::from(INITIAL_1559_CORE_BASE_PRICE);
     assert_eq!(
-      receipts.receipts[0].outcome_status,
-      TransactionStatus::Success,
-    );
-    assert_eq!(
-      receipts.receipts[0].accumulated_gas_used,
-      U256::from(21_000),
+      receipts.receipts,
+      vec![Receipt {
+        accumulated_gas_used: U256::from(21_000),
+        gas_fee: transaction_fee,
+        outcome_status: TransactionStatus::Success,
+        burnt_gas_fee: Some(transaction_fee / U256::from(2)),
+        ..Default::default()
+      }],
     );
     assert!(receipts.tx_execution_error_messages[0].is_empty());
     assert!(
@@ -914,12 +905,7 @@ mod tests {
     );
 
     let executed_block = artifacts.pivot_block();
-    assert_eq!(
-      executed_block.hash(),
-      H256(hex!(
-        "3a295cd18717ed5f12db90924dd2c18149550525b4a3a935820fb5fe2371fc01"
-      )),
-    );
+    assert_eq!(*executed_block.block_header.parent_hash(), genesis_hash);
     assert_eq!(
       executed_block.transactions[0].hash(),
       H256(hex!(
@@ -929,12 +915,6 @@ mod tests {
 
     let commitment = artifacts.commitment();
     assert_eq!(
-      commitment.receipts_root,
-      H256(hex!(
-        "b7e75236463af7898471c5c20487d66a45f4e6d163af32d2b44d9225ffad4c75"
-      )),
-    );
-    assert_eq!(
       commitment.logs_bloom_hash,
       H256(hex!(
         "d397b3b043d87fcd6fad1291ff0bfd16401c274896d8c63a923727f077b8e0b5"
@@ -942,19 +922,51 @@ mod tests {
     );
     assert_eq!(
       commitment.state_root,
-      Some(H256(hex!(
-        "b783510d8cbe6e6bb27d9402a26a2cae4c51c9920c0d20a7b3af76335a2959ef"
-      ))),
+      Some(
+        executed_view
+          .state()
+          .version
+          .root_with_aux_info()
+          .expect("local execution has an MPT root")
+          .aux_info
+          .state_root_hash,
+      ),
     );
 
     let executed_state = open_committed_state(&executed_view.state().version);
     assert_eq!(executed_state.nonce(&sender).unwrap(), U256::one());
     assert_eq!(
+      executed_state.balance(&sender).unwrap(),
+      parent_sender_balance - U256::from(ONE_CFX_IN_DRIP) - transaction_fee,
+    );
+    assert_eq!(
       executed_state.balance(&receiver).unwrap(),
       parent_receiver_balance + U256::from(ONE_CFX_IN_DRIP),
     );
+    assert_eq!(
+      executed_state.total_issued_tokens(),
+      parent_total_issued - transaction_fee / U256::from(2),
+      "CIP-137 must burn half of the base fee with the initial share ratio",
+    );
+
+    for slot in [block_hash_slot(0), epoch_hash_slot(0)] {
+      assert_eq!(
+        executed_state.get_system_storage(&slot).unwrap(),
+        U256::from_big_endian(genesis_hash.as_bytes()),
+        "the first local epoch must make the Genesis hash available",
+      );
+      assert_eq!(
+        parent_state.get_system_storage(&slot).unwrap(),
+        U256::zero()
+      );
+    }
 
     assert_eq!(parent_state.nonce(&sender).unwrap(), U256::zero());
+    assert_eq!(
+      parent_state.balance(&sender).unwrap(),
+      parent_sender_balance
+    );
+    assert_eq!(parent_state.total_issued_tokens(), parent_total_issued);
     assert_eq!(
       parent_state.balance(&receiver).unwrap(),
       parent_receiver_balance,

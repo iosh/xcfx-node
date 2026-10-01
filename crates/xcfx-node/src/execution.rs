@@ -6,6 +6,7 @@ use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts}
 use cfx_executor::{
   epoch_execution::{before_block_execution, before_epoch_execution},
   executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
+  internal_contract::{block_hash_slot, epoch_hash_slot},
   machine::Machine,
   state::State,
 };
@@ -77,6 +78,28 @@ pub(crate) fn compute_epoch_receipts_root(block_receipts: &[Arc<BlockReceipts>])
   indexed_mpt_root(block_receipt_roots.iter().map(|root| root.as_bytes()))
 }
 
+/// System-storage entries needed before executing on a local Genesis state.
+/// Genesis cannot include its own hash in the state used to compute that hash.
+/// Fork history belongs to the remote state and must not be initialized here.
+pub(crate) fn genesis_hash_storage_entries(
+  machine: &Machine,
+  parent_block: &BlockParent,
+  parent_state: &StateVersion,
+) -> impl Iterator<Item = ([u8; 32], U256)> {
+  let local_genesis = parent_block.height == 0 && matches!(parent_state, StateVersion::Mpt(_));
+  let params = machine.params();
+  let genesis_hash = U256::from_big_endian(parent_block.hash.as_bytes());
+
+  [
+    (local_genesis && params.transition_numbers.cip133b == 0)
+      .then_some((block_hash_slot(0), genesis_hash)),
+    (local_genesis && params.transition_heights.cip133e == 0)
+      .then_some((epoch_hash_slot(0), genesis_hash)),
+  ]
+  .into_iter()
+  .flatten()
+}
+
 fn execute_runtime_transaction(
   state: &mut State<'_>,
   env: &Env,
@@ -134,6 +157,11 @@ pub(crate) fn execute_ordered_epoch(
   let pivot_block = protocol_block(pivot);
   let mut candidate = StateCandidate::new(Arc::clone(execution_state));
   let mut state = State::new(StateDb::new(&mut candidate))?;
+
+  for (slot, hash) in genesis_hash_storage_entries(machine, parent_block, &parent_state.version) {
+    state.set_system_storage(slot.into(), hash)?;
+  }
+
   before_epoch_execution(&mut state, machine, &pivot_block)?;
 
   let base_gas_price = pivot.header().base_price().unwrap_or_default();

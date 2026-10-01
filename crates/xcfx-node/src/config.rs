@@ -7,17 +7,11 @@ use reqwest::Url;
 use thiserror::Error;
 
 use crate::{
+  chain_spec::ChainIds,
   fork::{ForkCacheConfig, ForkEpoch},
   rpc_client::HttpRpcConfig,
   signing::AccountSource,
 };
-
-/// The local execution profile, independent of a fork's source network identity.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ProtocolProfile {
-  #[default]
-  Development,
-}
 
 /// Scheduling uses wall time; block timestamps use `timestamp_increment`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -26,25 +20,6 @@ pub(crate) enum MiningMode {
   Auto,
   Manual,
   Interval(Duration),
-}
-
-/// Chain and address-network identifiers for a source or local instance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ChainIdentity {
-  pub(crate) chain_id: u32,
-  pub(crate) espace_chain_id: u32,
-  pub(crate) network_id: u64,
-}
-
-impl Default for ChainIdentity {
-  fn default() -> Self {
-    let chain_id = 201_029;
-    Self {
-      chain_id,
-      espace_chain_id: 31_337,
-      network_id: u64::from(chain_id),
-    }
-  }
 }
 
 /// Signing sources and the initial balance assigned to each address in each Space.
@@ -102,7 +77,6 @@ impl ForkOptions {
 /// Parsed instance configuration. Transport listeners have their own configuration.
 /// Chain IDs remain optional so startup can distinguish overrides from defaults.
 pub(crate) struct NodeConfig {
-  pub(crate) profile: ProtocolProfile,
   pub(crate) chain_id: Option<u32>,
   pub(crate) espace_chain_id: Option<u32>,
   pub(crate) network_id: Option<u64>,
@@ -122,7 +96,6 @@ pub(crate) struct NodeConfig {
 impl Default for NodeConfig {
   fn default() -> Self {
     Self {
-      profile: ProtocolProfile::default(),
       chain_id: None,
       espace_chain_id: None,
       network_id: None,
@@ -155,11 +128,11 @@ impl NodeConfig {
   }
 
   /// Local startup defaults the network ID to the effective Core chain ID.
-  pub(crate) fn local_chain_identity(&self) -> ChainIdentity {
-    assert!(self.fork.is_none(), "local identity requires local startup");
-    let defaults = ChainIdentity::default();
+  pub(crate) fn local_chain_ids(&self) -> ChainIds {
+    assert!(self.fork.is_none(), "local chain IDs require local startup");
+    let defaults = ChainIds::default();
     let chain_id = self.chain_id.unwrap_or(defaults.chain_id);
-    ChainIdentity {
+    ChainIds {
       chain_id,
       espace_chain_id: self.espace_chain_id.unwrap_or(defaults.espace_chain_id),
       network_id: self.network_id.unwrap_or(u64::from(chain_id)),
@@ -167,9 +140,9 @@ impl NodeConfig {
   }
 
   /// Fork startup requires the loaded source identity before applying overrides.
-  pub(crate) fn fork_chain_identity(&self, source: ChainIdentity) -> ChainIdentity {
-    assert!(self.fork.is_some(), "fork identity requires fork startup");
-    ChainIdentity {
+  pub(crate) fn fork_chain_ids(&self, source: ChainIds) -> ChainIds {
+    assert!(self.fork.is_some(), "fork chain IDs require fork startup");
+    ChainIds {
       chain_id: self.chain_id.unwrap_or(source.chain_id),
       espace_chain_id: self.espace_chain_id.unwrap_or(source.espace_chain_id),
       network_id: self.network_id.unwrap_or(source.network_id),

@@ -9,7 +9,9 @@ use cfx_executor::{
   machine::Machine,
   state::State,
 };
-use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
+use cfx_parameters::{
+  consensus::TRANSACTION_DEFAULT_EPOCH_BOUND, internal_contract_addresses::SYSTEM_STORAGE_ADDRESS,
+};
 use cfx_rpc_eth_types::{
   AccountOverride as ExecutorAccountOverride, AccountStateOverrideMode,
   StateOverride as ExecutorStateOverride,
@@ -20,8 +22,9 @@ use primitives::{BlockNumber, SignedTransaction, Transaction, transaction::Trans
 use thiserror::Error;
 
 use crate::{
-  block_producer::BlockParent, pos::PosContext, runtime_transaction::fake_sign_for_execution,
-  state::state_version::StateVersion, transaction_ingress::TransactionValidationContext,
+  block_producer::BlockParent, execution::genesis_hash_storage_entries, pos::PosContext,
+  runtime_transaction::fake_sign_for_execution, state::state_version::StateVersion,
+  transaction_ingress::TransactionValidationContext,
 };
 
 /// A fully resolved transaction and the sender to use for this execution.
@@ -209,6 +212,23 @@ pub(crate) fn execute_virtual_transaction(
     State::new_with_override(database, &executor_overrides, transaction_space)?
   };
 
+  // Explicit Core system-storage overrides take precedence over the history
+  // baseline. eSpace overrides cannot replace Core system storage.
+  let system_storage_override = executor_overrides
+    .get(&SYSTEM_STORAGE_ADDRESS)
+    .filter(|_| transaction_space == Space::Native)
+    .map(|account| &account.state);
+  for (slot, hash) in genesis_hash_storage_entries(machine, parent_block, effective_state) {
+    let overridden = match system_storage_override {
+      Some(AccountStateOverrideMode::State(_)) => true,
+      Some(AccountStateOverrideMode::Diff(storage)) => storage.contains_key(&H256(slot)),
+      _ => false,
+    };
+    if !overridden {
+      state.set_system_storage(slot.into(), hash)?;
+    }
+  }
+
   let pos_env = parent_pos_context
     .env_input(&parent_block.pos_reference)
     .expect("committed PoS context must contain the parent block reference");
@@ -234,10 +254,9 @@ pub(crate) fn execute_virtual_transaction(
   };
   environment.apply(&mut env);
 
-  // Overrides enter State through its transaction cache. Saving once makes
-  // them the execution baseline and satisfies ExecutiveContext's empty-cache
-  // invariant; the returned snapshot is unnecessary because this State dies
-  // with the request.
+  // Saving makes overrides and initial history the transaction baseline and
+  // satisfies ExecutiveContext's empty-cache invariant. The snapshot can be
+  // discarded because this State dies with the request.
   drop(state.save());
 
   let outcome = ExecutiveContext::new(&mut state, &env, machine, &spec).transact(
