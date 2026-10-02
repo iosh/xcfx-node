@@ -1,5 +1,6 @@
 //! In-memory representations used by Conflux state handling.
 
+pub(crate) mod balance;
 pub(crate) mod delta_mpt;
 pub(crate) mod fork_state;
 pub(crate) mod mpt_state;

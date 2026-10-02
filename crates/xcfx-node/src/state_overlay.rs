@@ -7,7 +7,10 @@ use cfx_statedb::StateDb;
 use cfx_types::{AddressWithSpace, Space, U256, address_util::AddressUtil};
 use thiserror::Error;
 
-use crate::state::state_version::{CommittedStateVersion, StateCandidate, StateVersion};
+use crate::state::{
+  balance::{BalanceChangeError, burn_balance, mint_balance},
+  state_version::{CommittedStateVersion, StateCandidate, StateVersion},
+};
 
 /// A Runtime control intent, not a protocol transaction or committed state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,38 +112,22 @@ pub(crate) enum StateControlValidationError {
   },
 }
 
-/// Identifies a global supply counter maintained by Conflux state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupplyCounter {
-  TotalIssued,
-  TotalEvmToken,
-}
-
 /// Errors discovered while preparing controls against a private candidate.
 #[derive(Debug, Error)]
 pub(crate) enum StateControlPreparationError {
   #[error(transparent)]
   StateBackend(#[from] cfx_statedb::Error),
 
-  #[error("insufficient balance for {address:?}: requested={requested}, available={available}")]
-  InsufficientBalance {
-    address: AddressWithSpace,
-    requested: U256,
-    available: U256,
-  },
+  #[error(transparent)]
+  Balance(#[from] BalanceChangeError),
 
-  #[error("balance overflow for {address:?}: current={current}, amount={amount}")]
-  BalanceOverflow {
-    address: AddressWithSpace,
-    current: U256,
-    amount: U256,
-  },
-
-  #[error("supply overflow for {counter:?}: current={current}, amount={amount}")]
-  SupplyOverflow {
-    counter: SupplyCounter,
-    current: U256,
-    amount: U256,
+  #[error(
+    "state control capacity exceeded: retained={retained}, requested={requested}, limit={limit}"
+  )]
+  Capacity {
+    retained: usize,
+    requested: usize,
+    limit: usize,
   },
 
   #[error("nonce cannot decrease for {address:?}: current={current}, requested={requested}")]
@@ -247,11 +234,14 @@ fn apply_control(
       let from_balance = state.balance(from)?;
 
       if from_balance < *amount {
-        return Err(StateControlPreparationError::InsufficientBalance {
-          address: *from,
-          requested: *amount,
-          available: from_balance,
-        });
+        return Err(
+          BalanceChangeError::InsufficientBalance {
+            address: *from,
+            requested: *amount,
+            available: from_balance,
+          }
+          .into(),
+        );
       }
 
       if from == to {
@@ -261,98 +251,25 @@ fn apply_control(
       let to_balance = state.balance(to)?;
 
       if to_balance.checked_add(*amount).is_none() {
-        return Err(StateControlPreparationError::BalanceOverflow {
-          address: *to,
-          current: to_balance,
-          amount: *amount,
-        });
+        return Err(
+          BalanceChangeError::BalanceOverflow {
+            address: *to,
+            current: to_balance,
+            amount: *amount,
+          }
+          .into(),
+        );
       }
 
       state.transfer_balance(from, to, amount)?;
     }
 
     StateControl::Mint { to, amount } => {
-      if amount.is_zero() {
-        return Ok(());
-      }
-
-      let balance = state.balance(to)?;
-
-      if balance.checked_add(*amount).is_none() {
-        return Err(StateControlPreparationError::BalanceOverflow {
-          address: *to,
-          current: balance,
-          amount: *amount,
-        });
-      }
-
-      let total_issued = state.total_issued_tokens();
-
-      if total_issued.checked_add(*amount).is_none() {
-        return Err(StateControlPreparationError::SupplyOverflow {
-          counter: SupplyCounter::TotalIssued,
-          current: total_issued,
-          amount: *amount,
-        });
-      }
-
-      if to.space == Space::Ethereum {
-        let total_evm_tokens = state.total_espace_tokens();
-
-        if total_evm_tokens.checked_add(*amount).is_none() {
-          return Err(StateControlPreparationError::SupplyOverflow {
-            counter: SupplyCounter::TotalEvmToken,
-            current: total_evm_tokens,
-            amount: *amount,
-          });
-        }
-      }
-
-      state.add_balance(to, amount)?;
-      state.add_total_issued(*amount);
-
-      if to.space == Space::Ethereum {
-        state.add_total_evm_tokens(*amount);
-      }
+      mint_balance(state, to, *amount)?;
     }
 
     StateControl::Burn { from, amount } => {
-      if amount.is_zero() {
-        return Ok(());
-      }
-
-      let balance = state.balance(from)?;
-
-      if balance < *amount {
-        return Err(StateControlPreparationError::InsufficientBalance {
-          address: *from,
-          requested: *amount,
-          available: balance,
-        });
-      }
-
-      let total_issued = state.total_issued_tokens();
-
-      assert!(
-        total_issued >= *amount,
-        "total issued supply must cover every burn",
-      );
-
-      if from.space == Space::Ethereum {
-        let total_evm_tokens = state.total_espace_tokens();
-
-        assert!(
-          total_evm_tokens >= *amount,
-          "total eSpace supply must cover every eSpace burn",
-        );
-      }
-
-      state.sub_balance(from, amount)?;
-      state.sub_total_issued(*amount);
-
-      if from.space == Space::Ethereum {
-        state.sub_total_evm_tokens(*amount);
-      }
+      burn_balance(state, from, *amount)?;
     }
 
     StateControl::SetNonce { address, nonce } => {

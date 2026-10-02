@@ -12,7 +12,7 @@ pub(crate) use history::{HistoryBlockId, HistoryQuery, HistoryResult};
 pub(crate) use rpc::ForkRpc;
 pub(crate) use service::ForkReadTask;
 
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::BlockNumberOrTag;
@@ -20,6 +20,7 @@ use alloy_transport::TransportError;
 use cfx_parameters::{
   RATIO_BASE_TEN,
   block::{CIP1559_CORE_TRANSACTION_GAS_RATIO, CIP1559_ESPACE_TRANSACTION_GAS_RATIO},
+  consensus::ERA_DEFAULT_EPOCH_COUNT,
 };
 use cfx_rpc_cfx_types::{Block as CoreBlock, EpochNumber, Receipt};
 use cfx_types::{Address, H256, SpaceMap, U256, U512};
@@ -28,13 +29,15 @@ use primitives::{BlockNumber, block::BlockHeight, pos::PosBlockId};
 use thiserror::Error;
 
 use crate::{
+  chain_spec::ChainIds,
   rpc_client::ConfluxRpcClient,
   runtime::{Stability, StabilitySource, StablePosition},
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Source identity retained independently of local execution overrides.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NetworkIdentity {
-  pub(crate) network_id: u64,
+  pub(crate) chain_ids: ChainIds,
   pub(crate) genesis_hash: H256,
 }
 
@@ -44,17 +47,14 @@ pub(crate) enum ForkEpoch {
   Number(BlockHeight),
 }
 
-/// The remote epoch and cache policy for one fork.
-pub(crate) struct ForkConfig {
-  pub(crate) epoch: ForkEpoch,
-  pub(crate) cache: ForkCacheConfig,
-}
-
 /// A remote pivot and the parent inputs needed to extend it locally.
 #[derive(Debug)]
 pub(crate) struct ForkBase {
   pub(crate) stability: Stability,
   pub(crate) network: NetworkIdentity,
+  /// Core epochs per consensus era, used to align checkpoints.
+  /// Resolved from the mainnet preset or an explicit override; RPC does not expose it.
+  pub(crate) era_epoch_count: NonZeroU64,
   pub(crate) epoch_height: BlockHeight,
   pub(crate) pivot_hash: H256,
   /// Core counts all ordered blocks, so this can exceed the epoch height.
@@ -135,6 +135,9 @@ pub(crate) enum ForkLoadError {
 
   #[error("unsupported fork base: {0}")]
   Unsupported(&'static str),
+
+  #[error("fork.era_epoch_count is required for source network {network_id}, which has no preset")]
+  MissingEraEpochCount { network_id: u64 },
 }
 
 impl fmt::Debug for ForkLoadError {
@@ -149,11 +152,28 @@ impl fmt::Debug for ForkLoadError {
 ///
 /// # Errors
 /// Returns an error if required data is unavailable, inconsistent, or unsupported.
+///
+/// # Panics
+/// Panics if the remote chain IDs violate Conflux's `u32` range.
 pub(crate) async fn load_fork_base(
   rpc: &ConfluxRpcClient,
   epoch: ForkEpoch,
+  era_epoch_count: Option<NonZeroU64>,
 ) -> Result<ForkBase, ForkLoadError> {
   let status = rpc.cfx_getStatus().await?;
+  // Conflux exposes its u32 chain IDs as U64 RPC quantities.
+  let chain_ids = ChainIds {
+    chain_id: status.chain_id.as_u32(),
+    espace_chain_id: status.ethereum_space_chain_id.as_u32(),
+    network_id: status.network_id.as_u64(),
+  };
+  let era_epoch_count = match (era_epoch_count, chain_ids.network_id) {
+    (Some(count), _) => count,
+    (None, 1029) => {
+      NonZeroU64::new(ERA_DEFAULT_EPOCH_COUNT).expect("the mainnet era preset must be nonzero")
+    }
+    (None, network_id) => return Err(ForkLoadError::MissingEraEpochCount { network_id }),
+  };
   // Keep the selected epoch fixed while the remote chain advances.
   let latest_state = status.latest_state.as_u64();
   let epoch_height = match epoch {
@@ -168,7 +188,7 @@ pub(crate) async fn load_fork_base(
 
   let genesis = load_pivot(rpc, 0).await?;
   let network = NetworkIdentity {
-    network_id: status.network_id.as_u64(),
+    chain_ids,
     genesis_hash: genesis.hash,
   };
   let pivot = if epoch_height == 0 {
@@ -250,6 +270,7 @@ pub(crate) async fn load_fork_base(
       },
     },
     network,
+    era_epoch_count,
     epoch_height,
     pivot_hash: pivot.hash,
     pivot_block_number: block_number,

@@ -6,7 +6,7 @@ mod history;
 pub(crate) use graph::{BlockGraph, GraphError, OrderedEpoch};
 pub(crate) use history::ChainHistory;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cfx_statedb::global_params::TOTAL_GLOBAL_PARAMS;
 use cfx_types::{AddressWithSpace, H256, U256};
@@ -19,7 +19,10 @@ use crate::{
   genesis::{ExecutedGenesis, ExecutedGenesisWithPos},
   pos::{PosContext, PosEnvInput},
   runtime_transaction::RuntimeTransaction,
-  state::state_version::{CommittedStateVersion, StateVersion},
+  state::{
+    balance::{BalanceChangeError, prepare_initial_balances},
+    state_version::{CommittedStateVersion, StateVersion},
+  },
 };
 
 /// Blocks, receipts, and execution commitments retained for one local epoch.
@@ -118,11 +121,23 @@ impl EpochView {
     }
   }
 
-  pub(crate) fn from_fork(client: ForkClient, globals: [U256; TOTAL_GLOBAL_PARAMS]) -> Self {
+  /// Retains startup funding in the initial view, including the view used by reset.
+  /// May read remote account state synchronously; the calling thread must allow blocking.
+  ///
+  /// # Errors
+  /// Returns balance access or supply errors without creating a view.
+  pub(crate) fn from_fork(
+    client: ForkClient,
+    globals: [U256; TOTAL_GLOBAL_PARAMS],
+    allocations: BTreeMap<AddressWithSpace, U256>,
+  ) -> Result<Self, BalanceChangeError> {
     let base = client.base();
     let state = CommittedStateVersion {
       epoch_id: base.pivot_hash,
-      version: Arc::new(StateVersion::from_fork(client.clone(), globals)),
+      version: prepare_initial_balances(
+        Arc::new(StateVersion::from_fork(client.clone(), globals)),
+        allocations,
+      )?,
     };
     let pos_context = PosContext::Fixed {
       reference: base.pos_reference,
@@ -132,11 +147,11 @@ impl EpochView {
       },
     };
 
-    Self {
+    Ok(Self {
       source: EpochSource::ForkBase(client),
       state,
       pos_context,
-    }
+    })
   }
 
   pub(crate) fn from_executed_epoch(

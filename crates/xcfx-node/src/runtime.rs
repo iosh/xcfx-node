@@ -17,7 +17,10 @@ use crate::{
   },
   runtime_transaction::RuntimeTransaction,
   signing::{ImpersonationState, SigningKeyConflict, SigningKeys},
-  state::state_version::{CommittedStateVersion, StateVersion},
+  state::{
+    balance::BalanceChangeError,
+    state_version::{CommittedStateVersion, StateVersion},
+  },
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
@@ -322,6 +325,7 @@ pub(crate) struct RuntimeConfig {
   pub(crate) signing_keys: SigningKeys,
   pub(crate) production_defaults: ProductionDefaults,
   pub(crate) transaction_pool_policy: TransactionPoolPolicy,
+  pub(crate) max_state_controls: usize,
 }
 
 pub(crate) struct NodeRuntime {
@@ -330,6 +334,7 @@ pub(crate) struct NodeRuntime {
   signing_keys: SigningKeys,
   impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
+  max_state_controls: usize,
   reset_state: ResetState,
   runtime_state: RuntimeState,
   checkpoints: BTreeMap<u64, Checkpoint>,
@@ -359,13 +364,16 @@ impl NodeRuntime {
   }
 
   /// Requires a base compatible with the local execution settings and validated
-  /// initial globals. The caller retains ownership of the remote read task.
+  /// initial globals. Funding completes before the Runtime is created. The
+  /// caller retains ownership of the remote read task, including on failure.
   pub(crate) fn from_fork(
     config: RuntimeConfig,
     client: ForkClient,
     globals: [U256; TOTAL_GLOBAL_PARAMS],
-  ) -> Self {
-    Self::from_initial(config, Arc::new(EpochView::from_fork(client, globals)))
+    allocations: BTreeMap<AddressWithSpace, U256>,
+  ) -> Result<Self, BalanceChangeError> {
+    let initial_view = EpochView::from_fork(client, globals, allocations)?;
+    Ok(Self::from_initial(config, Arc::new(initial_view)))
   }
 
   fn from_initial(config: RuntimeConfig, initial_view: Arc<EpochView>) -> Self {
@@ -374,6 +382,7 @@ impl NodeRuntime {
       signing_keys,
       production_defaults,
       transaction_pool_policy,
+      max_state_controls,
     } = config;
     let reset_state = ResetState { initial_view };
     let runtime_state =
@@ -385,6 +394,7 @@ impl NodeRuntime {
       signing_keys,
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
+      max_state_controls,
       reset_state,
       runtime_state,
       checkpoints: BTreeMap::new(),
@@ -479,6 +489,18 @@ impl NodeRuntime {
   ) -> Result<(), StateControlPreparationError> {
     if batch.is_empty() {
       return Ok(());
+    }
+
+    let retained = self.runtime_state.state_overlay.len();
+    if retained
+      .checked_add(batch.len())
+      .is_none_or(|total| total > self.max_state_controls)
+    {
+      return Err(StateControlPreparationError::Capacity {
+        retained,
+        requested: batch.len(),
+        limit: self.max_state_controls,
+      });
     }
 
     let next_overlay = self.runtime_state.state_overlay.with_appended(batch);

@@ -285,6 +285,9 @@ impl StakingAction {
   }
 }
 
+/// Initial validators and seed shared by execution and PoS bootstrap.
+/// The default has no validators and a zero seed, but still requires normal bootstrap.
+#[derive(Default)]
 pub(crate) struct GenesisPosDefinition {
   pub(crate) initial_seed: H256,
   pub(crate) initial_nodes: Vec<GenesisPosNode>,

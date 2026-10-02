@@ -42,7 +42,10 @@ use crate::{
   pos::{
     CommittedPosState, GENESIS_POS_REFERENCE, GenesisPosDefinition, bootstrap_genesis_pos_state,
   },
-  state::state_version::{CommittedStateVersion, StateCandidate, StateVersion},
+  state::{
+    balance::{BalanceChangeError, mint_balance},
+    state_version::{CommittedStateVersion, StateCandidate, StateVersion},
+  },
 };
 
 const GENESIS_CONTRACT_NAMES: [&str; 7] = [
@@ -77,18 +80,19 @@ pub(crate) struct ExecutedGenesisWithPos {
 
 #[derive(Debug, Error)]
 pub(crate) enum GenesisError {
-  #[error(transparent)]
+  #[error("Genesis state access failed")]
   State(#[from] cfx_statedb::Error),
 
-  #[error(
-    "Genesis contract deployment transaction {index} ({contract}) did not finish: {outcome:?}"
-  )]
+  #[error("Genesis allocations: {0}")]
+  Allocation(#[from] BalanceChangeError),
+
+  #[error("Genesis contract deployment transaction {index} ({contract}) did not finish")]
   DeploymentDidNotFinish {
     index: usize,
     contract: &'static str,
     outcome: ExecutionOutcome,
   },
-  #[error("Genesis PoS registration transaction {index} did not finish: {outcome:?}")]
+  #[error("Genesis PoS registration transaction {index} did not finish")]
   PosRegistrationDidNotFinish {
     index: usize,
     outcome: ExecutionOutcome,
@@ -155,20 +159,16 @@ fn execute_genesis_inner(
     initialize_cip137(&mut state);
   }
 
-  for (address, balance) in allocations {
-    state.add_balance(&address, &balance)?;
-    state.add_total_issued(balance);
-
-    if address.space == Space::Ethereum {
-      state.add_total_evm_tokens(balance);
-    }
-  }
   let genesis_token_count = U256::from(GENESIS_TOKEN_COUNT_IN_CFX) * U256::from(ONE_CFX_IN_DRIP);
   let two_year_unlock_token_count =
     U256::from(TWO_YEAR_UNLOCK_TOKEN_COUNT_IN_CFX) * U256::from(ONE_CFX_IN_DRIP);
   let four_year_unlock_token_count = genesis_token_count - two_year_unlock_token_count;
 
+  // Reserve protocol issuance before applying configurable allocations.
   state.add_total_issued(genesis_token_count);
+  for (address, balance) in allocations {
+    mint_balance(&mut state, &address, balance)?;
+  }
 
   let genesis_account = GENESIS_ACCOUNT_ADDRESS.with_native_space();
   let genesis_account_balance = U256::from(ONE_CFX_IN_DRIP) * U256::from(100) + genesis_token_count;
@@ -855,6 +855,7 @@ mod tests {
         production_defaults: ProductionDefaults::new(1),
         signing_keys: Default::default(),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
+        max_state_controls: 0,
       },
       conflux_compatibility_allocations(),
       header,

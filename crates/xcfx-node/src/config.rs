@@ -7,7 +7,6 @@ use reqwest::Url;
 use thiserror::Error;
 
 use crate::{
-  chain_spec::ChainIds,
   fork::{ForkCacheConfig, ForkEpoch},
   rpc_client::HttpRpcConfig,
   signing::AccountSource,
@@ -45,7 +44,9 @@ pub(crate) struct ForkOptions {
   pub(crate) epoch: ForkEpoch,
   pub(crate) http: HttpRpcConfig,
   pub(crate) cache: ForkCacheConfig,
-  /// `None` defers to the source network's preset, resolved during fork startup.
+  /// Core epochs per consensus era, used to align checkpoints.
+  /// `None` uses the mainnet preset for source network ID 1029.
+  /// Other source networks require an explicit value.
   pub(crate) era_epoch_count: Option<NonZeroU64>,
 }
 
@@ -125,28 +126,6 @@ impl NodeConfig {
       fork.validate()?;
     }
     Ok(())
-  }
-
-  /// Local startup defaults the network ID to the effective Core chain ID.
-  pub(crate) fn local_chain_ids(&self) -> ChainIds {
-    assert!(self.fork.is_none(), "local chain IDs require local startup");
-    let defaults = ChainIds::default();
-    let chain_id = self.chain_id.unwrap_or(defaults.chain_id);
-    ChainIds {
-      chain_id,
-      espace_chain_id: self.espace_chain_id.unwrap_or(defaults.espace_chain_id),
-      network_id: self.network_id.unwrap_or(u64::from(chain_id)),
-    }
-  }
-
-  /// Fork startup requires the loaded source identity before applying overrides.
-  pub(crate) fn fork_chain_ids(&self, source: ChainIds) -> ChainIds {
-    assert!(self.fork.is_some(), "fork chain IDs require fork startup");
-    ChainIds {
-      chain_id: self.chain_id.unwrap_or(source.chain_id),
-      espace_chain_id: self.espace_chain_id.unwrap_or(source.espace_chain_id),
-      network_id: self.network_id.unwrap_or(source.network_id),
-    }
   }
 }
 

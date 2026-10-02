@@ -1,6 +1,6 @@
 //! Conflux RPC reads and state encoding at a fixed fork base.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, num::NonZeroU64, sync::Arc};
 
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::BlockId;
@@ -35,8 +35,9 @@ impl ForkRpc {
   pub(crate) async fn connect(
     rpc: ConfluxRpcClient,
     epoch: ForkEpoch,
+    era_epoch_count: Option<NonZeroU64>,
   ) -> Result<Self, ForkLoadError> {
-    let base = load_fork_base(&rpc, epoch).await?;
+    let base = load_fork_base(&rpc, epoch, era_epoch_count).await?;
     Ok(Self {
       base: Arc::new(base),
       rpc,
@@ -241,7 +242,7 @@ impl ForkRpc {
   }
 
   fn core_address(&self, address: Address) -> RpcAddress {
-    let network = match self.base.network.network_id {
+    let network = match self.base.network.chain_ids.network_id {
       1 => Network::Test,
       1029 => Network::Main,
       id => Network::Id(id),
