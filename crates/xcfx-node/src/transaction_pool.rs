@@ -389,19 +389,6 @@ impl TransactionPool {
     Some(entry.transaction)
   }
 
-  pub(crate) fn remove_stale(&mut self, entry_states: &PoolEntryStates) -> Vec<RuntimeTransaction> {
-    let stale_hashes = entry_states
-      .states
-      .iter()
-      .filter_map(|(hash, state)| matches!(*state, PoolEntryState::Stale).then_some(*hash))
-      .collect::<Vec<_>>();
-
-    stale_hashes
-      .into_iter()
-      .filter_map(|hash| self.remove_by_hash(hash))
-      .collect()
-  }
-
   pub(crate) fn prepare_reconciliation(
     &self,
     transactions_to_remove: impl IntoIterator<Item = H256>,

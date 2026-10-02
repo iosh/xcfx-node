@@ -25,9 +25,9 @@ use crate::{
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
-    AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, TransactionPool,
-    TransactionPoolCheckpoint, TransactionPoolInsertOutcome, TransactionPoolPolicy,
-    TransactionPoolView, pool_transaction_cost,
+    AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
+    TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
+    TransactionPoolPolicy, TransactionPoolView, pool_transaction_cost,
   },
   virtual_execution::{
     VirtualExecutionError, VirtualExecutionOverrides, VirtualExecutionRequest,
@@ -77,10 +77,12 @@ pub(crate) struct CheckpointId {
   sequence: u64,
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Debug, Error)]
 pub(crate) enum RuntimeTransactionError {
   #[error(transparent)]
   Transaction(#[from] TransactionError),
+  #[error(transparent)]
+  State(#[from] cfx_statedb::Error),
   #[error("no signing key is configured for address {address:?}")]
   SigningKeyNotFound { address: AddressWithSpace },
   #[error("impersonation is not authorized for {address:?}")]
@@ -748,8 +750,11 @@ impl NodeRuntime {
   }
 
   /// Validates raw transaction bytes against the current optimistic view and
-  /// inserts the signed Runtime transaction into this Runtime's pool.
-  pub(crate) fn submit_raw_transaction(&mut self, raw: &[u8]) -> Result<H256, TransactionError> {
+  /// the sender's effective nonce before inserting into this Runtime's pool.
+  pub(crate) fn submit_raw_transaction(
+    &mut self,
+    raw: &[u8],
+  ) -> Result<H256, RuntimeTransactionError> {
     let transaction = {
       let optimistic_head = self.runtime_state.history.optimistic_head();
       let epoch_height = self.runtime_state.history.optimistic_height();
@@ -767,11 +772,12 @@ impl NodeRuntime {
     Ok(transaction_hash)
   }
 
-  /// Inserts a transaction that has already passed transaction-only ingress validation.
-  pub(crate) fn insert_admitted_transaction(
+  /// Checks the effective nonce before insertion. Callers have already validated
+  /// transaction identity and protocol rules; all checks precede pool mutation.
+  fn insert_admitted_transaction(
     &mut self,
     transaction: RuntimeTransaction,
-  ) -> Result<TransactionPoolInsertOutcome, TransactionError> {
+  ) -> Result<TransactionPoolInsertOutcome, RuntimeTransactionError> {
     let transaction_hash = transaction.hash();
 
     if self
@@ -779,10 +785,17 @@ impl NodeRuntime {
       .history
       .contains_mined_transaction(&transaction_hash)
     {
-      return Err(TransactionError::AlreadyImported);
+      return Err(TransactionError::AlreadyImported.into());
     }
 
-    self.runtime_state.transaction_pool.insert(transaction)
+    let state_nonce = self
+      .open_effective_state_for_reading()?
+      .nonce(&transaction.sender_with_space())?;
+    if *transaction.nonce() < state_nonce {
+      return Err(TransactionError::Stale.into());
+    }
+
+    Ok(self.runtime_state.transaction_pool.insert(transaction)?)
   }
 
   /// Returns a stable snapshot of the transaction pool.
@@ -798,16 +811,6 @@ impl NodeRuntime {
       .runtime_state
       .transaction_pool
       .derive_entry_states(inputs)
-  }
-
-  pub(crate) fn remove_stale_transactions(
-    &mut self,
-    entry_states: &PoolEntryStates,
-  ) -> Vec<RuntimeTransaction> {
-    self
-      .runtime_state
-      .transaction_pool
-      .remove_stale(entry_states)
   }
 
   pub(crate) fn pool_readiness_inputs(

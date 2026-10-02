@@ -116,7 +116,7 @@ impl Node {
   /// If initial funding fails, the fork read service is closed before returning.
   ///
   /// # Panics
-  /// Fork startup panics inside an async task or if remote chain IDs exceed `u32`.
+  /// Fork startup panics if called inside an async task.
   pub(crate) fn start(io: Handle, config: NodeConfig) -> Result<Self, NodeStartError> {
     config.validate()?;
     let balance = config.accounts.balance;
