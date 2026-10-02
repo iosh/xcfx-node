@@ -197,9 +197,21 @@ impl BlockTransactionSelection {
 pub(crate) struct TransactionSelection {
   block_selection: BlockTransactionSelection,
   transactions_to_drop: Vec<RuntimeTransaction>,
+  waiting_for_espace: bool,
 }
 
 impl TransactionSelection {
+  /// No transactions to execute or remove from the pool.
+  pub(crate) fn is_empty(&self) -> bool {
+    self.block_selection.transactions.is_empty() && self.transactions_to_drop.is_empty()
+  }
+
+  /// An eSpace account head fits the packing constraints but needs an eSpace
+  /// block height. It has not been included in the block selection.
+  pub(crate) fn is_waiting_for_espace(&self) -> bool {
+    self.waiting_for_espace
+  }
+
   pub(crate) fn into_block_selection_and_transactions_to_drop(
     self,
   ) -> (BlockTransactionSelection, Vec<RuntimeTransaction>) {
@@ -247,6 +259,7 @@ pub(crate) fn select_transactions(
 
   let transactions_by_account = pending_transactions_by_account(input);
   let mut transactions_to_drop = Vec::new();
+  let mut waiting_for_espace = false;
 
   let selected_entries = select_account_transactions(&transactions_by_account, limits, |entry| {
     let transaction = &entry.transaction;
@@ -262,6 +275,18 @@ pub(crate) fn select_transactions(
     }
 
     if space == Space::Ethereum && !can_pack_evm_transactions {
+      // Size, nonce and protocol checks have already passed. Check whether this
+      // head fits an empty eSpace block, without admitting it at this height.
+      let espace_gas_limit = espace_block_gas_limit(true, block_gas_limit);
+      if !waiting_for_espace && *transaction.gas() <= espace_gas_limit {
+        let required_price = compute_next_price(
+          espace_gas_limit / ELASTICITY_MULTIPLIER,
+          *transaction.gas(),
+          parent_base_price[Space::Ethereum],
+          min_base_price[Space::Ethereum],
+        );
+        waiting_for_espace = *transaction.gas_price() >= required_price;
+      }
       return false;
     }
 
@@ -310,5 +335,6 @@ pub(crate) fn select_transactions(
       base_price,
     },
     transactions_to_drop,
+    waiting_for_espace,
   }
 }

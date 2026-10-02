@@ -137,6 +137,8 @@ impl Node {
       production_defaults: ProductionDefaults::new(config.timestamp_increment),
       transaction_pool_policy: TransactionPoolPolicy::new(config.max_transactions),
       max_state_controls: config.max_state_controls,
+      confirmed_depth: config.confirmed_depth,
+      finalized_depth: config.finalized_depth,
     };
 
     match config.fork {

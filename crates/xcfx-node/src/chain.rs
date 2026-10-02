@@ -32,6 +32,7 @@ pub(crate) struct EpochArtifacts {
   skipped_blocks: Vec<RuntimeBlock>,
   commitment: ExecutionCommitment,
   block_receipts: Vec<Arc<BlockReceipts>>,
+  has_state_controls: bool,
 }
 impl EpochArtifacts {
   pub(crate) fn ordered_blocks(&self) -> &[RuntimeBlock] {
@@ -64,6 +65,19 @@ impl EpochArtifacts {
 
   pub(crate) fn block_receipts(&self) -> &[Arc<BlockReceipts>] {
     &self.block_receipts
+  }
+
+  /// Whether this epoch committed developer state controls, including no-op controls.
+  pub(crate) fn has_state_controls(&self) -> bool {
+    self.has_state_controls
+  }
+
+  /// Includes failed executions with receipts, but excludes skipped transactions.
+  pub(crate) fn has_executed_transactions(&self) -> bool {
+    self
+      .block_receipts
+      .iter()
+      .any(|block| block.receipts.iter().any(|receipt| !receipt.tx_skipped()))
   }
 
   fn pivot_block_number(&self) -> BlockNumber {
@@ -115,6 +129,7 @@ impl EpochView {
         skipped_blocks: Vec::new(),
         commitment,
         block_receipts,
+        has_state_controls: false,
       }),
       state: committed_state,
       pos_context: PosContext::Full(Arc::new(committed_pos_state)),
@@ -161,6 +176,7 @@ impl EpochView {
     state: CommittedStateVersion,
     commitment: ExecutionCommitment,
     block_receipts: Vec<Arc<BlockReceipts>>,
+    has_state_controls: bool,
   ) -> Self {
     Self {
       source: EpochSource::Executed(EpochArtifacts {
@@ -169,6 +185,7 @@ impl EpochView {
         skipped_blocks,
         commitment,
         block_receipts,
+        has_state_controls,
       }),
       state,
       pos_context: parent.pos_context.clone(),

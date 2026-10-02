@@ -31,6 +31,13 @@ pub(crate) enum StateControl {
     amount: U256,
   },
 
+  /// Adjusts liquid balance and issuance counters to reach an absolute target.
+  /// The difference is recalculated whenever the overlay is replayed.
+  SetBalance {
+    address: AddressWithSpace,
+    balance: U256,
+  },
+
   /// Sets a nonce within the account's `u64` range without decreasing it.
   SetNonce {
     address: AddressWithSpace,
@@ -55,6 +62,7 @@ impl StateControl {
       }
       Self::Mint { to, .. } => validate_address(*to),
       Self::Burn { from, .. } => validate_address(*from),
+      Self::SetBalance { address, .. } => validate_address(*address),
       Self::SetNonce { address, nonce } => {
         validate_address(*address)?;
 
@@ -270,6 +278,16 @@ fn apply_control(
 
     StateControl::Burn { from, amount } => {
       burn_balance(state, from, *amount)?;
+    }
+
+    StateControl::SetBalance { address, balance } => {
+      let current = state.balance(address)?;
+
+      if *balance > current {
+        mint_balance(state, address, *balance - current)?;
+      } else if *balance < current {
+        burn_balance(state, address, current - *balance)?;
+      }
     }
 
     StateControl::SetNonce { address, nonce } => {

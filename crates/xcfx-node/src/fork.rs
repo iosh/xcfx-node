@@ -28,11 +28,7 @@ use diem_types::block_info::PivotBlockDecision;
 use primitives::{BlockNumber, block::BlockHeight, pos::PosBlockId};
 use thiserror::Error;
 
-use crate::{
-  chain_spec::ChainIds,
-  rpc_client::ConfluxRpcClient,
-  runtime::{Stability, StabilitySource, StablePosition},
-};
+use crate::{chain_spec::ChainIds, rpc_client::ConfluxRpcClient};
 
 /// Source identity retained independently of local execution overrides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,10 +46,14 @@ pub(crate) enum ForkEpoch {
 /// A remote pivot and the parent inputs needed to extend it locally.
 #[derive(Debug)]
 pub(crate) struct ForkBase {
-  pub(crate) stability: Stability,
+  /// Original status positions, before clamping to the selected fork epoch.
+  pub(crate) latest_confirmed: BlockHeight,
+  pub(crate) latest_finalized: BlockHeight,
+  pub(crate) latest_checkpoint: BlockHeight,
   pub(crate) network: NetworkIdentity,
-  /// Core epochs per consensus era, used to align checkpoints.
-  /// Resolved from the mainnet preset or an explicit override; RPC does not expose it.
+  /// Source network's Core epochs per consensus era, used to align checkpoints.
+  /// Resolved from the mainnet preset or explicit input; RPC does not expose it.
+  /// Loading verifies that the remote checkpoint is aligned with this length.
   pub(crate) era_epoch_count: NonZeroU64,
   pub(crate) epoch_height: BlockHeight,
   pub(crate) pivot_hash: H256,
@@ -138,6 +138,14 @@ pub(crate) enum ForkLoadError {
 
   #[error("fork.era_epoch_count is required for source network {network_id}, which has no preset")]
   MissingEraEpochCount { network_id: u64 },
+
+  #[error(
+    "remote checkpoint {checkpoint} is not aligned with fork.era_epoch_count {era_epoch_count}"
+  )]
+  CheckpointEraMismatch {
+    checkpoint: BlockHeight,
+    era_epoch_count: NonZeroU64,
+  },
 }
 
 impl fmt::Debug for ForkLoadError {
@@ -151,10 +159,8 @@ impl fmt::Debug for ForkLoadError {
 /// `LatestState` is resolved once. Core and eSpace must identify the same pivot.
 ///
 /// # Errors
-/// Returns an error if required data is unavailable, inconsistent, or unsupported.
-///
-/// # Panics
-/// Panics if the remote chain IDs violate Conflux's `u32` range.
+/// Returns an error if required data is unavailable, inconsistent, out of range,
+/// or unsupported.
 pub(crate) async fn load_fork_base(
   rpc: &ConfluxRpcClient,
   epoch: ForkEpoch,
@@ -163,8 +169,10 @@ pub(crate) async fn load_fork_base(
   let status = rpc.cfx_getStatus().await?;
   // Conflux exposes its u32 chain IDs as U64 RPC quantities.
   let chain_ids = ChainIds {
-    chain_id: status.chain_id.as_u32(),
-    espace_chain_id: status.ethereum_space_chain_id.as_u32(),
+    chain_id: u32::try_from(status.chain_id.as_u64())
+      .map_err(|_| ForkLoadError::OutOfRange("chainId"))?,
+    espace_chain_id: u32::try_from(status.ethereum_space_chain_id.as_u64())
+      .map_err(|_| ForkLoadError::OutOfRange("ethereumSpaceChainId"))?,
     network_id: status.network_id.as_u64(),
   };
   let era_epoch_count = match (era_epoch_count, chain_ids.network_id) {
@@ -174,6 +182,13 @@ pub(crate) async fn load_fork_base(
     }
     (None, network_id) => return Err(ForkLoadError::MissingEraEpochCount { network_id }),
   };
+  let latest_checkpoint = status.latest_checkpoint.as_u64();
+  if !latest_checkpoint.is_multiple_of(era_epoch_count.get()) {
+    return Err(ForkLoadError::CheckpointEraMismatch {
+      checkpoint: latest_checkpoint,
+      era_epoch_count,
+    });
+  }
   // Keep the selected epoch fixed while the remote chain advances.
   let latest_state = status.latest_state.as_u64();
   let epoch_height = match epoch {
@@ -255,20 +270,9 @@ pub(crate) async fn load_fork_base(
   }
 
   Ok(ForkBase {
-    stability: Stability {
-      confirmed: StablePosition {
-        height: status.latest_confirmed.as_u64().min(epoch_height),
-        source: StabilitySource::Fork,
-      },
-      finalized: StablePosition {
-        height: status.latest_finalized.as_u64().min(epoch_height),
-        source: StabilitySource::Fork,
-      },
-      checkpoint: StablePosition {
-        height: status.latest_checkpoint.as_u64().min(epoch_height),
-        source: StabilitySource::Fork,
-      },
-    },
+    latest_confirmed: status.latest_confirmed.as_u64(),
+    latest_finalized: status.latest_finalized.as_u64(),
+    latest_checkpoint,
     network,
     era_epoch_count,
     epoch_height,

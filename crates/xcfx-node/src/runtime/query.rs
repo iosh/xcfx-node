@@ -16,7 +16,7 @@ use crate::{
   state::state_version::StateVersion,
 };
 
-use super::NodeRuntime;
+use super::{EpochPositions, NodeRuntime};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EpochSelector {
@@ -124,21 +124,28 @@ impl NodeRuntime {
       EpochSelector::Earliest => 0,
       EpochSelector::LatestMined => self.runtime_state.history.optimistic_height(),
       EpochSelector::LatestState => self.runtime_state.history.latest_state_height(),
-      EpochSelector::Confirmed => self.runtime_state.stability.confirmed.height,
-      EpochSelector::Finalized => self.runtime_state.stability.finalized.height,
-      EpochSelector::Checkpoint => self.runtime_state.stability.checkpoint.height,
+      EpochSelector::Confirmed => self.runtime_state.epoch_positions.confirmed.height,
+      EpochSelector::Finalized => self.runtime_state.epoch_positions.finalized.height,
+      EpochSelector::Checkpoint => self.runtime_state.epoch_positions.checkpoint.height,
     }
   }
 
+  pub(crate) fn epoch_positions(&self) -> EpochPositions {
+    self.runtime_state.epoch_positions
+  }
+
   /// Pins a committed state version selected under the current visibility rules.
+  ///
+  /// Stable tags resolve retained executed states even when a rollback moves
+  /// `latest_state` below them. Other selectors use the deferred state boundary.
   ///
   /// Later chain changes do not modify this version. Uncached Fork reads
   /// still require the instance's remote read service.
   ///
   /// # Errors
   ///
-  /// Returns an error if the selected epoch precedes the initial view
-  /// or exceeds `latest_state`.
+  /// Returns an error if the selected epoch precedes the initial view or exceeds
+  /// the selector's readable range.
   pub(crate) fn state_at(
     &self,
     selector: EpochSelector,
@@ -153,9 +160,17 @@ impl NodeRuntime {
   ) -> Result<&EpochView, StateUnavailable> {
     let epoch_height = self.epoch_height(selector);
     let earliest = self.reset_state.initial_view.epoch_height();
-    let latest = self.runtime_state.history.latest_state_height();
+    let latest_readable = match selector {
+      EpochSelector::Confirmed | EpochSelector::Finalized | EpochSelector::Checkpoint => {
+        self.runtime_state.history.optimistic_height()
+      }
+      EpochSelector::Number(_)
+      | EpochSelector::Earliest
+      | EpochSelector::LatestMined
+      | EpochSelector::LatestState => self.runtime_state.history.latest_state_height(),
+    };
 
-    if epoch_height < earliest || epoch_height > latest {
+    if epoch_height < earliest || epoch_height > latest_readable {
       return Err(StateUnavailable { epoch_height });
     }
 

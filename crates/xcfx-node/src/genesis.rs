@@ -848,6 +848,7 @@ mod tests {
   fn ordered_core_transfer_commits_balances_fees_and_history() {
     let definition = single_validator_genesis_definition();
     let (chain_spec, header) = conflux_compatibility_protocol();
+    let config = crate::config::NodeConfig::default();
 
     let mut runtime = NodeRuntime::from_genesis(
       RuntimeConfig {
@@ -856,6 +857,8 @@ mod tests {
         signing_keys: Default::default(),
         transaction_pool_policy: TransactionPoolPolicy::new(1_024),
         max_state_controls: 0,
+        confirmed_depth: config.confirmed_depth,
+        finalized_depth: config.finalized_depth,
       },
       conflux_compatibility_allocations(),
       header,

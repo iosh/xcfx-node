@@ -44,9 +44,10 @@ pub(crate) struct ForkOptions {
   pub(crate) epoch: ForkEpoch,
   pub(crate) http: HttpRpcConfig,
   pub(crate) cache: ForkCacheConfig,
-  /// Core epochs per consensus era, used to align checkpoints.
+  /// Source network's Core epochs per consensus era, used to align checkpoints.
   /// `None` uses the mainnet preset for source network ID 1029.
-  /// Other source networks require an explicit value.
+  /// Other source networks require an explicit value. The remote checkpoint
+  /// must be aligned with the resolved length.
   pub(crate) era_epoch_count: Option<NonZeroU64>,
 }
 
@@ -84,7 +85,11 @@ pub(crate) struct NodeConfig {
   pub(crate) accounts: AccountConfig,
   pub(crate) mining: MiningMode,
   pub(crate) timestamp_increment: u64,
+  /// Epochs behind `latest_state` for local confirmation, independent of consensus risk.
+  /// Zero adds no confirmation delay; the initial baseline still applies.
   pub(crate) confirmed_depth: u64,
+  /// Epochs behind `latest_state` for local finality, independent of PoS decisions.
+  /// Zero adds no finality delay; the baseline and monotonicity still apply.
   pub(crate) finalized_depth: u64,
   pub(crate) fork: Option<ForkOptions>,
   pub(crate) max_call_gas: u64,

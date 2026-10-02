@@ -34,8 +34,8 @@ pub(crate) struct ChainChange {
   pub(crate) common_ancestor: Arc<EpochView>,
   pub(crate) removed: Vec<Arc<EpochView>>,
   pub(crate) added: Vec<Arc<EpochView>>,
-  pub(crate) old_stability: Stability,
-  pub(crate) new_stability: Stability,
+  pub(crate) old_epoch_positions: EpochPositions,
+  pub(crate) new_epoch_positions: EpochPositions,
   pub(crate) reinserted: Vec<H256>,
   pub(crate) dropped: Vec<PoolDrop>,
 }
@@ -57,8 +57,8 @@ impl ChainChange {
       common_ancestor: Arc::clone(&old.history.views()[shared - 1]),
       removed: old.history.views()[shared..].to_vec(),
       added: new.history.views()[shared..].to_vec(),
-      old_stability: old.stability,
-      new_stability: new.stability,
+      old_epoch_positions: old.epoch_positions,
+      new_epoch_positions: new.epoch_positions,
       reinserted: Vec::new(),
       dropped: Vec::new(),
     }
@@ -87,8 +87,8 @@ pub(crate) enum ReorgError {
   Production(#[from] RuntimeBlockProductionError),
   #[error("the selected epoch exceeds the Core block number range")]
   BlockNumberExhausted,
-  #[error("a view change cannot replace history at or below stable epoch {boundary}")]
-  StableBoundary { boundary: u64 },
+  #[error("the selected fork point is below the reorg boundary at epoch {boundary}")]
+  BelowReorgBoundary { boundary: u64 },
 }
 
 impl NodeRuntime {
@@ -157,6 +157,23 @@ impl NodeRuntime {
     self.runtime_state.graph.insert(block)
   }
 
+  /// Releases detached topology. Checkpoints and outstanding views keep their own pins.
+  pub(crate) fn prune_detached_blocks(&mut self) -> usize {
+    let graph = &mut self.runtime_state.graph;
+    let before = graph.len();
+    graph.retain_ancestors([self
+      .runtime_state
+      .history
+      .optimistic_head()
+      .state()
+      .epoch_id]);
+    before - graph.len()
+  }
+
+  pub(crate) fn retained_block_count(&self) -> usize {
+    self.runtime_state.graph.len()
+  }
+
   /// Explicit pivot selection is a developer control, not a network fork-choice rule.
   pub(crate) fn switch_pivot(&mut self, pivot: H256) -> Result<ChainChange, ReorgError> {
     if pivot
@@ -189,9 +206,9 @@ impl NodeRuntime {
       .take_while(|(hash, view)| **hash == view.state().epoch_id)
       .count();
     let ancestor = &current.views()[shared];
-    let boundary = self.runtime_state.stability.reorg_boundary();
+    let boundary = self.runtime_state.epoch_positions.reorg_boundary();
     if ancestor.epoch_height() < boundary {
-      return Err(ReorgError::StableBoundary { boundary });
+      return Err(ReorgError::BelowReorgBoundary { boundary });
     }
     let mut history = current.rebuild_through(ancestor);
     let mut rejected = BTreeMap::new();
@@ -212,7 +229,8 @@ impl NodeRuntime {
       start
         .checked_add(blocks.len() as u64)
         .ok_or(ReorgError::BlockNumberExhausted)?;
-      let execution_state = if offset == 0 && shared + 1 == current.views().len() {
+      let extends_current_head = offset == 0 && shared + 1 == current.views().len();
+      let execution_state = if extends_current_head {
         self.runtime_state.effective_state.state()
       } else {
         &parent.state().version
@@ -257,6 +275,7 @@ impl NodeRuntime {
         executed.state,
         executed.commitment,
         executed.block_receipts,
+        extends_current_head && !self.runtime_state.state_overlay.is_empty(),
       ));
       history.append_executed_epoch(next);
     }
@@ -293,14 +312,12 @@ impl NodeRuntime {
       production_environment =
         production_environment.rebase(new_head.execution_parent().timestamp)?;
     }
-    let stability = if removed.is_empty() {
-      self.runtime_state.stability
-    } else {
-      self
-        .runtime_state
-        .stability
-        .after_reorg(common_ancestor.epoch_height())
-    };
+    let epoch_positions = derive_epoch_positions(
+      &self.reset_state.initial_view,
+      Some(self.runtime_state.epoch_positions),
+      history.latest_state_height(),
+      self.confirmation_depths,
+    );
 
     let (transaction_pool, reinserted, dropped) =
       self.reconcile_reorg_pool(&history, &removed, &rejected, effective_state.state())?;
@@ -315,8 +332,8 @@ impl NodeRuntime {
       common_ancestor,
       removed,
       added,
-      old_stability: self.runtime_state.stability,
-      new_stability: stability,
+      old_epoch_positions: self.runtime_state.epoch_positions,
+      new_epoch_positions: epoch_positions,
       reinserted,
       dropped,
     };
@@ -324,7 +341,7 @@ impl NodeRuntime {
     let next = RuntimeState {
       history,
       graph,
-      stability,
+      epoch_positions,
       transaction_pool,
       production_environment,
       state_overlay,

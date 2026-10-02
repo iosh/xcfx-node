@@ -1,14 +1,15 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
+mod epoch_positions;
+mod mining;
 mod query;
 mod reorg;
-mod stability;
 
 use crate::{
-  block_producer::{RuntimeBlock, produce_block},
+  block_producer::RuntimeBlock,
   chain::{BlockGraph, ChainHistory, EpochHistoryView, EpochView},
   chain_spec::ChainSpec,
   execution::{ExecutedEpoch, TransactionExecutionDisposition, execute_ordered_epoch},
-  fork::{ForkClient, ForkReadError},
+  fork::ForkClient,
   genesis::{GenesisError, GenesisHeaderInput, execute_genesis_with_pos},
   pos::GenesisPosDefinition,
   production_environment::{
@@ -24,11 +25,10 @@ use crate::{
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
-    AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
-    TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
-    TransactionPoolPolicy, TransactionPoolView, pool_gas_cost, pool_transaction_cost,
+    AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, TransactionPool,
+    TransactionPoolCheckpoint, TransactionPoolInsertOutcome, TransactionPoolPolicy,
+    TransactionPoolView, pool_transaction_cost,
   },
-  transaction_selector::{TransactionSelectionLimits, select_transactions},
   virtual_execution::{
     VirtualExecutionError, VirtualExecutionOverrides, VirtualExecutionRequest,
     execute_virtual_transaction as execute_isolated_transaction,
@@ -36,14 +36,14 @@ use crate::{
 };
 use cfx_executor::{executive::ExecutionOutcome, state::State};
 use cfx_statedb::{Result as StateResult, global_params::TOTAL_GLOBAL_PARAMS};
-use cfx_types::{
-  Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, address_util::AddressUtil,
-};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, U512};
 use cfxkey::KeyPair;
+use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
+pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
+pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
 pub(crate) use query::{EpochSelector, StateUnavailable};
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
-pub(crate) use stability::{Stability, StabilityKind, StabilitySource, StablePosition};
 use std::{
   collections::{BTreeMap, btree_map::Entry},
   sync::{
@@ -55,9 +55,7 @@ use thiserror::Error;
 
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
 
-use primitives::{
-  Account, Action, BlockNumber, Transaction, block::BlockHeight, transaction::TransactionError,
-};
+use primitives::{Account, Action, Transaction, transaction::TransactionError};
 
 static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -94,26 +92,6 @@ pub(crate) enum RuntimeTransactionError {
   },
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum RuntimeBlockProductionError {
-  #[error(transparent)]
-  State(#[from] cfx_statedb::Error),
-
-  #[error(transparent)]
-  Time(#[from] ProductionTimeError),
-
-  #[error(transparent)]
-  Fork(#[from] ForkReadError),
-
-  #[error("local execution cannot advance {0} beyond the supported integer range")]
-  PositionExhausted(&'static str),
-}
-
-struct PreparedBlock {
-  block: RuntimeBlock,
-  transactions_to_drop: Vec<RuntimeTransaction>,
-}
-
 pub(crate) struct TransactionPoolUpdates {
   pub(crate) transactions_to_repack: Vec<RuntimeTransaction>,
   pub(crate) transactions_dropped_during_selection: Vec<RuntimeTransaction>,
@@ -143,13 +121,13 @@ fn sponsored_gas_and_storage(
   };
 
   let contract_address = match native_transaction.action() {
-    Action::Call(address) if address.is_contract_address() => address,
+    Action::Call(address) => address,
     _ => return Ok(Default::default()),
   };
 
-  let Some(sponsor_info) = state.sponsor_info(&contract_address)? else {
+  if !state.is_contract_with_code(&contract_address.with_native_space())? {
     return Ok(Default::default());
-  };
+  }
 
   let sender = transaction.sender();
 
@@ -157,9 +135,10 @@ fn sponsored_gas_and_storage(
     return Ok(Default::default());
   }
 
-  let declared_gas_cost = pool_gas_cost(*transaction.gas(), *transaction.gas_price());
-  let sponsored_gas = if declared_gas_cost <= sponsor_info.sponsor_gas_bound
-    && declared_gas_cost <= sponsor_info.sponsor_balance_for_gas
+  let declared_gas_cost = transaction.gas().full_mul(*transaction.gas_price());
+  let sponsored_gas = if declared_gas_cost
+    <= U512::from(state.sponsor_gas_bound(&contract_address)?)
+    && declared_gas_cost <= U512::from(state.sponsor_balance_for_gas(&contract_address)?)
   {
     *native_transaction.gas()
   } else {
@@ -168,8 +147,10 @@ fn sponsored_gas_and_storage(
 
   let required_storage_collateral =
     U256::from(*native_transaction.storage_limit()) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-  let sponsored_storage = if required_storage_collateral
-    <= sponsor_info.sponsor_balance_for_collateral + sponsor_info.unused_storage_points()
+  let sponsored_storage = if state.sponsor_for_collateral(&contract_address)?.is_some()
+    && required_storage_collateral
+      <= state.sponsor_balance_for_collateral(&contract_address)?
+        + state.available_storage_points_for_collateral(&contract_address)?
   {
     *native_transaction.storage_limit()
   } else {
@@ -240,7 +221,7 @@ impl EffectiveState {
 struct RuntimeState {
   history: ChainHistory,
   graph: BlockGraph,
-  stability: Stability,
+  epoch_positions: EpochPositions,
   transaction_pool: TransactionPool,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -256,6 +237,7 @@ impl ResetState {
     &self,
     transaction_pool_policy: TransactionPoolPolicy,
     production_defaults: &ProductionDefaults,
+    confirmation_depths: ConfirmationDepths,
   ) -> RuntimeState {
     let reset_base_timestamp = self.initial_view.execution_parent().timestamp;
     let history = ChainHistory::from_initial(Arc::clone(&self.initial_view));
@@ -263,7 +245,12 @@ impl ResetState {
 
     RuntimeState {
       graph: BlockGraph::new(self.initial_view.execution_parent()),
-      stability: Stability::initial(&self.initial_view),
+      epoch_positions: derive_epoch_positions(
+        &self.initial_view,
+        None,
+        history.latest_state_height(),
+        confirmation_depths,
+      ),
       history,
       transaction_pool: TransactionPool::new(transaction_pool_policy),
       production_environment: production_defaults.build_environment(reset_base_timestamp),
@@ -276,7 +263,7 @@ impl ResetState {
 struct Checkpoint {
   history_head: Arc<EpochView>,
   graph: BlockGraph,
-  stability: Stability,
+  epoch_positions: EpochPositions,
   transaction_pool: TransactionPoolCheckpoint,
   production_environment: ProductionEnvironment,
   state_overlay: StateOverlay,
@@ -288,7 +275,7 @@ impl Checkpoint {
     Self {
       history_head: Arc::clone(runtime_state.history.optimistic_head()),
       graph: runtime_state.graph.clone(),
-      stability: runtime_state.stability,
+      epoch_positions: runtime_state.epoch_positions,
       transaction_pool: runtime_state.transaction_pool.capture_checkpoint(),
       production_environment: runtime_state.production_environment,
       state_overlay: runtime_state.state_overlay.clone(),
@@ -308,7 +295,7 @@ impl Checkpoint {
     RuntimeState {
       history,
       graph: self.graph.clone(),
-      stability: self.stability,
+      epoch_positions: self.epoch_positions,
       transaction_pool: TransactionPool::from_checkpoint(
         transaction_pool_policy,
         &self.transaction_pool,
@@ -326,6 +313,8 @@ pub(crate) struct RuntimeConfig {
   pub(crate) production_defaults: ProductionDefaults,
   pub(crate) transaction_pool_policy: TransactionPoolPolicy,
   pub(crate) max_state_controls: usize,
+  pub(crate) confirmed_depth: u64,
+  pub(crate) finalized_depth: u64,
 }
 
 pub(crate) struct NodeRuntime {
@@ -335,6 +324,7 @@ pub(crate) struct NodeRuntime {
   impersonation: ImpersonationState,
   transaction_pool_policy: TransactionPoolPolicy,
   max_state_controls: usize,
+  confirmation_depths: ConfirmationDepths,
   reset_state: ResetState,
   runtime_state: RuntimeState,
   checkpoints: BTreeMap<u64, Checkpoint>,
@@ -383,10 +373,19 @@ impl NodeRuntime {
       production_defaults,
       transaction_pool_policy,
       max_state_controls,
+      confirmed_depth,
+      finalized_depth,
     } = config;
+    let confirmation_depths = ConfirmationDepths {
+      confirmed: confirmed_depth,
+      finalized: finalized_depth,
+    };
     let reset_state = ResetState { initial_view };
-    let runtime_state =
-      reset_state.build_runtime_state(transaction_pool_policy, &production_defaults);
+    let runtime_state = reset_state.build_runtime_state(
+      transaction_pool_policy,
+      &production_defaults,
+      confirmation_depths,
+    );
 
     Self {
       chain_spec,
@@ -395,6 +394,7 @@ impl NodeRuntime {
       impersonation: ImpersonationState::default(),
       transaction_pool_policy,
       max_state_controls,
+      confirmation_depths,
       reset_state,
       runtime_state,
       checkpoints: BTreeMap::new(),
@@ -460,9 +460,11 @@ impl NodeRuntime {
   }
 
   pub(crate) fn reset(&mut self) -> ChainChange {
-    let next_runtime_state = self
-      .reset_state
-      .build_runtime_state(self.transaction_pool_policy, &self.production_defaults);
+    let next_runtime_state = self.reset_state.build_runtime_state(
+      self.transaction_pool_policy,
+      &self.production_defaults,
+      self.confirmation_depths,
+    );
 
     let change = ChainChange::between(
       ChainChangeReason::Reset,
@@ -822,101 +824,6 @@ impl NodeRuntime {
     open_state_version(self.runtime_state.effective_state.state())
   }
 
-  pub(crate) fn produce_and_commit_block(
-    &mut self,
-  ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
-    let prepared = self.prepare_block(
-      &self.runtime_state.history,
-      self.runtime_state.effective_state.state(),
-      &self.runtime_state.transaction_pool,
-      &self.runtime_state.production_environment,
-      Vec::new(),
-      U256::zero(),
-      1,
-    )?;
-    self.execute_and_commit_single_block_epoch_with_selection_drops(
-      prepared.block,
-      prepared.transactions_to_drop,
-    )
-  }
-
-  fn prepare_block(
-    &self,
-    history: &ChainHistory,
-    execution_state: &Arc<StateVersion>,
-    pool: &TransactionPool,
-    environment: &ProductionEnvironment,
-    referee_hashes: Vec<H256>,
-    nonce: U256,
-    execution_block_count: usize,
-  ) -> Result<PreparedBlock, RuntimeBlockProductionError> {
-    let parent = Arc::clone(history.optimistic_head());
-    let parent_block = parent.execution_parent();
-
-    let epoch_height =
-      parent_block
-        .height
-        .checked_add(1)
-        .ok_or(RuntimeBlockProductionError::PositionExhausted(
-          "epoch height",
-        ))?;
-    let block_number = parent
-      .pivot_block_number()
-      .checked_add(execution_block_count as u64)
-      .filter(|number| *number < BlockNumber::MAX)
-      .ok_or(RuntimeBlockProductionError::PositionExhausted(
-        "Core block number",
-      ))?;
-
-    let params = self.chain_spec.machine().params();
-    let prepared_environment = environment.prepare_next_block(
-      &self.production_defaults,
-      parent_block.timestamp,
-      parent_block.gas_limit,
-      epoch_height,
-      params,
-    )?;
-
-    let state = open_state_version(execution_state)?;
-    let view = pool.view();
-    let inputs = load_pool_accounts_and_costs(&state, &view)?;
-    let selection_input = PoolSelectionInput {
-      view,
-      entry_states: pool.derive_entry_states(&inputs),
-    };
-    let spec = self.chain_spec.machine().spec(block_number, epoch_height);
-    let validation = TransactionValidationContext::new(params, &spec, epoch_height);
-
-    let selection = select_transactions(
-      &selection_input,
-      &parent_block,
-      params,
-      &validation,
-      prepared_environment.block_gas_limit(),
-      TransactionSelectionLimits::default(),
-    );
-
-    let (block_selection, transactions_to_drop) =
-      selection.into_block_selection_and_transactions_to_drop();
-
-    let deferred_commitment = history.deferred_commitment_for_header_height(epoch_height)?;
-
-    let runtime_block = produce_block(
-      &parent_block,
-      block_selection,
-      params,
-      prepared_environment,
-      &deferred_commitment,
-      referee_hashes,
-      nonce,
-    );
-
-    Ok(PreparedBlock {
-      block: runtime_block,
-      transactions_to_drop,
-    })
-  }
-
   /// Executes a constructed block and publishes its complete result on success.
   ///
   /// # Errors
@@ -965,6 +872,7 @@ impl NodeRuntime {
     );
 
     let previous_latest_state_height = self.runtime_state.history.latest_state_height();
+    let previous_epoch_positions = self.runtime_state.epoch_positions;
     let previous_latest_header_committed_height =
       self.runtime_state.history.latest_header_committed_height();
     let start_block_number = parent.next_epoch_start_block_number();
@@ -1041,12 +949,19 @@ impl NodeRuntime {
       state,
       commitment,
       block_receipts,
+      !self.runtime_state.state_overlay.is_empty(),
     ));
 
     self
       .runtime_state
       .history
       .append_executed_epoch(Arc::clone(&next_head));
+    self.runtime_state.epoch_positions = derive_epoch_positions(
+      &self.reset_state.initial_view,
+      Some(previous_epoch_positions),
+      self.runtime_state.history.latest_state_height(),
+      self.confirmation_depths,
+    );
     self
       .runtime_state
       .transaction_pool
@@ -1076,8 +991,8 @@ impl NodeRuntime {
         common_ancestor: parent,
         removed: Vec::new(),
         added: vec![Arc::clone(&next_head)],
-        old_stability: self.runtime_state.stability,
-        new_stability: self.runtime_state.stability,
+        old_epoch_positions: previous_epoch_positions,
+        new_epoch_positions: self.runtime_state.epoch_positions,
         reinserted: Vec::new(),
         dropped: Vec::new(),
       },

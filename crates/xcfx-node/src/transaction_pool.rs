@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::runtime_transaction::RuntimeTransaction;
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-use cfx_types::{Address, AddressWithSpace, H256, Space, U128, U256, U512};
+use cfx_types::{Address, AddressWithSpace, H256, Space, U256, U512};
 use primitives::{Account, transaction::TransactionError};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -38,13 +38,15 @@ impl PoolAccountState {
   }
 }
 
+/// Maximum declared sender cost after sponsorship, without truncating user inputs.
+/// U512 preserves gas-price multiplication even when no U256 balance can cover it.
 pub(crate) fn pool_transaction_cost(
   transaction: &RuntimeTransaction,
   sponsored_gas: U256,
   sponsored_storage: u64,
-) -> U256 {
+) -> U512 {
   let gas = *transaction.gas() - sponsored_gas;
-  let gas_cost = pool_gas_cost(gas, *transaction.gas_price());
+  let gas_cost = gas.full_mul(*transaction.gas_price());
 
   let storage_cost = transaction
     .storage_limit()
@@ -56,34 +58,18 @@ pub(crate) fn pool_transaction_cost(
       U256::from(unsponsored_storage) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT
     });
 
-  let value_cap = U256::from(u64::MAX) * U256::from(U128::max_value());
-  let value = if *transaction.value() > value_cap {
-    value_cap
-  } else {
-    *transaction.value()
-  };
-
-  value + gas_cost + storage_cost
-}
-
-/// Caps declared gas cost at `U128::MAX` for transaction-pool accounting.
-pub(crate) fn pool_gas_cost(gas: U256, gas_price: U256) -> U256 {
-  if gas.full_mul(gas_price) > U512::from(U128::max_value()) {
-    U256::from(U128::max_value())
-  } else {
-    gas * gas_price
-  }
+  U512::from(transaction.value()) + gas_cost + U512::from(storage_cost)
 }
 
 pub(crate) struct PoolReadinessInputs {
   pub(crate) account_states: BTreeMap<AccountKey, PoolAccountState>,
-  pub(crate) transaction_costs: BTreeMap<H256, U256>,
+  pub(crate) transaction_costs: BTreeMap<H256, U512>,
 }
 
 impl PoolReadinessInputs {
   pub(crate) fn new(
     account_states: BTreeMap<AccountKey, PoolAccountState>,
-    transaction_costs: BTreeMap<H256, U256>,
+    transaction_costs: BTreeMap<H256, U512>,
   ) -> Self {
     Self {
       account_states,
@@ -100,7 +86,7 @@ pub(crate) enum PoolEntryState {
     actual_nonce: U256,
   },
   QueuedInsufficientBalance {
-    required: U256,
+    required: U512,
     available: U256,
   },
   Stale,
@@ -113,7 +99,7 @@ pub(crate) struct PoolEntryStates {
 #[derive(Clone, Copy)]
 enum BlockedState {
   NonceGap { expected_nonce: U256 },
-  InsufficientBalance { required: U256, available: U256 },
+  InsufficientBalance { required: U512, available: U256 },
 }
 
 #[derive(Clone)]
@@ -521,7 +507,7 @@ impl TransactionPool {
           .get(&entry.transaction.hash())
           .expect("transaction cost must be provided for every pool entry");
 
-        if cost > *balance {
+        if cost > U512::from(*balance) {
           let state = PoolEntryState::QueuedInsufficientBalance {
             required: cost,
             available: *balance,
@@ -532,7 +518,9 @@ impl TransactionPool {
           });
           state
         } else {
-          *balance -= cost;
+          let affordable_cost =
+            U256::try_from(cost).expect("a cost covered by a U256 balance must fit in U256");
+          *balance -= affordable_cost;
           // Unique, ordered keys make U256::MAX this account's final entry.
           if let Some(nonce) = expected_nonce.checked_add(U256::one()) {
             next_nonce.insert(account_key, nonce);
