@@ -41,7 +41,7 @@ use cfxkey::KeyPair;
 use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
 pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
-pub(crate) use query::{EpochSelector, StateUnavailable};
+pub(crate) use query::{EpochSelector, StateQueryError};
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
 use std::{

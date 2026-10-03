@@ -11,7 +11,7 @@ use crate::{
   chain::ChainHistory,
   fork::ForkReadError,
   production_environment::{
-    PreparedProductionEnvironment, ProductionEnvironment, ProductionTimeError,
+    BlockTimestamp, PreparedProductionEnvironment, ProductionEnvironment, ProductionTimeError,
   },
   runtime_transaction::RuntimeTransaction,
   state::state_version::StateVersion,
@@ -56,14 +56,21 @@ pub(crate) struct AutoMining<'a> {
 }
 
 impl NodeRuntime {
+  /// Commits one block using candidate-local time input. On failure, pending
+  /// controls and logical time are unchanged.
   pub(crate) fn produce_and_commit_block(
     &mut self,
+    timestamp: BlockTimestamp,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
+    let environment = self
+      .runtime_state
+      .production_environment
+      .for_block(timestamp, self.optimistic_head_timestamp())?;
     let prepared = self.prepare_block(
       &self.runtime_state.history,
       self.runtime_state.effective_state.state(),
       &self.runtime_state.transaction_pool,
-      &self.runtime_state.production_environment,
+      &environment,
       Vec::new(),
       U256::zero(),
       1,

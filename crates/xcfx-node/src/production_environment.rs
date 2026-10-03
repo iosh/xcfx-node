@@ -13,6 +13,16 @@ use thiserror::Error;
 
 const DEFAULT_LOCAL_BLOCK_DIFFICULTY: u64 = 4;
 
+/// A single candidate's timestamp input. It never changes persistent settings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum BlockTimestamp {
+  #[default]
+  Default,
+  Exact(u64),
+  /// Replaces the default increment, while preserving a pending exact timestamp.
+  Increment(u64),
+}
+
 /// Stable production settings used when constructing or resetting a Runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionDefaults {
@@ -101,6 +111,32 @@ pub(crate) enum ProductionTimeError {
 pub(crate) struct InvalidBlockDifficulty;
 
 impl ProductionEnvironment {
+  /// Prepares temporary time controls without consuming the active environment.
+  pub(crate) fn for_block(
+    &self,
+    timestamp: BlockTimestamp,
+    parent_timestamp: u64,
+  ) -> Result<Self, ProductionTimeError> {
+    let proposed = match timestamp {
+      BlockTimestamp::Default => return Ok(*self),
+      BlockTimestamp::Exact(timestamp) => timestamp,
+      BlockTimestamp::Increment(increment) => {
+        if self.next_block_timestamp.is_some() {
+          return Ok(*self);
+        }
+        self.logical_timestamp.checked_add(increment).ok_or(
+          ProductionTimeError::TimestampOverflow {
+            current: self.logical_timestamp,
+            increment,
+          },
+        )?
+      }
+    };
+    let mut environment = *self;
+    environment.set_next_block_timestamp(proposed, parent_timestamp)?;
+    Ok(environment)
+  }
+
   pub(crate) fn set_author(&mut self, author: Address) -> Address {
     self.author = author;
     author

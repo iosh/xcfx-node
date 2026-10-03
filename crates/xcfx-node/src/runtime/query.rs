@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use cfx_executor::state::State;
 use cfx_statedb::Result as StateResult;
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::block::BlockHeight;
@@ -33,6 +34,14 @@ pub(crate) enum EpochSelector {
 #[error("state at epoch {epoch_height} is unavailable")]
 pub(crate) struct StateUnavailable {
   pub(crate) epoch_height: BlockHeight,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum StateQueryError {
+  #[error(transparent)]
+  Unavailable(#[from] StateUnavailable),
+  #[error(transparent)]
+  State(#[from] cfx_statedb::Error),
 }
 
 impl NodeRuntime {
@@ -152,6 +161,23 @@ impl NodeRuntime {
   ) -> Result<Arc<StateVersion>, StateUnavailable> {
     let epoch = self.epoch_for_state(selector)?;
     Ok(Arc::clone(&epoch.state().version))
+  }
+
+  /// Reads an account balance from the selected committed state.
+  ///
+  /// Uncached Fork reads may block and require the instance's read service.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the selected state is unavailable or reading it fails.
+  pub(crate) fn balance_at(
+    &self,
+    address: AddressWithSpace,
+    selector: EpochSelector,
+  ) -> Result<U256, StateQueryError> {
+    let version = self.state_at(selector)?;
+    let state = State::new(version.open_database())?;
+    Ok(state.balance(&address)?)
   }
 
   pub(super) fn epoch_for_state(

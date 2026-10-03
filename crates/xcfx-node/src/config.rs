@@ -12,7 +12,7 @@ use crate::{
   signing::AccountSource,
 };
 
-/// Scheduling uses wall time; block timestamps use `timestamp_increment`.
+/// Scheduling uses monotonic time; block timestamps use `timestamp_increment`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum MiningMode {
   #[default]

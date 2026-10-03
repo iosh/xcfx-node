@@ -1,18 +1,34 @@
 //! Startup, Runtime ownership, and shutdown for local and fork nodes.
 
-use std::{collections::BTreeMap, fmt, mem, sync::Arc};
+mod command;
+mod lifecycle;
+mod mining;
+mod service;
+mod worker;
+
+pub(crate) use command::{
+  CallId, Cancellation, CommandError, CommandOutcome, MessageId, MessageOutcome, MineRequest,
+  MineTiming, MiningError, MiningOutcome, NodeCommand, RequestError,
+};
+pub(crate) use lifecycle::NodeStatus;
+pub(crate) use mining::{MiningCause, NodeEvent};
+pub(crate) use service::{NodeEvents, NodeHandle, NodeRequest, NodeService};
+
+use std::{
+  collections::BTreeMap,
+  fmt,
+  panic::{AssertUnwindSafe, catch_unwind},
+  sync::Arc,
+};
 
 use cfx_parameters::genesis::GENESIS_ACCOUNT_ADDRESS;
 use cfx_types::{AddressSpaceUtil, AddressWithSpace, Space, U256};
 use thiserror::Error;
-use tokio::{
-  runtime::Handle,
-  task::{JoinError, JoinHandle},
-};
+use tokio::{runtime::Handle, task::JoinError};
 
 use crate::{
   chain_spec::{ChainIds, ChainSpec},
-  config::{ConfigError, NodeConfig},
+  config::{ConfigError, MiningMode, NodeConfig},
   fork::{ForkBase, ForkCacheConfig, ForkLoadError, ForkReadError, ForkReadTask, ForkRpc},
   genesis::{GenesisError, GenesisHeaderInput},
   pos::GenesisPosDefinition,
@@ -27,8 +43,26 @@ use crate::{
 /// Startup stages with safe public text. Sources retain lower-level diagnostics.
 #[derive(Error)]
 pub(crate) enum NodeStartError {
+  #[error("could not start the {thread} thread")]
+  Thread {
+    thread: &'static str,
+    #[source]
+    source: std::io::Error,
+  },
+  #[error("could not construct the node IO runtime")]
+  IoRuntime(#[source] std::io::Error),
+  #[error("node startup: {0}")]
+  Service(#[from] NodeError),
+  #[error("{source}; node service also failed: {service_error}")]
+  WithServiceFailure {
+    #[source]
+    source: Box<NodeStartError>,
+    service_error: NodeError,
+  },
   #[error("configuration: {0}")]
   Configuration(#[from] ConfigError),
+  #[error("configuration mining: {0}")]
+  MiningInterval(#[from] command::InvalidMiningInterval),
   #[error("configuration accounts: {0}")]
   Accounts(#[from] AccountConfigError),
   #[error("{0}")]
@@ -59,6 +93,20 @@ pub(crate) enum NodeStartError {
   UnsupportedConfiguration(&'static str),
 }
 
+impl NodeStartError {
+  fn with_service_failure(self, service_error: NodeError) -> Self {
+    match self {
+      // Close retains the first service failure and can enrich its join details.
+      // Use that final diagnosis instead of reporting the same failure twice.
+      Self::Service(_) => Self::Service(service_error),
+      source => Self::WithServiceFailure {
+        source: Box::new(source),
+        service_error,
+      },
+    }
+  }
+}
+
 impl fmt::Debug for NodeStartError {
   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
     fmt::Display::fmt(self, formatter)
@@ -73,8 +121,14 @@ pub(crate) enum NodeError {
   /// Runtime access detects termination synchronously; `close` can attach a join failure.
   #[error("fork read service stopped unexpectedly")]
   ForkServiceStopped(#[source] Option<Arc<JoinError>>),
-  #[error("runtime disposal task did not complete normally")]
-  RuntimeDisposalFailed(#[source] Arc<JoinError>),
+  #[error("node execution failed after an internal panic")]
+  ExecutionPanicked,
+  #[error("node IO supervision failed after an internal panic")]
+  IoPanicked,
+  #[error("node resource cleanup failed after an internal panic")]
+  CleanupPanicked,
+  #[error("node mining scheduler stopped unexpectedly")]
+  SchedulerStopped(#[source] Option<Arc<JoinError>>),
 }
 
 impl fmt::Debug for NodeError {
@@ -85,31 +139,19 @@ impl fmt::Debug for NodeError {
 
 /// Owns one Runtime and, in fork mode, its remote read service.
 ///
-/// Runtime calls require a thread that allows blocking. Keep the host Tokio
-/// runtime active until `close` finishes reclaiming the node's resources.
-pub(crate) struct Node {
+/// Runtime calls require a thread that allows blocking. The instance's IO driver
+/// stays active until `close` finishes reclaiming the node's resources.
+struct Node {
   io: Handle,
-  state: NodeState,
-}
-
-enum NodeState {
-  Running {
-    runtime: NodeRuntime,
-    read_task: Option<ForkReadTask>,
-  },
-  Stopping {
-    read_task: Option<ForkReadTask>,
-    disposal: JoinHandle<()>,
-    result: Result<(), NodeError>,
-  },
-  Closed(Result<(), NodeError>),
+  runtime: NodeRuntime,
+  read_task: Option<ForkReadTask>,
 }
 
 impl Node {
   /// Resolves typed configuration and starts a local or fork Runtime.
   ///
   /// Runs synchronously on a thread that allows blocking, outside async tasks.
-  /// The host Tokio runtime must remain active to serve remote reads and cleanup.
+  /// The supplied IO runtime must remain active to serve remote reads and cleanup.
   ///
   /// # Errors
   /// Returns a stage-specific error without exposing a partially initialized node.
@@ -117,8 +159,13 @@ impl Node {
   ///
   /// # Panics
   /// Fork startup panics if called inside an async task.
-  pub(crate) fn start(io: Handle, config: NodeConfig) -> Result<Self, NodeStartError> {
+  fn start(io: Handle, config: NodeConfig) -> Result<Self, NodeStartError> {
     config.validate()?;
+    if let MiningMode::Interval(period) = config.mining {
+      // Reject unusable timing before initialization. The scheduler computes a
+      // fresh deadline afterwards so startup time does not consume the interval.
+      mining::interval_deadline(period)?;
+    }
     let balance = config.accounts.balance;
     let signing_keys = config.accounts.source.build_signing_keys()?;
     let allocations = [Space::Native, Space::Ethereum]
@@ -201,10 +248,8 @@ impl Node {
 
     Ok(Self {
       io,
-      state: NodeState::Running {
-        runtime,
-        read_task: None,
-      },
+      runtime,
+      read_task: None,
     })
   }
 
@@ -236,89 +281,53 @@ impl Node {
 
     Ok(Self {
       io,
-      state: NodeState::Running {
-        runtime,
-        read_task: Some(read_task),
-      },
+      runtime,
+      read_task: Some(read_task),
     })
   }
 
-  pub(crate) fn runtime(&self) -> Result<&NodeRuntime, NodeError> {
-    match &self.state {
-      NodeState::Running { runtime, read_task }
-        if read_task.as_ref().is_none_or(|task| !task.is_finished()) =>
-      {
-        Ok(runtime)
-      }
-      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped(None)),
-      NodeState::Stopping { .. } | NodeState::Closed(_) => Err(NodeError::Closed),
+  fn runtime(&self) -> Result<&NodeRuntime, NodeError> {
+    self.check_read_service()?;
+    Ok(&self.runtime)
+  }
+
+  fn runtime_mut(&mut self) -> Result<&mut NodeRuntime, NodeError> {
+    self.check_read_service()?;
+    Ok(&mut self.runtime)
+  }
+
+  fn check_read_service(&self) -> Result<(), NodeError> {
+    if self
+      .read_task
+      .as_ref()
+      .is_some_and(ForkReadTask::is_finished)
+    {
+      Err(NodeError::ForkServiceStopped(None))
+    } else {
+      Ok(())
     }
   }
 
-  pub(crate) fn runtime_mut(&mut self) -> Result<&mut NodeRuntime, NodeError> {
-    match &mut self.state {
-      NodeState::Running { runtime, read_task }
-        if read_task.as_ref().is_none_or(|task| !task.is_finished()) =>
-      {
-        Ok(runtime)
-      }
-      NodeState::Running { .. } => Err(NodeError::ForkServiceStopped(None)),
-      NodeState::Stopping { .. } | NodeState::Closed(_) => Err(NodeError::Closed),
-    }
-  }
-
-  /// Waits for the read service and Runtime disposal, retaining the first join failure.
-  /// Cancelling this wait preserves progress; a later call continues the close.
-  pub(crate) async fn close(&mut self) -> Result<(), NodeError> {
-    self.begin_close();
-    let result = match &mut self.state {
-      NodeState::Stopping {
-        read_task,
-        disposal,
-        result,
-      } => {
-        if let Some(read_task) = read_task
-          && let Err(source) = read_task.close().await
-          && result.is_ok()
-        {
-          *result = Err(NodeError::ForkServiceStopped(Some(Arc::new(source))));
-        }
-        if let Err(source) = disposal.await
-          && result.is_ok()
-        {
-          *result = Err(NodeError::RuntimeDisposalFailed(Arc::new(source)));
-        }
-        result.clone()
-      }
-      NodeState::Closed(result) => return result.clone(),
-      NodeState::Running { .. } => unreachable!("close must first stop Runtime access"),
-    };
-    self.state = NodeState::Closed(result.clone());
-    result
-  }
-
-  fn begin_close(&mut self) {
-    self.state = match mem::replace(&mut self.state, NodeState::Closed(Ok(()))) {
-      NodeState::Running { runtime, read_task } => {
-        if let Some(read_task) = &read_task {
-          read_task.request_stop();
-        }
-        let disposal = self.io.spawn_blocking(move || drop(runtime));
-        NodeState::Stopping {
-          read_task,
-          disposal,
-          result: Ok(()),
-        }
-      }
-      state => state,
-    };
-  }
-}
-
-impl Drop for Node {
-  fn drop(&mut self) {
-    // Drop initiates cleanup; only an awaited close confirms completion.
-    self.begin_close();
+  /// Consumes the node on its execution thread. The IO driver must remain active
+  /// until the read service has stopped. Service-level waiters do not own cleanup.
+  fn close(self) -> Result<(), NodeError> {
+    let Self {
+      io,
+      runtime,
+      read_task,
+    } = self;
+    let read_result = catch_unwind(AssertUnwindSafe(|| match read_task {
+      Some(mut task) => io
+        .block_on(task.close())
+        .map_err(|source| NodeError::ForkServiceStopped(Some(Arc::new(source)))),
+      None => Ok(()),
+    }))
+    .unwrap_or(Err(NodeError::CleanupPanicked));
+    // Runtime ownership stays outside the read-service unwind boundary, so its
+    // disposal still runs if stopping or joining the service fails.
+    let runtime_result =
+      catch_unwind(AssertUnwindSafe(|| drop(runtime))).map_err(|_| NodeError::CleanupPanicked);
+    read_result.and(runtime_result)
   }
 }
 
