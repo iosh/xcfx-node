@@ -37,7 +37,7 @@ pow-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 rustc-hex = "2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 imbl = "7.0.1"
 tokio = { version = "1.53.1", features = ["rt", "net", "sync", "time", "macros"] }
 thiserror = "2"

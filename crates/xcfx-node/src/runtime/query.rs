@@ -45,6 +45,17 @@ pub(crate) enum StateQueryError {
 }
 
 impl NodeRuntime {
+  pub(crate) fn espace_chain_id(&self) -> u32 {
+    self
+      .chain_spec
+      .machine()
+      .params()
+      .chain_id
+      .read()
+      .get_chain_id(self.runtime_state.history.optimistic_height())
+      .in_evm_space()
+  }
+
   pub(crate) fn optimistic_head(&self) -> Arc<EpochView> {
     Arc::clone(self.runtime_state.history.optimistic_head())
   }

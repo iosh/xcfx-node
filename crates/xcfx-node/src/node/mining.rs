@@ -2,36 +2,85 @@
 
 use std::{sync::Arc, time::Duration};
 
+use cfx_types::H256;
+use thiserror::Error;
 use tokio::{
   sync::{mpsc, watch},
   time::{Instant, sleep_until},
 };
 
-use crate::{config::MiningMode, runtime::RuntimeCommitOutcome};
+use crate::{
+  config::MiningMode, production_environment::BlockTimestamp, runtime::RuntimeBlockProductionError,
+};
 
 use super::{
-  command::{CallId, InvalidMiningInterval, MessageId, MiningError, Work},
   lifecycle::Lifecycle,
+  request::{CallId, MessageId, RequestError, Work},
 };
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum MineTiming {
+  #[default]
+  Default,
+  /// A logical timestamp increment for each block, not a wall-clock delay.
+  Interval(u64),
+  /// Overrides the first block's timestamp only.
+  Timestamp(u64),
+}
+
+impl MineTiming {
+  pub(super) fn for_block(self, index: u64) -> BlockTimestamp {
+    match self {
+      Self::Default => BlockTimestamp::Default,
+      Self::Interval(increment) => BlockTimestamp::Increment(increment),
+      Self::Timestamp(timestamp) if index == 0 => BlockTimestamp::Exact(timestamp),
+      Self::Timestamp(_) => BlockTimestamp::Default,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MineRequest {
+  pub(crate) blocks: u64,
+  pub(crate) timing: MineTiming,
+}
+
+impl Default for MineRequest {
+  fn default() -> Self {
+    Self {
+      blocks: 1,
+      timing: MineTiming::Default,
+    }
+  }
+}
+
+pub(crate) enum MiningOutcome {
+  Complete(Vec<H256>),
+  Interrupted {
+    hashes: Vec<H256>,
+    reason: MiningError,
+  },
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum MiningError {
+  #[error(transparent)]
+  Production(#[from] RuntimeBlockProductionError),
+  #[error(transparent)]
+  Request(#[from] RequestError),
+  #[error(transparent)]
+  Interval(#[from] InvalidMiningInterval),
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error("mining interval is outside the monotonic clock's supported range")]
+pub(crate) struct InvalidMiningInterval;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum MiningCause {
   Manual(CallId),
   Automatic(MessageId),
   Interval,
-}
-
-/// Facts are emitted only after Runtime commit. Connection-level response
-/// ordering and subscription projection belong to the consumer.
-pub(crate) enum NodeEvent {
-  Committed {
-    cause: MiningCause,
-    outcome: Arc<RuntimeCommitOutcome>,
-  },
-  MiningFailed {
-    cause: MiningCause,
-    error: Arc<MiningError>,
-  },
 }
 
 struct Interval {
@@ -144,20 +193,19 @@ impl MiningScheduler {
     )
   }
 
-  pub(super) fn rearm(&mut self, tick: &Tick) -> Result<(), InvalidMiningInterval> {
-    if !self.accepts(tick) {
-      return Ok(());
-    }
-    let Ok(deadline) = interval_deadline(tick.interval.period) else {
+  /// Rearms the active interval after the worker completes an accepted tick.
+  /// Mode changes cannot interleave with that execution.
+  pub(super) fn rearm(&mut self) -> Result<(), InvalidMiningInterval> {
+    let MiningState::Interval(schedule) = &mut self.state else {
+      panic!("only an active interval can rearm after a completed tick");
+    };
+    let Ok(deadline) = interval_deadline(schedule.interval.period) else {
       // Do not keep a due timer live when the next deadline is unrepresentable.
       self.state = MiningState::Manual;
       self.publish_schedule();
       return Err(InvalidMiningInterval);
     };
-    self.state = MiningState::Interval(TimerSchedule {
-      interval: Arc::clone(&tick.interval),
-      deadline,
-    });
+    schedule.deadline = deadline;
     self.publish_schedule();
     Ok(())
   }

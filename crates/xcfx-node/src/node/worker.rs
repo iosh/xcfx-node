@@ -3,27 +3,31 @@
 use std::{
   panic::{AssertUnwindSafe, catch_unwind},
   sync::Arc,
+  time::Duration,
 };
 
+use cfx_types::{AddressWithSpace, H256, U256};
 use tokio::{
   runtime::Handle,
   sync::{mpsc, oneshot, watch},
 };
 
 use crate::{
+  chain::TransactionReceiptView,
   config::{MiningMode, NodeConfig},
   production_environment::BlockTimestamp,
-  runtime::RuntimeCommitOutcome,
+  runtime::{EpochSelector, RuntimeCommitOutcome, RuntimeTransactionError, StateQueryError},
+  state_overlay::{StateControlBatch, StateControlPreparationError},
 };
 
 use super::{
-  Node, NodeError, NodeStartError,
-  command::{
-    CallId, Cancellation, CommandError, CommandOutcome, Message, MessageId, MessageOutcome,
-    MineRequest, MiningError, MiningOutcome, NodeCommand, RequestError, Work,
-  },
+  Node, NodeError, NodeEvent, NodeStartError,
   lifecycle::{Lifecycle, NodeStatus},
-  mining::{MiningCause, MiningScheduler, NodeEvent, Tick, TimerSchedule},
+  mining::{
+    InvalidMiningInterval, MineRequest, MiningCause, MiningError, MiningOutcome, MiningScheduler,
+    Tick, TimerSchedule,
+  },
+  request::{CallId, Cancellation, Message, MessageId, RequestError, Work},
 };
 
 pub(super) fn run(
@@ -71,7 +75,7 @@ pub(super) fn run(
       lifecycle: &lifecycle,
       io: &io,
     };
-    if worker.lifecycle.ready() {
+    if worker.lifecycle.mark_ready() {
       worker.scheduler.publish_schedule();
       let _ = started.send(Ok(()));
       worker.run();
@@ -104,21 +108,12 @@ fn reject_queued(requests: &mut mpsc::Receiver<Work>, lifecycle: &Lifecycle) {
   // after stop. Do not await those permits: a suspended producer may retain one.
   while let Ok(work) = requests.try_recv() {
     if let Work::Message(message) = work {
-      let error = lifecycle.unavailable();
-      let outcomes = message
-        .calls
-        .into_iter()
-        .map(|_| Err(RequestError::Node(error.clone()).into()))
-        .collect();
-      let _ = message.reply.send(MessageOutcome {
-        id: message.id,
-        calls: outcomes,
-      });
+      message.reject(lifecycle.unavailable().into());
     }
   }
 }
 
-struct Worker<'a> {
+pub(super) struct Worker<'a> {
   node: &'a mut Node,
   scheduler: MiningScheduler,
   requests: &'a mut mpsc::Receiver<Work>,
@@ -139,55 +134,70 @@ impl Worker<'_> {
       });
       // All synchronous Runtime calls run after leaving the async context.
       match work {
-        Some(Work::Message(message)) => self.execute_message(message),
+        Some(Work::Message(message)) => message.execute(self),
         Some(Work::Tick(tick)) => self.execute_tick(tick),
         None => return,
       }
     }
   }
 
-  fn execute_message(&mut self, message: Message) {
+  pub(super) fn execute_message<T>(&mut self, message: Message<T>) {
     let Message {
       id,
       calls,
       cancellation,
       reply,
     } = message;
-    let mut outcomes = Vec::with_capacity(calls.len());
+    let count = calls.len();
+    // Completed values and the only reply sender survive an unexpected unwind
+    // of the batch loop or automatic mining, independently of each task's boundary.
+    let mut results = Vec::with_capacity(count);
     let mut auto_mine = false;
-    for (index, call) in calls.into_iter().enumerate() {
-      let triggers_mining = match &call.command {
-        NodeCommand::SubmitRawTransaction(_) => true,
-        NodeCommand::ApplyStateControls(batch) => !batch.is_empty(),
-        NodeCommand::SetAutomine(true) => self.scheduler.mode() != MiningMode::Auto,
-        _ => false,
-      };
-      let call_id = CallId { message: id, index };
-      let outcome = self.execute_call(call.command, call_id, &cancellation, &call.cancellation);
-      auto_mine |= triggers_mining && outcome.is_ok();
-      outcomes.push(outcome);
+    let execution = catch_unwind(AssertUnwindSafe(|| {
+      for call in calls {
+        let call_id = CallId {
+          message: id,
+          index: call.index,
+        };
+        let result = self.execute_call(&cancellation, &call.cancellation, |worker| {
+          (call.task)(NodeCall {
+            worker,
+            id: call_id,
+            message_cancel: &cancellation,
+            call_cancel: &call.cancellation,
+            auto_mine: &mut auto_mine,
+          })
+        });
+        results.push(result);
+      }
+    }));
+    if execution.is_err() {
+      self.lifecycle.fail(NodeError::ExecutionPanicked);
+      results.resize_with(count, || Err(NodeError::ExecutionPanicked.into()));
     }
     if auto_mine && self.scheduler.mode() == MiningMode::Auto {
-      self.auto_mine(id, &cancellation);
+      let mining = catch_unwind(AssertUnwindSafe(|| self.auto_mine(id, &cancellation)));
+      if mining.is_err() {
+        self.lifecycle.fail(NodeError::ExecutionPanicked);
+        self.mining_failed(
+          MiningCause::Automatic(id),
+          RequestError::Node(NodeError::ExecutionPanicked).into(),
+        );
+      }
     }
-    let _ = reply.send(MessageOutcome {
-      id,
-      calls: outcomes,
-    });
+    let _ = reply.send(Ok(results));
   }
 
-  fn execute_call(
+  /// The batch retains response ownership while the task consumes its node access.
+  fn execute_call<T>(
     &mut self,
-    command: NodeCommand,
-    id: CallId,
     message_cancel: &Cancellation,
     call_cancel: &Cancellation,
-  ) -> Result<CommandOutcome, CommandError> {
+    operation: impl FnOnce(&mut Self) -> T,
+  ) -> Result<T, RequestError> {
     self.lifecycle.begin(&[message_cancel, call_cancel])?;
     self.check_health()?;
-    let result = catch_unwind(AssertUnwindSafe(|| {
-      self.dispatch(command, id, message_cancel, call_cancel)
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| operation(self)));
     match result {
       Ok(result) => {
         // Preserve completed command results even if an independent IO task
@@ -195,74 +205,11 @@ impl Worker<'_> {
         if self.lifecycle.status() != NodeStatus::Failed {
           let _ = self.check_health();
         }
-        result
+        Ok(result)
       }
       Err(_) => {
         self.lifecycle.fail(NodeError::ExecutionPanicked);
-        Err(RequestError::Node(NodeError::ExecutionPanicked).into())
-      }
-    }
-  }
-
-  fn dispatch(
-    &mut self,
-    command: NodeCommand,
-    id: CallId,
-    message_cancel: &Cancellation,
-    call_cancel: &Cancellation,
-  ) -> Result<CommandOutcome, CommandError> {
-    match command {
-      NodeCommand::EpochHeight(epoch) => Ok(CommandOutcome::EpochHeight(
-        self
-          .node
-          .runtime()
-          .map_err(RequestError::from)?
-          .epoch_height(epoch),
-      )),
-      NodeCommand::Balance { address, epoch } => Ok(CommandOutcome::Balance(
-        self
-          .node
-          .runtime()
-          .map_err(RequestError::from)?
-          .balance_at(address, epoch)?,
-      )),
-      NodeCommand::TransactionReceipt(hash) => Ok(CommandOutcome::TransactionReceipt(
-        self
-          .node
-          .runtime()
-          .map_err(RequestError::from)?
-          .transaction_receipt_by_hash(&hash),
-      )),
-      NodeCommand::SubmitRawTransaction(raw) => {
-        let hash = self
-          .node
-          .runtime_mut()
-          .map_err(RequestError::from)?
-          .submit_raw_transaction(&raw)?;
-        Ok(CommandOutcome::TransactionSubmitted(hash))
-      }
-      NodeCommand::ApplyStateControls(batch) => {
-        self
-          .node
-          .runtime_mut()
-          .map_err(RequestError::from)?
-          .apply_state_control_batch(&batch)?;
-        Ok(CommandOutcome::StateControlsApplied)
-      }
-      NodeCommand::Mine(request) => Ok(CommandOutcome::Mined(self.mine(
-        request,
-        id,
-        message_cancel,
-        call_cancel,
-      ))),
-      NodeCommand::MiningMode => Ok(CommandOutcome::MiningMode(self.scheduler.mode())),
-      NodeCommand::SetAutomine(enabled) => {
-        self.scheduler.set_automine(enabled);
-        Ok(CommandOutcome::MiningMode(self.scheduler.mode()))
-      }
-      NodeCommand::SetIntervalMining(interval) => {
-        self.scheduler.set_interval(interval)?;
-        Ok(CommandOutcome::MiningMode(self.scheduler.mode()))
+        Err(RequestError::Node(NodeError::ExecutionPanicked))
       }
     }
   }
@@ -301,9 +248,11 @@ impl Worker<'_> {
   }
 
   fn mine_block(&mut self, timestamp: BlockTimestamp) -> Result<RuntimeCommitOutcome, MiningError> {
+    self.check_health()?;
     let result = catch_unwind(AssertUnwindSafe(|| {
-      let runtime = self.node.runtime_mut().map_err(RequestError::from)?;
-      runtime
+      self
+        .node
+        .runtime_mut()
         .produce_and_commit_block(timestamp)
         .map_err(MiningError::from)
     }));
@@ -390,7 +339,7 @@ impl Worker<'_> {
       Err(error) => self.mining_failed(cause, error),
     }
     if self.lifecycle.status() == NodeStatus::Ready
-      && let Err(error) = self.scheduler.rearm(&tick)
+      && let Err(error) = self.scheduler.rearm()
     {
       self.mining_failed(cause, error.into());
     }
@@ -408,5 +357,94 @@ impl Worker<'_> {
       cause,
       error: Arc::new(error),
     });
+  }
+}
+
+/// Access to one operation after its cancellation and health checks have passed.
+/// Methods consume this capability so a task cannot start another operation
+/// without going through the worker's boundaries again. No Runtime borrow escapes.
+pub(crate) struct NodeCall<'call, 'worker> {
+  worker: &'call mut Worker<'worker>,
+  id: CallId,
+  message_cancel: &'call Cancellation,
+  call_cancel: &'call Cancellation,
+  auto_mine: &'call mut bool,
+}
+
+impl NodeCall<'_, '_> {
+  /// Orders one connection observation change against this thread's facts.
+  /// The IO consumer applies it before processing any subsequent fact.
+  pub(crate) fn observation_boundary(self) {
+    let _ = self
+      .worker
+      .events
+      .send(NodeEvent::Observation { call: self.id });
+  }
+
+  pub(crate) fn espace_chain_id(self) -> u32 {
+    self.worker.node.runtime().espace_chain_id()
+  }
+
+  pub(crate) fn epoch_height(self, epoch: EpochSelector) -> u64 {
+    self.worker.node.runtime().epoch_height(epoch)
+  }
+
+  pub(crate) fn balance_at(
+    self,
+    address: AddressWithSpace,
+    epoch: EpochSelector,
+  ) -> Result<U256, StateQueryError> {
+    self.worker.node.runtime().balance_at(address, epoch)
+  }
+
+  /// Looks up a local receipt under the Runtime's deferred visibility rules.
+  pub(crate) fn transaction_receipt_by_hash(self, hash: &H256) -> Option<TransactionReceiptView> {
+    self.worker.node.runtime().transaction_receipt_by_hash(hash)
+  }
+
+  pub(crate) fn submit_raw_transaction(self, raw: &[u8]) -> Result<H256, RuntimeTransactionError> {
+    let hash = self.worker.node.runtime_mut().submit_raw_transaction(raw)?;
+    *self.auto_mine = true;
+    Ok(hash)
+  }
+
+  pub(crate) fn apply_state_controls(
+    self,
+    batch: &StateControlBatch,
+  ) -> Result<(), StateControlPreparationError> {
+    self
+      .worker
+      .node
+      .runtime_mut()
+      .apply_state_control_batch(batch)?;
+    *self.auto_mine |= !batch.is_empty();
+    Ok(())
+  }
+
+  pub(crate) fn mine(self, request: MineRequest) -> MiningOutcome {
+    self
+      .worker
+      .mine(request, self.id, self.message_cancel, self.call_cancel)
+  }
+
+  pub(crate) fn mining_mode(self) -> MiningMode {
+    self.worker.scheduler.mode()
+  }
+
+  pub(crate) fn set_automine(self, enabled: bool) -> MiningMode {
+    let previous = self.worker.scheduler.mode();
+    self.worker.scheduler.set_automine(enabled);
+    let mode = self.worker.scheduler.mode();
+    *self.auto_mine |= previous != MiningMode::Auto && mode == MiningMode::Auto;
+    mode
+  }
+
+  /// Zero disables interval mining; positive values select interval mode.
+  pub(crate) fn set_interval_mining(
+    self,
+    interval: Duration,
+  ) -> Result<MiningMode, InvalidMiningInterval> {
+    self.worker.scheduler.set_interval(interval)?;
+    Ok(self.worker.scheduler.mode())
   }
 }

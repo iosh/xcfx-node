@@ -9,6 +9,7 @@ mod mpt;
 mod node;
 mod pos;
 mod production_environment;
+mod rpc;
 mod rpc_client;
 mod runtime;
 mod runtime_transaction;

@@ -4,7 +4,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use tokio::sync::{Notify, mpsc};
 
-use super::{NodeError, command::Cancellation, command::RequestError};
+use super::{
+  NodeError,
+  request::{Cancellation, RequestError},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NodeStatus {
@@ -52,7 +55,7 @@ impl Lifecycle {
     }
   }
 
-  pub(super) fn ready(&self) -> bool {
+  pub(super) fn mark_ready(&self) -> bool {
     let mut state = self.state();
     if !matches!(*state, State::Starting) {
       return false;

@@ -1,18 +1,18 @@
 //! Startup, Runtime ownership, and shutdown for local and fork nodes.
 
-mod command;
+mod event;
 mod lifecycle;
 mod mining;
+mod request;
 mod service;
 mod worker;
 
-pub(crate) use command::{
-  CallId, Cancellation, CommandError, CommandOutcome, MessageId, MessageOutcome, MineRequest,
-  MineTiming, MiningError, MiningOutcome, NodeCommand, RequestError,
-};
+pub(crate) use event::NodeEvent;
 pub(crate) use lifecycle::NodeStatus;
-pub(crate) use mining::{MiningCause, NodeEvent};
+pub(crate) use mining::{MineRequest, MineTiming, MiningCause, MiningError, MiningOutcome};
+pub(crate) use request::{BatchResult, CallId, Cancellation, MessageId, NodeTask, RequestError};
 pub(crate) use service::{NodeEvents, NodeHandle, NodeRequest, NodeService};
+pub(crate) use worker::NodeCall;
 
 use std::{
   collections::BTreeMap,
@@ -62,7 +62,7 @@ pub(crate) enum NodeStartError {
   #[error("configuration: {0}")]
   Configuration(#[from] ConfigError),
   #[error("configuration mining: {0}")]
-  MiningInterval(#[from] command::InvalidMiningInterval),
+  MiningInterval(#[from] mining::InvalidMiningInterval),
   #[error("configuration accounts: {0}")]
   Accounts(#[from] AccountConfigError),
   #[error("{0}")]
@@ -118,7 +118,7 @@ impl fmt::Debug for NodeStartError {
 pub(crate) enum NodeError {
   #[error("node is closing or closed")]
   Closed,
-  /// Runtime access detects termination synchronously; `close` can attach a join failure.
+  /// The worker detects termination at operation boundaries; `close` can attach a join failure.
   #[error("fork read service stopped unexpectedly")]
   ForkServiceStopped(#[source] Option<Arc<JoinError>>),
   #[error("node execution failed after an internal panic")]
@@ -129,6 +129,8 @@ pub(crate) enum NodeError {
   CleanupPanicked,
   #[error("node mining scheduler stopped unexpectedly")]
   SchedulerStopped(#[source] Option<Arc<JoinError>>),
+  #[error("node IO service stopped unexpectedly")]
+  IoServiceStopped(#[source] Option<Arc<JoinError>>),
 }
 
 impl fmt::Debug for NodeError {
@@ -286,14 +288,13 @@ impl Node {
     })
   }
 
-  fn runtime(&self) -> Result<&NodeRuntime, NodeError> {
-    self.check_read_service()?;
-    Ok(&self.runtime)
+  // The worker checks read-service health at operation boundaries.
+  fn runtime(&self) -> &NodeRuntime {
+    &self.runtime
   }
 
-  fn runtime_mut(&mut self) -> Result<&mut NodeRuntime, NodeError> {
-    self.check_read_service()?;
-    Ok(&mut self.runtime)
+  fn runtime_mut(&mut self) -> &mut NodeRuntime {
+    &mut self.runtime
   }
 
   fn check_read_service(&self) -> Result<(), NodeError> {
