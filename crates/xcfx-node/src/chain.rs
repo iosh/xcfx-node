@@ -1,22 +1,29 @@
 //! Immutable epoch views, retained execution artifacts, and indexed queries.
 
+mod espace;
 mod graph;
 mod history;
 
+pub(crate) use espace::{
+  EspaceBlockView, EspaceReceiptRef, EspaceTransactionRef, EspaceTransactionView,
+};
 pub(crate) use graph::{BlockGraph, GraphError, OrderedEpoch};
 pub(crate) use history::ChainHistory;
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use cfx_executor::machine::Machine;
 use cfx_statedb::global_params::TOTAL_GLOBAL_PARAMS;
-use cfx_types::{AddressWithSpace, H256, U256};
+use cfx_types::{AddressWithSpace, H256, Space, U256};
 use primitives::{Block, BlockNumber, BlockReceipts, Receipt, block::BlockHeight};
+
+use espace::EspaceProjection;
 
 use crate::{
   block_producer::{BlockParent, RuntimeBlock},
-  execution::ExecutionCommitment,
+  execution::{ExecutedBlock, ExecutedEpoch, ExecutionCommitment},
   fork::{ForkBase, ForkClient, ForkReadError},
-  genesis::{ExecutedGenesis, ExecutedGenesisWithPos},
+  genesis::ExecutedGenesisWithPos,
   pos::{PosContext, PosEnvInput},
   runtime_transaction::RuntimeTransaction,
   state::{
@@ -28,23 +35,125 @@ use crate::{
 /// Blocks, receipts, and execution commitments retained for one local epoch.
 pub(crate) struct EpochArtifacts {
   start_block_number: BlockNumber,
-  ordered_blocks: Vec<RuntimeBlock>,
-  skipped_blocks: Vec<RuntimeBlock>,
+  ordered_blocks: Vec<EpochBlock>,
+  skipped_blocks: Vec<EpochBlock>,
   commitment: ExecutionCommitment,
-  block_receipts: Vec<Arc<BlockReceipts>>,
+  espace: EspaceProjection,
   has_state_controls: bool,
 }
+
+/// A block and its results in one retained epoch, including Genesis and skipped blocks.
+pub(crate) struct EpochBlock {
+  block: RuntimeBlock,
+  receipts: Option<Arc<BlockReceipts>>,
+  core_transaction_indices: Vec<usize>,
+}
+
+/// A position in the ordered block bodies of one local epoch.
+#[derive(Clone, Copy)]
+struct EpochTransactionIndex {
+  block_index: usize,
+  transaction_index: usize,
+}
+
+/// Borrows an original transaction, receipt, and error at the same block-body position.
+#[derive(Clone, Copy)]
+pub(crate) struct TransactionReceiptRef<'a> {
+  block: &'a RuntimeBlock,
+  receipts: &'a BlockReceipts,
+  index: usize,
+}
+
+impl EpochBlock {
+  fn new(block: RuntimeBlock, receipts: Option<Arc<BlockReceipts>>) -> Self {
+    let core_transaction_indices = block
+      .transactions()
+      .iter()
+      .enumerate()
+      .filter_map(|(index, transaction)| (transaction.space() == Space::Native).then_some(index))
+      .collect();
+    Self {
+      block,
+      receipts,
+      core_transaction_indices,
+    }
+  }
+
+  fn from_executed(executed: ExecutedBlock) -> Self {
+    let (block, receipts) = executed.into_parts();
+    Self::new(block, Some(receipts))
+  }
+
+  fn from_skipped(block: RuntimeBlock) -> Self {
+    Self::new(block, None)
+  }
+
+  pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
+    &self.block
+  }
+
+  /// Genesis has an empty collection; a skipped block has none.
+  pub(crate) fn block_receipts(&self) -> Option<&BlockReceipts> {
+    self.receipts.as_deref()
+  }
+
+  /// Includes skipped transaction outcomes; Genesis and skipped blocks yield no receipts.
+  pub(crate) fn transaction_receipts(&self) -> impl Iterator<Item = TransactionReceiptRef<'_>> {
+    self.receipts.iter().flat_map(move |receipts| {
+      (0..receipts.receipts.len()).map(move |index| TransactionReceiptRef {
+        block: &self.block,
+        receipts,
+        index,
+      })
+    })
+  }
+
+  fn transaction_receipt_at(&self, index: usize) -> Option<TransactionReceiptRef<'_>> {
+    let receipts = self.receipts.as_deref()?;
+    receipts.receipts.get(index)?;
+    Some(TransactionReceiptRef {
+      block: &self.block,
+      receipts,
+      index,
+    })
+  }
+}
+
+impl<'a> TransactionReceiptRef<'a> {
+  pub(crate) fn transaction(&self) -> &'a RuntimeTransaction {
+    &self.block.transactions()[self.index]
+  }
+
+  /// Position in the original mixed-Space block body.
+  pub(crate) fn block_transaction_index(&self) -> usize {
+    self.index
+  }
+
+  pub(crate) fn receipt(&self) -> &'a Receipt {
+    &self.receipts.receipts[self.index]
+  }
+
+  pub(crate) fn execution_error_message(&self) -> Option<&'a str> {
+    let error = &self.receipts.tx_execution_error_messages[self.index];
+    (!error.is_empty()).then_some(error.as_str())
+  }
+}
+
 impl EpochArtifacts {
-  pub(crate) fn ordered_blocks(&self) -> &[RuntimeBlock] {
+  pub(crate) fn ordered_blocks(&self) -> &[EpochBlock] {
     &self.ordered_blocks
   }
 
-  pub(crate) fn skipped_blocks(&self) -> &[RuntimeBlock] {
+  pub(crate) fn skipped_blocks(&self) -> &[EpochBlock] {
     &self.skipped_blocks
   }
 
   pub(crate) fn all_blocks(&self) -> impl Iterator<Item = &RuntimeBlock> {
-    self.skipped_blocks.iter().chain(&self.ordered_blocks)
+    self
+      .skipped_blocks
+      .iter()
+      .chain(&self.ordered_blocks)
+      .map(EpochBlock::runtime_block)
   }
 
   pub(crate) fn pivot_runtime_block(&self) -> &RuntimeBlock {
@@ -52,6 +161,7 @@ impl EpochArtifacts {
       .ordered_blocks
       .last()
       .expect("a committed epoch always contains a pivot block")
+      .runtime_block()
   }
 
   /// Returns the Conflux pivot block without runtime transaction metadata.
@@ -63,8 +173,25 @@ impl EpochArtifacts {
     &self.commitment
   }
 
-  pub(crate) fn block_receipts(&self) -> &[Arc<BlockReceipts>] {
-    &self.block_receipts
+  fn transaction(&self, index: EpochTransactionIndex) -> &RuntimeTransaction {
+    self
+      .ordered_blocks
+      .get(index.block_index)
+      .expect("a transaction position must reference an ordered block in its epoch")
+      .runtime_block()
+      .transactions()
+      .get(index.transaction_index)
+      .expect("a transaction position must reference a transaction in its block")
+  }
+
+  fn transaction_receipt(&self, index: EpochTransactionIndex) -> TransactionReceiptRef<'_> {
+    self.ordered_blocks[index.block_index]
+      .transaction_receipt_at(index.transaction_index)
+      .expect("a projected transaction must retain its original receipt")
+  }
+
+  fn espace_transaction_hashes(&self) -> impl Iterator<Item = H256> + '_ {
+    self.espace.transaction_hashes(self)
   }
 
   /// Whether this epoch committed developer state controls, including no-op controls.
@@ -75,9 +202,10 @@ impl EpochArtifacts {
   /// Includes failed executions with receipts, but excludes skipped transactions.
   pub(crate) fn has_executed_transactions(&self) -> bool {
     self
-      .block_receipts
+      .ordered_blocks
       .iter()
-      .any(|block| block.receipts.iter().any(|receipt| !receipt.tx_skipped()))
+      .flat_map(EpochBlock::transaction_receipts)
+      .any(|result| !result.receipt().tx_skipped())
   }
 
   fn pivot_block_number(&self) -> BlockNumber {
@@ -115,20 +243,16 @@ impl EpochView {
       committed_pos_state,
     } = genesis;
 
-    let ExecutedGenesis {
-      block,
-      committed_state,
-      commitment,
-      block_receipts,
-    } = execution;
+    let (block, committed_state, commitment, receipts) = execution.into_parts();
+    let block = EpochBlock::new(RuntimeBlock::from_system_block(block), Some(receipts));
 
     Self {
       source: EpochSource::Executed(EpochArtifacts {
         start_block_number: 0,
-        ordered_blocks: vec![RuntimeBlock::from_system_block(block)],
+        ordered_blocks: vec![block],
         skipped_blocks: Vec::new(),
         commitment,
-        block_receipts,
+        espace: EspaceProjection::default(),
         has_state_controls: false,
       }),
       state: committed_state,
@@ -170,25 +294,36 @@ impl EpochView {
   }
 
   pub(crate) fn from_executed_epoch(
-    parent: &Self,
-    ordered_blocks: Vec<RuntimeBlock>,
+    machine: &Machine,
+    executed: ExecutedEpoch,
     skipped_blocks: Vec<RuntimeBlock>,
-    state: CommittedStateVersion,
-    commitment: ExecutionCommitment,
-    block_receipts: Vec<Arc<BlockReceipts>>,
     has_state_controls: bool,
   ) -> Self {
+    let epoch_height = executed.pivot_block().header().height();
+    let (start_block_number, blocks, state, commitment, pos_context) = executed.into_parts();
+    let ordered_blocks: Vec<_> = blocks.into_iter().map(EpochBlock::from_executed).collect();
+    let skipped_blocks = skipped_blocks
+      .into_iter()
+      .map(EpochBlock::from_skipped)
+      .collect();
+    let espace = EspaceProjection::from_executed_epoch(
+      machine,
+      start_block_number,
+      epoch_height,
+      &ordered_blocks,
+    );
+
     Self {
       source: EpochSource::Executed(EpochArtifacts {
-        start_block_number: parent.next_epoch_start_block_number(),
+        start_block_number,
         ordered_blocks,
         skipped_blocks,
         commitment,
-        block_receipts,
+        espace,
         has_state_controls,
       }),
       state,
-      pos_context: parent.pos_context.clone(),
+      pos_context,
     }
   }
 
@@ -198,6 +333,12 @@ impl EpochView {
       EpochSource::Executed(artifacts) => Some(artifacts),
       EpochSource::ForkBase(_) => None,
     }
+  }
+
+  /// Pins the local eSpace projection. A Fork Base has no local block artifacts.
+  /// Availability here does not establish visibility for a standard RPC method.
+  pub(crate) fn espace_block(self: &Arc<Self>) -> Option<EspaceBlockView> {
+    EspaceBlockView::new(Arc::clone(self))
   }
 
   fn local_artifacts(&self) -> &EpochArtifacts {
@@ -256,8 +397,12 @@ impl EpochView {
   }
 
   pub(crate) fn fork_base(&self) -> Option<&ForkBase> {
+    self.fork_client().map(ForkClient::base)
+  }
+
+  pub(crate) fn fork_client(&self) -> Option<&ForkClient> {
     match &self.source {
-      EpochSource::ForkBase(client) => Some(client.base()),
+      EpochSource::ForkBase(client) => Some(client),
       EpochSource::Executed(_) => None,
     }
   }
@@ -301,18 +446,22 @@ pub(crate) struct MinedBlockView {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BlockIndex {
-  Executed(usize),
+  Ordered(usize),
   Skipped(usize),
 }
 
 impl MinedBlockView {
-  pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
+  fn epoch_block(&self) -> &EpochBlock {
     let artifacts = self.epoch_view.local_artifacts();
     let block = match self.block_index {
-      BlockIndex::Executed(index) => artifacts.ordered_blocks.get(index),
+      BlockIndex::Ordered(index) => artifacts.ordered_blocks.get(index),
       BlockIndex::Skipped(index) => artifacts.skipped_blocks.get(index),
     };
     block.expect("an indexed block must exist in its retained epoch view")
+  }
+
+  pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
+    self.epoch_block().runtime_block()
   }
 
   /// Returns the Conflux block without runtime transaction metadata.
@@ -332,6 +481,31 @@ impl MinedBlockView {
     self.runtime_block().transactions()
   }
 
+  fn core_transaction_indices(&self) -> &[usize] {
+    &self.epoch_block().core_transaction_indices
+  }
+
+  /// Native block-body order, including transactions skipped during execution.
+  pub(crate) fn core_transactions(
+    &self,
+  ) -> impl ExactSizeIterator<Item = MinedTransactionView> + '_ {
+    self
+      .core_transaction_indices()
+      .iter()
+      .map(move |&transaction_index| MinedTransactionView {
+        block: self.clone(),
+        transaction_index,
+      })
+  }
+
+  pub(crate) fn core_transaction_at(&self, core_index: usize) -> Option<MinedTransactionView> {
+    let transaction_index = *self.core_transaction_indices().get(core_index)?;
+    Some(MinedTransactionView {
+      block: self.clone(),
+      transaction_index,
+    })
+  }
+
   pub(crate) fn epoch_height(&self) -> BlockHeight {
     self.epoch_view.epoch_height()
   }
@@ -344,7 +518,7 @@ impl MinedBlockView {
   /// Core execution-order number; skipped blocks have no number.
   pub(crate) fn block_number(&self) -> Option<BlockNumber> {
     match self.block_index {
-      BlockIndex::Executed(index) => {
+      BlockIndex::Ordered(index) => {
         Some(self.epoch_view.local_artifacts().start_block_number + index as u64)
       }
       BlockIndex::Skipped(_) => None,
@@ -366,13 +540,30 @@ impl MinedTransactionView {
   pub(crate) fn transaction(&self) -> &RuntimeTransaction {
     self
       .block
+      .runtime_block()
       .transactions()
       .get(self.transaction_index)
       .expect("an indexed transaction must exist in its mined block")
   }
 
-  pub(crate) fn transaction_index(&self) -> usize {
+  /// Position in the original block body, which contains both Spaces.
+  pub(crate) fn block_transaction_index(&self) -> usize {
     self.transaction_index
+  }
+
+  /// Native-only block position; an eSpace transaction has no Core index.
+  pub(crate) fn core_transaction_index(&self) -> Option<usize> {
+    self
+      .block
+      .core_transaction_indices()
+      .binary_search(&self.transaction_index)
+      .ok()
+  }
+
+  /// Retained execution result without a current-history visibility check.
+  /// Genesis transactions and transactions in skipped blocks have no receipts.
+  pub(crate) fn receipt(&self) -> Option<TransactionReceiptView> {
+    TransactionReceiptView::new(self.clone())
   }
 
   pub(crate) fn hash(&self) -> H256 {
@@ -399,10 +590,11 @@ pub(crate) struct TransactionReceiptView {
 
 impl TransactionReceiptView {
   fn new(transaction: MinedTransactionView) -> Option<Self> {
-    // Genesis transactions are indexed, but Genesis retains no transaction receipts.
-    Self::block_receipts_for(&transaction)
-      .receipts
-      .get(transaction.transaction_index)?;
+    // Genesis and skipped blocks retain transaction bodies without receipts.
+    transaction
+      .block
+      .epoch_block()
+      .transaction_receipt_at(transaction.transaction_index)?;
 
     Some(Self { transaction })
   }
@@ -412,37 +604,19 @@ impl TransactionReceiptView {
   }
 
   pub(crate) fn receipt(&self) -> &Receipt {
-    self
-      .block_receipts()
-      .receipts
-      .get(self.transaction.transaction_index)
-      .expect("an indexed transaction receipt must exist in its committed block results")
+    self.receipt_ref().receipt()
   }
 
   pub(crate) fn execution_error_message(&self) -> Option<&str> {
-    let message = self
-      .block_receipts()
-      .tx_execution_error_messages
-      .get(self.transaction.transaction_index)
-      .expect("an indexed transaction error must exist in its committed block results");
-
-    (!message.is_empty()).then_some(message.as_str())
+    self.receipt_ref().execution_error_message()
   }
 
-  fn block_receipts(&self) -> &BlockReceipts {
-    Self::block_receipts_for(&self.transaction)
-  }
-
-  fn block_receipts_for(transaction: &MinedTransactionView) -> &BlockReceipts {
-    let BlockIndex::Executed(index) = transaction.block.block_index else {
-      unreachable!("transaction indexes only contain executed blocks");
-    };
-    transaction
+  fn receipt_ref(&self) -> TransactionReceiptRef<'_> {
+    self
+      .transaction
       .block
-      .epoch_view
-      .local_artifacts()
-      .block_receipts
-      .get(index)
-      .expect("an indexed block must have committed receipts")
+      .epoch_block()
+      .transaction_receipt_at(self.transaction.transaction_index)
+      .expect("a receipt view must retain its original transaction and receipt")
   }
 }

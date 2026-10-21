@@ -10,10 +10,11 @@ use thiserror::Error;
 
 use crate::{
   chain::{
-    EpochHistoryView, EpochView, MinedBlockView, MinedTransactionView, TransactionReceiptView,
+    EpochHistoryView, EpochView, EspaceTransactionView, MinedBlockView, MinedTransactionView,
+    TransactionReceiptView,
   },
   chain_spec::ChainSpec,
-  fork::ForkBase,
+  fork::{ForkBase, ForkClient},
   state::state_version::StateVersion,
 };
 
@@ -42,6 +43,13 @@ pub(crate) enum StateQueryError {
   Unavailable(#[from] StateUnavailable),
   #[error(transparent)]
   State(#[from] cfx_statedb::Error),
+}
+
+/// A receipt source selected under the current pool and history. A remote
+/// lookup borrows the Runtime and retains the hash to which that decision applies.
+pub(crate) enum EspaceReceiptSource<'a> {
+  Local(EspaceTransactionView),
+  Fork { client: &'a ForkClient, hash: H256 },
 }
 
 impl NodeRuntime {
@@ -103,6 +111,8 @@ impl NodeRuntime {
       .mined_transaction_by_hash(transaction_hash)
   }
 
+  /// Local receipt visibility. `None` also covers Genesis and not-yet-visible
+  /// transactions; it does not by itself permit a remote history fallback.
   pub(crate) fn transaction_receipt_by_hash(
     &self,
     transaction_hash: &H256,
@@ -111,6 +121,54 @@ impl NodeRuntime {
       .runtime_state
       .history
       .transaction_receipt_by_hash(transaction_hash)
+  }
+
+  /// Includes ordinary eSpace transactions and phantom entries in retained local
+  /// epochs, even beyond `latest_state`. Does not read the pool or remote history.
+  pub(crate) fn mined_espace_transaction_by_hash(
+    &self,
+    transaction_hash: &H256,
+  ) -> Option<EspaceTransactionView> {
+    self
+      .runtime_state
+      .history
+      .mined_espace_transaction_by_hash(transaction_hash)
+  }
+
+  /// Selects a complete eSpace receipt lookup without performing remote IO.
+  ///
+  /// Pool entries and local transactions without a visible eSpace receipt end
+  /// the lookup here. Only absence from both local indexes permits a Fork read.
+  pub(crate) fn espace_receipt_source(
+    &self,
+    transaction_hash: &H256,
+  ) -> Option<EspaceReceiptSource<'_>> {
+    if self
+      .runtime_state
+      .transaction_pool
+      .get_by_hash(*transaction_hash)
+      .is_some()
+    {
+      return None;
+    }
+
+    let history = &self.runtime_state.history;
+    if let Some(transaction) = history.mined_espace_transaction_by_hash(transaction_hash) {
+      return (transaction.block().epoch_height() <= history.latest_state_height())
+        .then_some(EspaceReceiptSource::Local(transaction));
+    }
+    if history.contains_mined_transaction(transaction_hash) {
+      return None;
+    }
+
+    self
+      .reset_state
+      .initial_view
+      .fork_client()
+      .map(|client| EspaceReceiptSource::Fork {
+        client,
+        hash: *transaction_hash,
+      })
   }
 
   pub(crate) fn latest_state_epoch(&self) -> Arc<EpochView> {

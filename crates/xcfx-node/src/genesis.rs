@@ -67,10 +67,28 @@ pub(crate) struct GenesisHeaderInput {
 }
 
 pub(crate) struct ExecutedGenesis {
-  pub(crate) block: Block,
-  pub(crate) committed_state: CommittedStateVersion,
-  pub(crate) commitment: ExecutionCommitment,
-  pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
+  block: Block,
+  committed_state: CommittedStateVersion,
+  commitment: ExecutionCommitment,
+  block_receipts: Arc<BlockReceipts>,
+}
+
+impl ExecutedGenesis {
+  pub(crate) fn into_parts(
+    self,
+  ) -> (
+    Block,
+    CommittedStateVersion,
+    ExecutionCommitment,
+    Arc<BlockReceipts>,
+  ) {
+    (
+      self.block,
+      self.committed_state,
+      self.commitment,
+      self.block_receipts,
+    )
+  }
 }
 
 pub(crate) struct ExecutedGenesisWithPos {
@@ -220,14 +238,15 @@ fn execute_genesis_inner(
 
   let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
 
-  let block_receipts = vec![Arc::new(BlockReceipts {
+  let block_receipts = Arc::new(BlockReceipts {
     receipts: Vec::new(),
     block_number: 0,
     secondary_reward: U256::zero(),
     tx_execution_error_messages: Vec::new(),
-  })];
-  let receipts_root = compute_epoch_receipts_root(&block_receipts);
-  let logs_bloom_hash = BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts);
+  });
+  let receipt_collections = std::slice::from_ref(&block_receipts);
+  let receipts_root = compute_epoch_receipts_root(receipt_collections);
+  let logs_bloom_hash = BlockHeaderBuilder::compute_block_logs_bloom_hash(receipt_collections);
 
   let cip112_transition_height =
     Cip112TransitionHeight::new(machine.params().transition_heights.cip112);
@@ -888,7 +907,9 @@ mod tests {
       .artifacts()
       .expect("local block execution must retain its epoch artifacts");
 
-    let receipts = &artifacts.block_receipts()[0];
+    let receipts = artifacts.ordered_blocks()[0]
+      .block_receipts()
+      .expect("the executed block must retain its receipt collection");
     let transaction_fee = U256::from(21_000) * U256::from(INITIAL_1559_CORE_BASE_PRICE);
     assert_eq!(
       receipts.receipts,

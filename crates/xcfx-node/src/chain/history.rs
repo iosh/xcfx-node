@@ -9,8 +9,8 @@ use primitives::block::BlockHeight;
 use crate::{execution::ExecutionCommitment, fork::ForkReadError};
 
 use super::{
-  BlockIndex, EpochHistoryView, EpochSource, EpochView, MinedBlockView, MinedTransactionView,
-  TransactionReceiptView,
+  BlockIndex, EpochHistoryView, EpochSource, EpochView, EspaceTransactionView, MinedBlockView,
+  MinedTransactionView, TransactionReceiptView,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,11 +25,18 @@ struct TransactionLocation {
   transaction_index: usize,
 }
 
+#[derive(Clone, Copy)]
+struct EspaceTransactionLocation {
+  epoch_height: BlockHeight,
+  transaction_index: usize,
+}
+
 /// The active epoch sequence and its local block and transaction indexes.
 pub(crate) struct ChainHistory {
   views: Vec<Arc<EpochView>>,
   block_locations: HashMap<H256, BlockLocation>,
   transaction_locations: HashMap<H256, TransactionLocation>,
+  espace_transaction_locations: HashMap<H256, EspaceTransactionLocation>,
 }
 
 impl ChainHistory {
@@ -39,6 +46,7 @@ impl ChainHistory {
         views: vec![initial],
         block_locations: HashMap::new(),
         transaction_locations: HashMap::new(),
+        espace_transaction_locations: HashMap::new(),
       };
     };
 
@@ -46,7 +54,7 @@ impl ChainHistory {
     let transactions = block.transactions();
     let block_location = BlockLocation {
       epoch_height: initial.epoch_height(),
-      block_index: BlockIndex::Executed(0),
+      block_index: BlockIndex::Ordered(0),
     };
     let block_locations = HashMap::from([(block.hash(), block_location)]);
     let mut transaction_locations = HashMap::with_capacity(transactions.len());
@@ -69,6 +77,7 @@ impl ChainHistory {
       views: vec![initial],
       block_locations,
       transaction_locations,
+      espace_transaction_locations: HashMap::new(),
     }
   }
 
@@ -148,11 +157,6 @@ impl ChainHistory {
       "an executed epoch append must contain the next epoch height",
     );
     assert_eq!(
-      artifacts.ordered_blocks.len(),
-      artifacts.block_receipts.len(),
-      "every executed block must have one block receipt collection",
-    );
-    assert_eq!(
       artifacts.start_block_number,
       self.optimistic_head().next_epoch_start_block_number(),
       "an executed epoch must continue the cumulative Core block number",
@@ -161,29 +165,11 @@ impl ChainHistory {
     let mut block_locations = HashMap::with_capacity(artifacts.ordered_blocks.len());
     let mut transaction_locations = HashMap::new();
 
-    for (block_index, (runtime_block, block_receipts)) in artifacts
-      .ordered_blocks
-      .iter()
-      .zip(&artifacts.block_receipts)
-      .enumerate()
-    {
-      let runtime_transactions = runtime_block.transactions();
-
-      assert_eq!(
-        runtime_transactions.len(),
-        block_receipts.receipts.len(),
-        "every executed block transaction must have one receipt",
-      );
-      assert_eq!(
-        runtime_transactions.len(),
-        block_receipts.tx_execution_error_messages.len(),
-        "every executed block transaction must have one execution error entry",
-      );
-
-      let block_hash = runtime_block.hash();
+    for (block_index, block) in artifacts.ordered_blocks.iter().enumerate() {
+      let block_hash = block.runtime_block().hash();
       let block_location = BlockLocation {
         epoch_height,
-        block_index: BlockIndex::Executed(block_index),
+        block_index: BlockIndex::Ordered(block_index),
       };
 
       assert!(
@@ -195,15 +181,15 @@ impl ChainHistory {
         "a committed epoch must not contain duplicate block hashes",
       );
 
-      for (transaction_index, receipt) in block_receipts.receipts.iter().enumerate() {
-        if receipt.tx_skipped() {
+      for result in block.transaction_receipts() {
+        if result.receipt().tx_skipped() {
           continue;
         }
 
-        let transaction_hash = runtime_transactions[transaction_index].hash();
+        let transaction_hash = result.transaction().hash();
         let transaction_location = TransactionLocation {
           block: block_location,
-          transaction_index,
+          transaction_index: result.block_transaction_index(),
         };
 
         assert!(
@@ -220,7 +206,7 @@ impl ChainHistory {
     }
 
     for (index, block) in artifacts.skipped_blocks.iter().enumerate() {
-      let hash = block.hash();
+      let hash = block.runtime_block().hash();
       assert!(
         !self.block_locations.contains_key(&hash),
         "a skipped block cannot already belong to history"
@@ -239,15 +225,41 @@ impl ChainHistory {
       );
     }
 
+    let mut espace_transaction_locations = HashMap::new();
+    for (transaction_index, hash) in artifacts.espace_transaction_hashes().enumerate() {
+      assert!(
+        !self.espace_transaction_locations.contains_key(&hash),
+        "an eSpace transaction hash must not already exist in history",
+      );
+      assert!(
+        espace_transaction_locations
+          .insert(
+            hash,
+            EspaceTransactionLocation {
+              epoch_height,
+              transaction_index,
+            },
+          )
+          .is_none(),
+        "an epoch must not contain duplicate eSpace transaction hashes",
+      );
+    }
+
     self.views.reserve(1);
     self.block_locations.reserve(block_locations.len());
     self
       .transaction_locations
       .reserve(transaction_locations.len());
+    self
+      .espace_transaction_locations
+      .reserve(espace_transaction_locations.len());
 
     self.views.push(view);
     self.block_locations.extend(block_locations);
     self.transaction_locations.extend(transaction_locations);
+    self
+      .espace_transaction_locations
+      .extend(espace_transaction_locations);
   }
 
   pub(crate) fn epoch_at_height(&self, epoch_height: BlockHeight) -> Option<&Arc<EpochView>> {
@@ -301,6 +313,8 @@ impl ChainHistory {
       .expect("a linear history must resolve its latest Header-committed position")
   }
 
+  /// Original transactions only: phantom query identities must not affect
+  /// admission, duplicate execution checks, or reorg pool reconciliation.
   pub(crate) fn contains_mined_transaction(&self, transaction_hash: &H256) -> bool {
     self.transaction_locations.contains_key(transaction_hash)
   }
@@ -357,6 +371,30 @@ impl ChainHistory {
     }
 
     TransactionReceiptView::new(self.mined_transaction_at(location))
+  }
+
+  fn mined_espace_transaction_at(
+    &self,
+    location: EspaceTransactionLocation,
+  ) -> EspaceTransactionView {
+    self
+      .epoch_at_height(location.epoch_height)
+      .expect("an indexed eSpace transaction must reference a retained epoch")
+      .espace_block()
+      .expect("an indexed eSpace transaction must have local artifacts")
+      .transaction_at(location.transaction_index)
+      .expect("an eSpace index must reference a transaction in the retained projection")
+  }
+
+  pub(crate) fn mined_espace_transaction_by_hash(
+    &self,
+    transaction_hash: &H256,
+  ) -> Option<EspaceTransactionView> {
+    self
+      .espace_transaction_locations
+      .get(transaction_hash)
+      .copied()
+      .map(|location| self.mined_espace_transaction_at(location))
   }
 
   pub(crate) fn deferred_commitment_for_header_height(

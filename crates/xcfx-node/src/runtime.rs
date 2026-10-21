@@ -8,7 +8,7 @@ use crate::{
   block_producer::RuntimeBlock,
   chain::{BlockGraph, ChainHistory, EpochHistoryView, EpochView},
   chain_spec::ChainSpec,
-  execution::{ExecutedEpoch, TransactionExecutionDisposition, execute_ordered_epoch},
+  execution::{TransactionExecutionDisposition, execute_ordered_epoch},
   fork::ForkClient,
   genesis::{GenesisError, GenesisHeaderInput, execute_genesis_with_pos},
   pos::GenesisPosDefinition,
@@ -41,7 +41,7 @@ use cfxkey::KeyPair;
 use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
 pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
-pub(crate) use query::{EpochSelector, StateQueryError};
+pub(crate) use query::{EpochSelector, EspaceReceiptSource, StateQueryError};
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
 use std::{
@@ -881,7 +881,7 @@ impl NodeRuntime {
     let start_block_number = parent.next_epoch_start_block_number();
     let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
-    let executed = execute_ordered_epoch(
+    let (executed, modified_accounts) = execute_ordered_epoch(
       self.chain_spec.machine().as_ref(),
       &parent_block,
       parent.state(),
@@ -891,40 +891,15 @@ impl NodeRuntime {
       vec![runtime_block],
     )?;
 
-    let ExecutedEpoch {
-      mut ordered_blocks,
-      state,
-      commitment,
-      block_receipts,
-      transaction_dispositions,
-      accounts_for_txpool,
-    } = executed;
-
-    let runtime_block = ordered_blocks
-      .pop()
-      .expect("single-block execution returns its block");
-    let transaction_dispositions = transaction_dispositions
-      .into_iter()
-      .next()
-      .expect("single-block execution returns its transaction dispositions");
     let mut transaction_hashes_to_remove = transactions_to_drop
       .iter()
       .map(|transaction| transaction.hash())
       .collect::<Vec<_>>();
     let mut transactions_to_repack = Vec::new();
 
-    assert_eq!(
-      runtime_block.transactions().len(),
-      transaction_dispositions.len(),
-      "every Runtime block transaction must have one execution disposition",
-    );
-
-    for (transaction, disposition) in runtime_block
-      .transactions()
-      .iter()
-      .zip(transaction_dispositions)
-    {
-      match disposition {
+    for result in executed.transactions() {
+      let transaction = result.transaction();
+      match result.disposition() {
         TransactionExecutionDisposition::Executed
         | TransactionExecutionDisposition::SkippedDrop => {
           transaction_hashes_to_remove.push(transaction.hash());
@@ -938,23 +913,21 @@ impl NodeRuntime {
     let pool_reconciliation = self
       .runtime_state
       .transaction_pool
-      .prepare_reconciliation(transaction_hashes_to_remove, &accounts_for_txpool);
+      .prepare_reconciliation(transaction_hashes_to_remove, &modified_accounts);
+
+    let graph_block = executed.pivot_block().clone();
+    let next_head = Arc::new(EpochView::from_executed_epoch(
+      self.chain_spec.machine(),
+      executed,
+      Vec::new(),
+      !self.runtime_state.state_overlay.is_empty(),
+    ));
 
     self
       .runtime_state
       .graph
-      .insert(runtime_block.clone())
+      .insert(graph_block)
       .expect("a locally produced block has known predecessors and a stable PoS reference");
-    let next_head = Arc::new(EpochView::from_executed_epoch(
-      &parent,
-      vec![runtime_block],
-      Vec::new(),
-      state,
-      commitment,
-      block_receipts,
-      !self.runtime_state.state_overlay.is_empty(),
-    ));
-
     self
       .runtime_state
       .history
@@ -1005,7 +978,7 @@ impl NodeRuntime {
       transaction_pool_updates: TransactionPoolUpdates {
         transactions_to_repack,
         transactions_dropped_during_selection: transactions_to_drop,
-        modified_accounts: accounts_for_txpool,
+        modified_accounts,
       },
     })
   }

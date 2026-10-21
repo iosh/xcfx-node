@@ -12,7 +12,7 @@ pub(crate) use lifecycle::NodeStatus;
 pub(crate) use mining::{MineRequest, MineTiming, MiningCause, MiningError, MiningOutcome};
 pub(crate) use request::{BatchResult, CallId, Cancellation, MessageId, NodeTask, RequestError};
 pub(crate) use service::{NodeEvents, NodeHandle, NodeRequest, NodeService};
-pub(crate) use worker::NodeCall;
+pub(crate) use worker::{EspaceReceipt, NodeCall};
 
 use std::{
   collections::BTreeMap,

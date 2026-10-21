@@ -7221,6 +7221,7 @@ dependencies = [
  "rustc-hex",
  "serde",
  "serde_json",
+ "solidity-abi",
  "thiserror 2.0.20",
  "tokio",
 ]

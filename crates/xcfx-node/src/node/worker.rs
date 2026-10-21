@@ -6,17 +6,22 @@ use std::{
   time::Duration,
 };
 
-use cfx_types::{AddressWithSpace, H256, U256};
+use cfx_rpc_eth_types::Receipt as EthereumReceipt;
+use cfx_types::{AddressWithSpace, H256, Space, U256};
 use tokio::{
   runtime::Handle,
   sync::{mpsc, oneshot, watch},
 };
 
 use crate::{
-  chain::TransactionReceiptView,
+  chain::{EspaceTransactionView, TransactionReceiptView},
   config::{MiningMode, NodeConfig},
+  fork::{ForkReadError, HistoryQuery, HistoryResult},
   production_environment::BlockTimestamp,
-  runtime::{EpochSelector, RuntimeCommitOutcome, RuntimeTransactionError, StateQueryError},
+  runtime::{
+    EpochSelector, EspaceReceiptSource, RuntimeCommitOutcome, RuntimeTransactionError,
+    StateQueryError,
+  },
   state_overlay::{StateControlBatch, StateControlPreparationError},
 };
 
@@ -360,6 +365,14 @@ impl Worker<'_> {
   }
 }
 
+/// A receipt captured during one node operation. Local results pin their epoch;
+/// remote results have already passed the fixed-prefix history checks.
+#[derive(Clone)]
+pub(crate) enum EspaceReceipt {
+  Local(EspaceTransactionView),
+  Fork(Arc<EthereumReceipt>),
+}
+
 /// Access to one operation after its cancellation and health checks have passed.
 /// Methods consume this capability so a task cannot start another operation
 /// without going through the worker's boundaries again. No Runtime borrow escapes.
@@ -400,6 +413,31 @@ impl NodeCall<'_, '_> {
   /// Looks up a local receipt under the Runtime's deferred visibility rules.
   pub(crate) fn transaction_receipt_by_hash(self, hash: &H256) -> Option<TransactionReceiptView> {
     self.worker.node.runtime().transaction_receipt_by_hash(hash)
+  }
+
+  /// Completes pool, local, and fixed-prefix receipt lookup before returning.
+  /// The captured result is independent of later mining or history changes.
+  ///
+  /// # Errors
+  /// Propagates remote read failures; an unavailable local receipt never triggers IO.
+  pub(crate) fn espace_transaction_receipt_by_hash(
+    self,
+    hash: &H256,
+  ) -> Result<Option<EspaceReceipt>, ForkReadError> {
+    match self.worker.node.runtime().espace_receipt_source(hash) {
+      None => Ok(None),
+      Some(EspaceReceiptSource::Local(transaction)) => Ok(Some(EspaceReceipt::Local(transaction))),
+      Some(EspaceReceiptSource::Fork { client, hash }) => {
+        let result = client.history(HistoryQuery::Receipt {
+          space: Space::Ethereum,
+          hash,
+        })?;
+        let HistoryResult::EthereumReceipt(receipt) = result else {
+          unreachable!("an eSpace receipt history request must return an eSpace receipt result");
+        };
+        Ok(receipt.map(EspaceReceipt::Fork))
+      }
+    }
   }
 
   pub(crate) fn submit_raw_transaction(self, raw: &[u8]) -> Result<H256, RuntimeTransactionError> {

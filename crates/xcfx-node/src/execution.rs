@@ -52,13 +52,85 @@ impl TransactionExecutionDisposition {
   }
 }
 
+/// Coupled blocks and execution context from one successful epoch execution.
+/// Only the executor constructs it.
 pub(crate) struct ExecutedEpoch {
-  pub(crate) ordered_blocks: Vec<RuntimeBlock>,
-  pub(crate) state: CommittedStateVersion,
-  pub(crate) commitment: ExecutionCommitment,
-  pub(crate) block_receipts: Vec<Arc<BlockReceipts>>,
-  pub(crate) transaction_dispositions: Vec<Vec<TransactionExecutionDisposition>>,
-  pub(crate) accounts_for_txpool: Vec<Account>,
+  start_block_number: BlockNumber,
+  blocks: Vec<ExecutedBlock>,
+  state: CommittedStateVersion,
+  commitment: ExecutionCommitment,
+  pos_context: PosContext,
+}
+
+/// Block-local correspondence is established by the executor's transaction loop.
+pub(crate) struct ExecutedBlock {
+  block: RuntimeBlock,
+  receipts: Arc<BlockReceipts>,
+  dispositions: Vec<TransactionExecutionDisposition>,
+}
+
+/// Borrows the transaction and its disposition from the same execution.
+pub(crate) struct ExecutedTransactionRef<'a> {
+  block: &'a ExecutedBlock,
+  index: usize,
+}
+
+impl ExecutedEpoch {
+  pub(crate) fn pivot_block(&self) -> &RuntimeBlock {
+    &self
+      .blocks
+      .last()
+      .expect("a successful epoch execution retains its pivot block")
+      .block
+  }
+
+  pub(crate) fn transactions(&self) -> impl Iterator<Item = ExecutedTransactionRef<'_>> {
+    self.blocks.iter().flat_map(|block| {
+      (0..block.block.transactions().len())
+        .map(move |index| ExecutedTransactionRef { block, index })
+    })
+  }
+
+  /// Transfers the execution context together with its paired block results.
+  pub(crate) fn into_parts(
+    self,
+  ) -> (
+    BlockNumber,
+    Vec<ExecutedBlock>,
+    CommittedStateVersion,
+    ExecutionCommitment,
+    PosContext,
+  ) {
+    (
+      self.start_block_number,
+      self.blocks,
+      self.state,
+      self.commitment,
+      self.pos_context,
+    )
+  }
+}
+
+impl ExecutedBlock {
+  /// Retains the paired block and receipts after transient dispositions have been consumed.
+  pub(crate) fn into_parts(self) -> (RuntimeBlock, Arc<BlockReceipts>) {
+    (self.block, self.receipts)
+  }
+}
+
+impl<'a> ExecutedTransactionRef<'a> {
+  pub(crate) fn transaction(&self) -> &'a RuntimeTransaction {
+    &self.block.block.transactions()[self.index]
+  }
+
+  pub(crate) fn disposition(&self) -> TransactionExecutionDisposition {
+    self.block.dispositions[self.index]
+  }
+
+  pub(crate) fn execution_error_message(&self) -> Option<&'a str> {
+    let error = &self.block.receipts.tx_execution_error_messages[self.index];
+    (!error.is_empty()).then_some(error.as_str())
+  }
 }
 
 pub(crate) fn compute_epoch_receipts_root(block_receipts: &[Arc<BlockReceipts>]) -> H256 {
@@ -117,6 +189,7 @@ fn execute_runtime_transaction(
 ///
 /// The pivot is last. Its parent supplies the execution identity, while
 /// `execution_state` may include local state controls on that parent.
+/// Account updates are returned separately for pool reconciliation and commit reporting.
 ///
 /// # Errors
 ///
@@ -129,7 +202,7 @@ pub(crate) fn execute_ordered_epoch(
   parent_pos_context: &PosContext,
   start_block_number: BlockNumber,
   ordered_blocks: Vec<RuntimeBlock>,
-) -> StateResult<ExecutedEpoch> {
+) -> StateResult<(ExecutedEpoch, Vec<Account>)> {
   let pivot = ordered_blocks
     .last()
     .expect("an ordered epoch contains its pivot");
@@ -166,11 +239,10 @@ pub(crate) fn execute_ordered_epoch(
 
   let base_gas_price = pivot.header().base_price().unwrap_or_default();
   let burnt_gas_price = base_gas_price.map_all(|price| state.burnt_gas_price(price));
-  let mut block_receipts = Vec::with_capacity(ordered_blocks.len());
-  let mut transaction_dispositions = Vec::with_capacity(ordered_blocks.len());
+  let mut executed_blocks = Vec::with_capacity(ordered_blocks.len());
   let mut last_hash = parent_block.hash;
 
-  for (index, runtime_block) in ordered_blocks.iter().enumerate() {
+  for (index, runtime_block) in ordered_blocks.into_iter().enumerate() {
     assert_eq!(
       *runtime_block.header().pos_reference(),
       Some(parent_block.pos_reference),
@@ -179,7 +251,7 @@ pub(crate) fn execute_ordered_epoch(
     let block_number = start_block_number
       .checked_add(index as u64)
       .expect("a prepared epoch must fit the Core block number range");
-    let block = protocol_block(runtime_block);
+    let block = protocol_block(&runtime_block);
     let secondary_reward = before_block_execution(&mut state, machine, block_number, &block)?;
     let mut env = Env {
       chain_id: machine.params().chain_id_map(epoch_height),
@@ -218,7 +290,7 @@ pub(crate) fn execute_ordered_epoch(
       receipts.push(outcome.make_receipt(&mut env.accumulated_gas_used, &spec));
     }
 
-    block_receipts.push(Arc::new(BlockReceipts {
+    let receipts = Arc::new(BlockReceipts {
       receipts,
       // The full node numbers each receipt collection one after its VM block.
       block_number: block_number
@@ -226,14 +298,22 @@ pub(crate) fn execute_ordered_epoch(
         .expect("the receipt number must fit"),
       secondary_reward,
       tx_execution_error_messages: execution_errors,
-    }));
-    transaction_dispositions.push(dispositions);
+    });
     last_hash = runtime_block.hash();
+    executed_blocks.push(ExecutedBlock {
+      block: runtime_block,
+      receipts,
+      dispositions,
+    });
   }
 
-  let accounts_for_txpool = state.apply_changes_to_storage(None)?;
+  let modified_accounts = state.apply_changes_to_storage(None)?;
   drop(state);
   let version = Arc::new(candidate.into_version());
+  let block_receipts = executed_blocks
+    .iter()
+    .map(|block| Arc::clone(&block.receipts))
+    .collect::<Vec<_>>();
   let commitment = ExecutionCommitment {
     state_root: version
       .root_with_aux_info()
@@ -241,14 +321,16 @@ pub(crate) fn execute_ordered_epoch(
     receipts_root: compute_epoch_receipts_root(&block_receipts),
     logs_bloom_hash: BlockHeaderBuilder::compute_block_logs_bloom_hash(&block_receipts),
   };
-  Ok(ExecutedEpoch {
-    ordered_blocks,
-    state: CommittedStateVersion { epoch_id, version },
-    commitment,
-    block_receipts,
-    transaction_dispositions,
-    accounts_for_txpool,
-  })
+  Ok((
+    ExecutedEpoch {
+      start_block_number,
+      blocks: executed_blocks,
+      state: CommittedStateVersion { epoch_id, version },
+      commitment,
+      pos_context: parent_pos_context.clone(),
+    },
+    modified_accounts,
+  ))
 }
 
 /// Shared protocol hooks consume the header/hash, not local transaction metadata.

@@ -235,7 +235,7 @@ impl NodeRuntime {
       } else {
         &parent.state().version
       };
-      let executed = execute_ordered_epoch(
+      let (executed, _) = execute_ordered_epoch(
         self.chain_spec.machine(),
         &parent.execution_parent(),
         parent.state(),
@@ -244,39 +244,27 @@ impl NodeRuntime {
         start,
         blocks,
       )?;
-      for ((block, dispositions), receipts) in executed
-        .ordered_blocks
-        .iter()
-        .zip(&executed.transaction_dispositions)
-        .zip(&executed.block_receipts)
-      {
-        for ((transaction, disposition), error) in block
-          .transactions()
-          .iter()
-          .zip(dispositions)
-          .zip(&receipts.tx_execution_error_messages)
-        {
-          if *disposition == TransactionExecutionDisposition::SkippedDrop {
-            rejected.insert(transaction.hash(), error.clone());
-          }
+      for result in executed.transactions() {
+        if result.disposition() == TransactionExecutionDisposition::SkippedDrop {
+          rejected.insert(
+            result.transaction().hash(),
+            result
+              .execution_error_message()
+              .unwrap_or_default()
+              .to_owned(),
+          );
         }
       }
-      past.extend(
-        executed
-          .ordered_blocks
-          .iter()
-          .chain(&skipped)
-          .map(RuntimeBlock::hash),
-      );
       let next = Arc::new(EpochView::from_executed_epoch(
-        &parent,
-        executed.ordered_blocks,
+        self.chain_spec.machine(),
+        executed,
         skipped,
-        executed.state,
-        executed.commitment,
-        executed.block_receipts,
         extends_current_head && !self.runtime_state.state_overlay.is_empty(),
       ));
+      let artifacts = next
+        .artifacts()
+        .expect("a newly executed epoch must have local artifacts");
+      past.extend(artifacts.all_blocks().map(RuntimeBlock::hash));
       history.append_executed_epoch(next);
     }
     Ok(PreparedHistory {
@@ -409,13 +397,10 @@ impl NodeRuntime {
       let artifacts = view
         .artifacts()
         .expect("removed local epochs have execution artifacts");
-      for (block, receipts) in artifacts
-        .ordered_blocks()
-        .iter()
-        .zip(artifacts.block_receipts())
-      {
-        for (transaction, receipt) in block.transactions().iter().zip(&receipts.receipts) {
-          if receipt.tx_skipped() || matches!(transaction, RuntimeTransaction::System(_)) {
+      for block in artifacts.ordered_blocks() {
+        for result in block.transaction_receipts() {
+          let transaction = result.transaction();
+          if result.receipt().tx_skipped() || matches!(transaction, RuntimeTransaction::System(_)) {
             continue;
           }
           let hash = transaction.hash();
