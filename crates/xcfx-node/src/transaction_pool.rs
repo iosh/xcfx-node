@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+  collections::{BTreeMap, BTreeSet, HashMap},
+  ops::RangeInclusive,
+};
 
 use crate::runtime_transaction::RuntimeTransaction;
-use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-use cfx_types::{Address, AddressWithSpace, H256, Space, U256, U512};
+use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::{Account, transaction::TransactionError};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -24,88 +26,22 @@ impl TransactionKey {
 
 pub(crate) type AccountKey = (Address, Space);
 
-pub(crate) struct PoolAccountState {
-  pub(crate) state_nonce: U256,
-  pub(crate) balance: U256,
-}
-
-impl PoolAccountState {
-  pub(crate) fn from_account(account: &Account) -> Self {
-    Self {
-      state_nonce: account.nonce,
-      balance: account.balance,
-    }
-  }
-}
-
-/// Maximum declared sender cost after sponsorship, without truncating user inputs.
-/// U512 preserves gas-price multiplication even when no U256 balance can cover it.
-pub(crate) fn pool_transaction_cost(
-  transaction: &RuntimeTransaction,
-  sponsored_gas: U256,
-  sponsored_storage: u64,
-) -> U512 {
-  let gas = *transaction.gas() - sponsored_gas;
-  let gas_cost = gas.full_mul(*transaction.gas_price());
-
-  let storage_cost = transaction
-    .storage_limit()
-    .map_or_else(U256::zero, |limit| {
-      let unsponsored_storage = limit
-        .checked_sub(sponsored_storage)
-        .expect("sponsored storage cannot exceed transaction storage limit");
-
-      U256::from(unsponsored_storage) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT
-    });
-
-  U512::from(transaction.value()) + gas_cost + U512::from(storage_cost)
-}
-
-pub(crate) struct PoolReadinessInputs {
-  pub(crate) account_states: BTreeMap<AccountKey, PoolAccountState>,
-  pub(crate) transaction_costs: BTreeMap<H256, U512>,
-}
-
-impl PoolReadinessInputs {
-  pub(crate) fn new(
-    account_states: BTreeMap<AccountKey, PoolAccountState>,
-    transaction_costs: BTreeMap<H256, U512>,
-  ) -> Self {
-    Self {
-      account_states,
-      transaction_costs,
-    }
-  }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PoolEntryState {
-  Pending,
-  QueuedNonceGap {
-    expected_nonce: U256,
-    actual_nonce: U256,
-  },
-  QueuedInsufficientBalance {
-    required: U512,
-    available: U256,
-  },
-  Stale,
-}
-
-pub(crate) struct PoolEntryStates {
-  pub(crate) states: BTreeMap<H256, PoolEntryState>,
-}
-
-#[derive(Clone, Copy)]
-enum BlockedState {
-  NonceGap { expected_nonce: U256 },
-  InsufficientBalance { required: U512, available: U256 },
-}
-
+/// An admitted transaction and its deterministic arrival order in the pool.
+/// Its status is derived from Runtime state, rather than stored in the pool.
 #[derive(Clone)]
-pub(crate) struct PoolEntry {
-  pub(crate) transaction: RuntimeTransaction,
-  pub(crate) arrival_sequence: u64,
+pub(crate) struct PoolTransaction {
+  transaction: RuntimeTransaction,
+  arrival_sequence: u64,
+}
+
+impl PoolTransaction {
+  pub(crate) fn transaction(&self) -> &RuntimeTransaction {
+    &self.transaction
+  }
+
+  pub(crate) fn arrival_sequence(&self) -> u64 {
+    self.arrival_sequence
+  }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TransactionPoolPolicy {
@@ -123,24 +59,9 @@ pub(crate) enum TransactionPoolInsertOutcome {
   Replaced { previous: RuntimeTransaction },
 }
 
-pub(crate) struct PoolViewEntry {
-  pub(crate) transaction: RuntimeTransaction,
-  pub(crate) arrival_sequence: u64,
-}
-
-pub(crate) struct TransactionPoolView {
-  /// Entries preserve the pool's `(sender, space, nonce)` key order.
-  pub(crate) entries: Vec<PoolViewEntry>,
-}
-
 pub(crate) struct TransactionPoolCheckpoint {
-  entries: Vec<PoolEntry>,
+  transactions: Vec<PoolTransaction>,
   next_arrival_sequence: u64,
-}
-
-pub(crate) struct PoolSelectionInput {
-  pub(crate) view: TransactionPoolView,
-  pub(crate) entry_states: PoolEntryStates,
 }
 
 pub(crate) struct TransactionPoolReconciliation {
@@ -149,7 +70,7 @@ pub(crate) struct TransactionPoolReconciliation {
 
 pub(crate) struct TransactionPool {
   policy: TransactionPoolPolicy,
-  by_key: BTreeMap<TransactionKey, PoolEntry>,
+  by_key: BTreeMap<TransactionKey, PoolTransaction>,
   key_by_hash: HashMap<H256, TransactionKey>,
   next_arrival_sequence: u64,
 }
@@ -171,7 +92,7 @@ impl TransactionPool {
 
   pub(crate) fn capture_checkpoint(&self) -> TransactionPoolCheckpoint {
     TransactionPoolCheckpoint {
-      entries: self.by_key.values().cloned().collect(),
+      transactions: self.by_key.values().cloned().collect(),
       next_arrival_sequence: self.next_arrival_sequence,
     }
   }
@@ -181,31 +102,31 @@ impl TransactionPool {
     checkpoint: &TransactionPoolCheckpoint,
   ) -> Self {
     assert!(
-      checkpoint.entries.len() <= policy.max_transactions,
+      checkpoint.transactions.len() <= policy.max_transactions,
       "a checkpoint cannot restore more transactions than the stable pool policy allows",
     );
 
     let mut pool = Self::new(policy);
     let mut arrival_sequences = BTreeSet::new();
 
-    pool.key_by_hash.reserve(checkpoint.entries.len());
+    pool.key_by_hash.reserve(checkpoint.transactions.len());
     pool.next_arrival_sequence = checkpoint.next_arrival_sequence;
 
-    for entry in &checkpoint.entries {
+    for pooled in &checkpoint.transactions {
       assert!(
-        entry.arrival_sequence < checkpoint.next_arrival_sequence,
+        pooled.arrival_sequence < checkpoint.next_arrival_sequence,
         "a checkpoint pool entry must have an allocated arrival sequence",
       );
       assert!(
-        arrival_sequences.insert(entry.arrival_sequence),
+        arrival_sequences.insert(pooled.arrival_sequence),
         "checkpoint pool entries must have distinct arrival sequences",
       );
 
-      let key = TransactionKey::from_transaction(&entry.transaction);
-      let hash = entry.transaction.hash();
+      let key = TransactionKey::from_transaction(&pooled.transaction);
+      let hash = pooled.transaction.hash();
 
       assert!(
-        pool.by_key.insert(key, entry.clone()).is_none(),
+        pool.by_key.insert(key, pooled.clone()).is_none(),
         "checkpoint pool entries must have distinct conflict keys",
       );
       assert!(
@@ -221,15 +142,55 @@ impl TransactionPool {
     self.by_key.len()
   }
 
-  pub(crate) fn get_by_hash(&self, hash: H256) -> Option<&PoolEntry> {
+  pub(crate) fn get_by_hash(&self, hash: H256) -> Option<&PoolTransaction> {
     self
       .key_by_hash
       .get(&hash)
       .and_then(|key| self.by_key.get(key))
   }
 
-  pub(crate) fn get_by_key(&self, key: &TransactionKey) -> Option<&PoolEntry> {
+  pub(crate) fn get_by_key(&self, key: &TransactionKey) -> Option<&PoolTransaction> {
     self.by_key.get(key)
+  }
+
+  /// Borrows transactions in `(sender, space, nonce)` order.
+  pub(crate) fn transactions(
+    &self,
+  ) -> impl DoubleEndedIterator<Item = &PoolTransaction> + ExactSizeIterator {
+    self.by_key.values()
+  }
+
+  /// Borrows one account and Space in ascending nonce order.
+  pub(crate) fn transactions_by_account(
+    &self,
+    address: AddressWithSpace,
+  ) -> impl DoubleEndedIterator<Item = &PoolTransaction> {
+    self.transactions_in_nonce_range(address, U256::zero()..=U256::max_value())
+  }
+
+  /// Borrows an inclusive nonce range. Reversed bounds yield an empty iterator.
+  pub(crate) fn transactions_in_nonce_range(
+    &self,
+    address: AddressWithSpace,
+    nonces: RangeInclusive<U256>,
+  ) -> impl DoubleEndedIterator<Item = &PoolTransaction> {
+    let (start, end) = nonces.into_inner();
+    let first = TransactionKey {
+      sender: address.address,
+      space: address.space,
+      nonce: start,
+    };
+    let last = TransactionKey {
+      nonce: end,
+      ..first
+    };
+
+    let transactions = if start > end {
+      self.by_key.range(first..first)
+    } else {
+      self.by_key.range(first..=last)
+    };
+    transactions.map(|(_, transaction)| transaction)
   }
 
   /// Finds the first unoccupied nonce at or above `state_nonce`.
@@ -309,7 +270,7 @@ impl TransactionPool {
 
       let replaced = self.by_key.insert(
         key,
-        PoolEntry {
+        PoolTransaction {
           transaction,
           arrival_sequence,
         },
@@ -342,7 +303,7 @@ impl TransactionPool {
 
     self.by_key.insert(
       key,
-      PoolEntry {
+      PoolTransaction {
         transaction,
         arrival_sequence,
       },
@@ -440,98 +401,5 @@ impl TransactionPool {
     for hash in reconciliation.transaction_hashes_to_remove {
       let _ = self.remove_by_hash(hash);
     }
-  }
-
-  pub(crate) fn derive_entry_states(&self, inputs: &PoolReadinessInputs) -> PoolEntryStates {
-    let mut next_nonce = BTreeMap::<AccountKey, U256>::new();
-    let mut remaining_balance = BTreeMap::<AccountKey, U256>::new();
-    let mut blocked_state = BTreeMap::<AccountKey, Option<BlockedState>>::new();
-    let mut states = BTreeMap::new();
-
-    for (key, entry) in &self.by_key {
-      let account_key = (key.sender, key.space);
-      let account_state = inputs
-        .account_states
-        .get(&account_key)
-        .expect("account state must be provided for every pool account");
-
-      let expected_nonce = *next_nonce
-        .entry(account_key)
-        .or_insert(account_state.state_nonce);
-
-      let balance = remaining_balance
-        .entry(account_key)
-        .or_insert(account_state.balance);
-
-      let blocked = blocked_state.entry(account_key).or_insert(None);
-
-      let state = if key.nonce < account_state.state_nonce {
-        PoolEntryState::Stale
-      } else if let Some(previous_block) = *blocked {
-        match previous_block {
-          BlockedState::NonceGap { expected_nonce } => PoolEntryState::QueuedNonceGap {
-            expected_nonce,
-            actual_nonce: key.nonce,
-          },
-          BlockedState::InsufficientBalance {
-            required,
-            available,
-          } => PoolEntryState::QueuedInsufficientBalance {
-            required,
-            available,
-          },
-        }
-      } else if key.nonce > expected_nonce {
-        let state = PoolEntryState::QueuedNonceGap {
-          expected_nonce,
-          actual_nonce: key.nonce,
-        };
-        *blocked = Some(BlockedState::NonceGap { expected_nonce });
-        state
-      } else {
-        let cost = *inputs
-          .transaction_costs
-          .get(&entry.transaction.hash())
-          .expect("transaction cost must be provided for every pool entry");
-
-        if cost > U512::from(*balance) {
-          let state = PoolEntryState::QueuedInsufficientBalance {
-            required: cost,
-            available: *balance,
-          };
-          *blocked = Some(BlockedState::InsufficientBalance {
-            required: cost,
-            available: *balance,
-          });
-          state
-        } else {
-          let affordable_cost =
-            U256::try_from(cost).expect("a cost covered by a U256 balance must fit in U256");
-          *balance -= affordable_cost;
-          // Unique, ordered keys make U256::MAX this account's final entry.
-          if let Some(nonce) = expected_nonce.checked_add(U256::one()) {
-            next_nonce.insert(account_key, nonce);
-          }
-          PoolEntryState::Pending
-        }
-      };
-
-      states.insert(entry.transaction.hash(), state);
-    }
-
-    PoolEntryStates { states }
-  }
-
-  pub(crate) fn view(&self) -> TransactionPoolView {
-    let entries = self
-      .by_key
-      .values()
-      .map(|entry| PoolViewEntry {
-        transaction: entry.transaction.clone(),
-        arrival_sequence: entry.arrival_sequence,
-      })
-      .collect();
-
-    TransactionPoolView { entries }
   }
 }

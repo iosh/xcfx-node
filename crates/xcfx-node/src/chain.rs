@@ -164,9 +164,13 @@ impl EpochArtifacts {
       .runtime_block()
   }
 
-  /// Returns the Conflux pivot block without runtime transaction metadata.
+  /// Returns the standard pivot of a test fixture.
+  #[cfg(test)]
   pub(crate) fn pivot_block(&self) -> &Block {
-    self.pivot_runtime_block().block()
+    self
+      .pivot_runtime_block()
+      .standard_block()
+      .expect("a standard-block test fixture must retain a standard pivot")
   }
 
   pub(crate) fn commitment(&self) -> &ExecutionCommitment {
@@ -462,11 +466,6 @@ impl MinedBlockView {
 
   pub(crate) fn runtime_block(&self) -> &RuntimeBlock {
     self.epoch_block().runtime_block()
-  }
-
-  /// Returns the Conflux block without runtime transaction metadata.
-  pub(crate) fn block(&self) -> &Block {
-    self.runtime_block().block()
   }
 
   pub(crate) fn standard_block(&self) -> Option<&Block> {

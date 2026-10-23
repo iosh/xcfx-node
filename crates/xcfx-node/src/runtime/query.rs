@@ -3,9 +3,8 @@
 use std::sync::Arc;
 
 use cfx_executor::state::State;
-use cfx_statedb::Result as StateResult;
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
-use primitives::block::BlockHeight;
+use primitives::{BlockNumber, block::BlockHeight};
 use thiserror::Error;
 
 use crate::{
@@ -99,6 +98,12 @@ impl NodeRuntime {
   /// Looks up local mined artifacts. Remote history requires an epoch-bound view.
   pub(crate) fn mined_block_by_hash(&self, block_hash: &H256) -> Option<MinedBlockView> {
     self.runtime_state.history.mined_block_by_hash(block_hash)
+  }
+
+  /// Pins a locally retained block by Core execution-order number.
+  /// Fork Base and earlier blocks require remote history; skipped blocks have no number.
+  pub(crate) fn mined_block_by_number(&self, number: BlockNumber) -> Option<MinedBlockView> {
+    self.runtime_state.history.mined_block_by_number(number)
   }
 
   pub(crate) fn mined_transaction_by_hash(
@@ -276,25 +281,5 @@ impl NodeRuntime {
       .expect("retained history must contain every epoch in the queryable state range");
 
     Ok(epoch.as_ref())
-  }
-
-  /// Finds the next pool nonce from the effective state.
-  ///
-  /// Pool presence does not imply balance or sponsorship readiness.
-  /// The returned value need not satisfy the transaction admission nonce limit.
-  /// Returns `Ok(None)` only if advancing the contiguous pool sequence overflows `U256`.
-  ///
-  /// # Errors
-  ///
-  /// Propagates errors from reading the effective state.
-  pub(crate) fn pending_nonce(&self, address: AddressWithSpace) -> StateResult<Option<U256>> {
-    let state_nonce = self.open_effective_state_for_reading()?.nonce(&address)?;
-
-    Ok(
-      self
-        .runtime_state
-        .transaction_pool
-        .next_nonce(address, state_nonce),
-    )
   }
 }

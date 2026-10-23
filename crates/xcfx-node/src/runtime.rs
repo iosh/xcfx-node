@@ -1,6 +1,7 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
 mod epoch_positions;
 mod mining;
+mod pool;
 mod query;
 mod reorg;
 
@@ -25,9 +26,8 @@ use crate::{
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
-    AccountKey, PoolAccountState, PoolEntryStates, PoolReadinessInputs, PoolSelectionInput,
-    TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
-    TransactionPoolPolicy, TransactionPoolView, pool_transaction_cost,
+    AccountKey, TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
+    TransactionPoolPolicy,
   },
   virtual_execution::{
     VirtualExecutionError, VirtualExecutionOverrides, VirtualExecutionRequest,
@@ -36,16 +36,17 @@ use crate::{
 };
 use cfx_executor::{executive::ExecutionOutcome, state::State};
 use cfx_statedb::{Result as StateResult, global_params::TOTAL_GLOBAL_PARAMS};
-use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256, U512};
+use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use cfxkey::KeyPair;
 use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
 pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
+pub(crate) use pool::{AccountPoolTransactions, PoolTransactionStatus, QueuedReason};
 pub(crate) use query::{EpochSelector, EspaceReceiptSource, StateQueryError};
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
 use std::{
-  collections::{BTreeMap, btree_map::Entry},
+  collections::BTreeMap,
   sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -53,9 +54,7 @@ use std::{
 };
 use thiserror::Error;
 
-use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-
-use primitives::{Account, Action, Transaction, transaction::TransactionError};
+use primitives::{Account, Transaction, transaction::TransactionError};
 
 static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -96,7 +95,7 @@ pub(crate) enum RuntimeTransactionError {
 
 pub(crate) struct TransactionPoolUpdates {
   pub(crate) transactions_to_repack: Vec<RuntimeTransaction>,
-  pub(crate) transactions_dropped_during_selection: Vec<RuntimeTransaction>,
+  pub(crate) transactions_dropped_during_preparation: Vec<RuntimeTransaction>,
   pub(crate) modified_accounts: Vec<Account>,
 }
 
@@ -111,86 +110,6 @@ pub(crate) struct RuntimeCommitOutcome {
 
 fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State<'static>> {
   State::new(version.open_database())
-}
-
-/// Derives declared gas and storage covered by sponsorship for pool readiness.
-fn sponsored_gas_and_storage(
-  state: &State<'_>,
-  transaction: &RuntimeTransaction,
-) -> StateResult<(U256, u64)> {
-  let Transaction::Native(native_transaction) = transaction.transaction() else {
-    return Ok(Default::default());
-  };
-
-  let contract_address = match native_transaction.action() {
-    Action::Call(address) => address,
-    _ => return Ok(Default::default()),
-  };
-
-  if !state.is_contract_with_code(&contract_address.with_native_space())? {
-    return Ok(Default::default());
-  }
-
-  let sender = transaction.sender();
-
-  if !state.check_contract_whitelist(&contract_address, &sender)? {
-    return Ok(Default::default());
-  }
-
-  let declared_gas_cost = transaction.gas().full_mul(*transaction.gas_price());
-  let sponsored_gas = if declared_gas_cost
-    <= U512::from(state.sponsor_gas_bound(&contract_address)?)
-    && declared_gas_cost <= U512::from(state.sponsor_balance_for_gas(&contract_address)?)
-  {
-    *native_transaction.gas()
-  } else {
-    U256::zero()
-  };
-
-  let required_storage_collateral =
-    U256::from(*native_transaction.storage_limit()) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-  let sponsored_storage = if state.sponsor_for_collateral(&contract_address)?.is_some()
-    && required_storage_collateral
-      <= state.sponsor_balance_for_collateral(&contract_address)?
-        + state.available_storage_points_for_collateral(&contract_address)?
-  {
-    *native_transaction.storage_limit()
-  } else {
-    0
-  };
-
-  Ok((sponsored_gas, sponsored_storage))
-}
-
-fn load_pool_accounts_and_costs(
-  state: &State<'_>,
-  pool_view: &TransactionPoolView,
-) -> StateResult<PoolReadinessInputs> {
-  let mut account_states = BTreeMap::<AccountKey, PoolAccountState>::new();
-  let mut transaction_costs = BTreeMap::new();
-
-  for entry in &pool_view.entries {
-    let transaction = &entry.transaction;
-    let sender = transaction.sender();
-    let space = transaction.space();
-    let account_key = (sender, space);
-
-    if let Entry::Vacant(entry) = account_states.entry(account_key) {
-      let address = sender.with_space(space);
-
-      entry.insert(PoolAccountState {
-        state_nonce: state.nonce(&address)?,
-        balance: state.balance(&address)?,
-      });
-    }
-
-    let (sponsored_gas, sponsored_storage) = sponsored_gas_and_storage(state, transaction)?;
-    let transaction_cost = pool_transaction_cost(transaction, sponsored_gas, sponsored_storage);
-
-    transaction_costs.insert(transaction.hash(), transaction_cost);
-  }
-
-  Ok(PoolReadinessInputs::new(account_states, transaction_costs))
 }
 
 /// The state currently used by Runtime consumers.
@@ -741,14 +660,6 @@ impl NodeRuntime {
     Ok(transaction_hash)
   }
 
-  pub(crate) fn transaction_pool_selection_input(&self) -> StateResult<PoolSelectionInput> {
-    let view = self.transaction_pool_view();
-    let inputs = self.pool_readiness_inputs(&view)?;
-    let entry_states = self.derive_transaction_pool_states(&inputs);
-
-    Ok(PoolSelectionInput { view, entry_states })
-  }
-
   /// Validates raw transaction bytes against the current optimistic view and
   /// the sender's effective nonce before inserting into this Runtime's pool.
   pub(crate) fn submit_raw_transaction(
@@ -798,29 +709,6 @@ impl NodeRuntime {
     Ok(self.runtime_state.transaction_pool.insert(transaction)?)
   }
 
-  /// Returns a stable snapshot of the transaction pool.
-  pub(crate) fn transaction_pool_view(&self) -> TransactionPoolView {
-    self.runtime_state.transaction_pool.view()
-  }
-
-  pub(crate) fn derive_transaction_pool_states(
-    &self,
-    inputs: &PoolReadinessInputs,
-  ) -> PoolEntryStates {
-    self
-      .runtime_state
-      .transaction_pool
-      .derive_entry_states(inputs)
-  }
-
-  pub(crate) fn pool_readiness_inputs(
-    &self,
-    pool_view: &TransactionPoolView,
-  ) -> StateResult<PoolReadinessInputs> {
-    let state = self.open_effective_state_for_reading()?;
-    load_pool_accounts_and_costs(&state, pool_view)
-  }
-
   /// Opens the current effective version through Conflux's `State` interface
   /// for reading.
   fn open_effective_state_for_reading(&self) -> StateResult<State<'static>> {
@@ -837,10 +725,10 @@ impl NodeRuntime {
     &mut self,
     runtime_block: RuntimeBlock,
   ) -> Result<RuntimeCommitOutcome, RuntimeBlockProductionError> {
-    self.execute_and_commit_single_block_epoch_with_selection_drops(runtime_block, Vec::new())
+    self.execute_and_commit_single_block_epoch_with_pool_drops(runtime_block, Vec::new())
   }
 
-  fn execute_and_commit_single_block_epoch_with_selection_drops(
+  fn execute_and_commit_single_block_epoch_with_pool_drops(
     &mut self,
     runtime_block: RuntimeBlock,
     transactions_to_drop: Vec<RuntimeTransaction>,
@@ -977,7 +865,7 @@ impl NodeRuntime {
       latest_header_committed_advanced_to,
       transaction_pool_updates: TransactionPoolUpdates {
         transactions_to_repack,
-        transactions_dropped_during_selection: transactions_to_drop,
+        transactions_dropped_during_preparation: transactions_to_drop,
         modified_accounts,
       },
     })

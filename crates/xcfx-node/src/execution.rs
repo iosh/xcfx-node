@@ -1,5 +1,5 @@
 //! Executes an ordered epoch against an isolated state candidate.
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
 
@@ -227,7 +227,6 @@ pub(crate) fn execute_ordered_epoch(
   let epoch_height = pivot.header().height();
   let epoch_timestamp = pivot.header().timestamp();
   let epoch_id = pivot.hash();
-  let pivot_block = protocol_block(pivot);
   let mut candidate = StateCandidate::new(Arc::clone(execution_state));
   let mut state = State::new(StateDb::new(&mut candidate))?;
 
@@ -235,7 +234,7 @@ pub(crate) fn execute_ordered_epoch(
     state.set_system_storage(slot.into(), hash)?;
   }
 
-  before_epoch_execution(&mut state, machine, &pivot_block)?;
+  before_epoch_execution(&mut state, machine, protocol_block(pivot).as_ref())?;
 
   let base_gas_price = pivot.header().base_price().unwrap_or_default();
   let burnt_gas_price = base_gas_price.map_all(|price| state.burnt_gas_price(price));
@@ -251,15 +250,20 @@ pub(crate) fn execute_ordered_epoch(
     let block_number = start_block_number
       .checked_add(index as u64)
       .expect("a prepared epoch must fit the Core block number range");
-    let block = protocol_block(&runtime_block);
-    let secondary_reward = before_block_execution(&mut state, machine, block_number, &block)?;
+    let secondary_reward = before_block_execution(
+      &mut state,
+      machine,
+      block_number,
+      protocol_block(&runtime_block).as_ref(),
+    )?;
+    let header = runtime_block.header();
     let mut env = Env {
       chain_id: machine.params().chain_id_map(epoch_height),
       number: block_number,
-      author: *block.block_header.author(),
+      author: *header.author(),
       timestamp: epoch_timestamp,
-      difficulty: *block.block_header.difficulty(),
-      gas_limit: *block.block_header.gas_limit(),
+      difficulty: *header.difficulty(),
+      gas_limit: *header.gas_limit(),
       last_hash,
       accumulated_gas_used: U256::zero(),
       epoch_height,
@@ -334,9 +338,9 @@ pub(crate) fn execute_ordered_epoch(
 }
 
 /// Shared protocol hooks consume the header/hash, not local transaction metadata.
-fn protocol_block(block: &RuntimeBlock) -> Block {
-  block
-    .standard_block()
-    .cloned()
-    .unwrap_or_else(|| Block::new(block.header().clone(), Vec::new()))
+fn protocol_block(block: &RuntimeBlock) -> Cow<'_, Block> {
+  match block.standard_block() {
+    Some(block) => Cow::Borrowed(block),
+    None => Cow::Owned(Block::new(block.header().clone(), Vec::new())),
+  }
 }

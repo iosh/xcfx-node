@@ -16,11 +16,13 @@ use crate::{
   runtime_transaction::RuntimeTransaction,
   state::state_version::StateVersion,
   transaction_ingress::TransactionValidationContext,
-  transaction_pool::{PoolSelectionInput, TransactionPool},
+  transaction_pool::TransactionPool,
   transaction_selector::{TransactionSelection, TransactionSelectionLimits, select_transactions},
 };
 
-use super::{NodeRuntime, RuntimeCommitOutcome, load_pool_accounts_and_costs, open_state_version};
+use super::{
+  NodeRuntime, RuntimeCommitOutcome, open_state_version, pool::prepare_pool_transactions,
+};
 
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeBlockProductionError {
@@ -45,6 +47,7 @@ pub(super) struct PreparedBlock {
 struct BlockInputs {
   environment: PreparedProductionEnvironment,
   selection: TransactionSelection,
+  transactions_to_drop: Vec<RuntimeTransaction>,
 }
 
 /// One automatic mining run, yielding each committed block before producing another.
@@ -75,7 +78,7 @@ impl NodeRuntime {
       U256::zero(),
       1,
     )?;
-    self.execute_and_commit_single_block_epoch_with_selection_drops(
+    self.execute_and_commit_single_block_epoch_with_pool_drops(
       prepared.block,
       prepared.transactions_to_drop,
     )
@@ -156,20 +159,14 @@ impl NodeRuntime {
     )?;
 
     let state = open_state_version(execution_state)?;
-    let view = pool.view();
-    let inputs = load_pool_accounts_and_costs(&state, &view)?;
-    let selection_input = PoolSelectionInput {
-      view,
-      entry_states: pool.derive_entry_states(&inputs),
-    };
     let spec = self.chain_spec.machine().spec(block_number, epoch_height);
     let validation = TransactionValidationContext::new(params, &spec, epoch_height);
+    let (candidates, transactions_to_drop) = prepare_pool_transactions(&state, pool, &validation)?;
 
     let selection = select_transactions(
-      &selection_input,
+      candidates,
       &parent_block,
       params,
-      &validation,
       prepared_environment.block_gas_limit(),
       TransactionSelectionLimits::default(),
     );
@@ -177,6 +174,7 @@ impl NodeRuntime {
     Ok(BlockInputs {
       environment: prepared_environment,
       selection,
+      transactions_to_drop,
     })
   }
 
@@ -188,9 +186,12 @@ impl NodeRuntime {
     nonce: U256,
   ) -> Result<PreparedBlock, RuntimeBlockProductionError> {
     let parent_block = history.optimistic_head().execution_parent();
-    let (block_selection, transactions_to_drop) = inputs
-      .selection
-      .into_block_selection_and_transactions_to_drop();
+    let BlockInputs {
+      environment,
+      selection,
+      transactions_to_drop,
+    } = inputs;
+    let block_selection = selection.into_block_selection();
     let deferred_commitment =
       history.deferred_commitment_for_header_height(block_selection.epoch_height())?;
 
@@ -198,7 +199,7 @@ impl NodeRuntime {
       &parent_block,
       block_selection,
       self.chain_spec.machine().params(),
-      inputs.environment,
+      environment,
       &deferred_commitment,
       referee_hashes,
       nonce,
@@ -232,7 +233,7 @@ impl AutoMining<'_> {
       &runtime.runtime_state.production_environment,
       1,
     )?;
-    let has_pool_work = !inputs.selection.is_empty();
+    let has_pool_work = !inputs.selection.is_empty() || !inputs.transactions_to_drop.is_empty();
     let waiting_for_espace = inputs.selection.is_waiting_for_espace();
     let needs_block =
       has_state_controls || has_pending_results || has_pool_work || waiting_for_espace;
@@ -247,7 +248,7 @@ impl AutoMining<'_> {
       Vec::new(),
       U256::zero(),
     )?;
-    let outcome = runtime.execute_and_commit_single_block_epoch_with_selection_drops(
+    let outcome = runtime.execute_and_commit_single_block_epoch_with_pool_drops(
       prepared.block,
       prepared.transactions_to_drop,
     )?;

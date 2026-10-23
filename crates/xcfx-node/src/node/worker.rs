@@ -8,20 +8,22 @@ use std::{
 
 use cfx_rpc_eth_types::Receipt as EthereumReceipt;
 use cfx_types::{AddressWithSpace, H256, Space, U256};
+use primitives::BlockNumber;
 use tokio::{
   runtime::Handle,
   sync::{mpsc, oneshot, watch},
 };
 
 use crate::{
-  chain::{EspaceTransactionView, TransactionReceiptView},
+  chain::{EspaceTransactionView, MinedBlockView, TransactionReceiptView},
   config::{MiningMode, NodeConfig},
   fork::{ForkReadError, HistoryQuery, HistoryResult},
   production_environment::BlockTimestamp,
   runtime::{
-    EpochSelector, EspaceReceiptSource, RuntimeCommitOutcome, RuntimeTransactionError,
-    StateQueryError,
+    AccountPoolTransactions, EpochSelector, EspaceReceiptSource, RuntimeCommitOutcome,
+    RuntimeTransactionError, StateQueryError,
   },
+  runtime_transaction::RuntimeTransaction,
   state_overlay::{StateControlBatch, StateControlPreparationError},
 };
 
@@ -408,6 +410,33 @@ impl NodeCall<'_, '_> {
     epoch: EpochSelector,
   ) -> Result<U256, StateQueryError> {
     self.worker.node.runtime().balance_at(address, epoch)
+  }
+
+  pub(crate) fn mined_block_by_number(self, number: BlockNumber) -> Option<MinedBlockView> {
+    self.worker.node.runtime().mined_block_by_number(number)
+  }
+
+  pub(crate) fn pool_transaction_by_hash(self, hash: H256) -> Option<RuntimeTransaction> {
+    self
+      .worker
+      .node
+      .runtime()
+      .pool_transaction_by_hash(hash)
+      .cloned()
+  }
+
+  /// Captures owned pool results before automatic mining or another message can run.
+  pub(crate) fn pool_account_transactions(
+    self,
+    address: AddressWithSpace,
+    start_nonce: Option<U256>,
+    limit: usize,
+  ) -> cfx_statedb::Result<AccountPoolTransactions> {
+    self
+      .worker
+      .node
+      .runtime()
+      .pool_account_transactions(address, start_nonce, limit)
   }
 
   /// Looks up a local receipt under the Runtime's deferred visibility rules.

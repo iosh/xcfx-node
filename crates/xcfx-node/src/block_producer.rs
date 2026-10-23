@@ -42,22 +42,22 @@ impl BlockParent {
 /// A Runtime block keeps local transaction identity separate from the
 /// optional standard fork representation.
 #[derive(Clone, Debug)]
-pub(crate) enum RuntimeBlock {
+pub(crate) struct RuntimeBlock {
+  representation: BlockRepresentation,
+  transactions: Vec<RuntimeTransaction>,
+}
+
+#[derive(Clone, Debug)]
+enum BlockRepresentation {
   /// A block whose body can be represented by the fork's standard `Block`.
-  Standard {
-    block: Block,
-    transactions: Vec<RuntimeTransaction>,
-  },
+  Standard(Block),
   /// A local block that intentionally has no standard fork body.
-  Local {
-    header: BlockHeader,
-    transactions: Vec<RuntimeTransaction>,
-  },
+  Local(BlockHeader),
 }
 
 impl RuntimeBlock {
   /// Wraps a standard fork block and its Runtime transactions.
-  pub(crate) fn from_parts(block: Block, transactions: Vec<RuntimeTransaction>) -> Self {
+  fn from_parts(block: Block, transactions: Vec<RuntimeTransaction>) -> Self {
     assert_eq!(
       block.transactions.len(),
       transactions.len(),
@@ -93,17 +93,14 @@ impl RuntimeBlock {
       "a standard Runtime block must commit its Runtime transaction hashes",
     );
 
-    Self::Standard {
-      block,
+    Self {
+      representation: BlockRepresentation::Standard(block),
       transactions,
     }
   }
 
   /// Builds a local block without inventing a standard transaction body.
-  pub(crate) fn from_local_parts(
-    header: BlockHeader,
-    transactions: Vec<RuntimeTransaction>,
-  ) -> Self {
+  fn from_local_parts(header: BlockHeader, transactions: Vec<RuntimeTransaction>) -> Self {
     assert!(
       transactions
         .iter()
@@ -123,40 +120,25 @@ impl RuntimeBlock {
       "a local Runtime block header must commit its Runtime transaction hashes",
     );
 
-    Self::Local {
-      header,
+    Self {
+      representation: BlockRepresentation::Local(header),
       transactions,
-    }
-  }
-
-  /// Consumes a standard Runtime block.
-  ///
-  /// A local block has no fork `Block` and cannot cross this boundary.
-  pub(crate) fn into_parts(self) -> (Block, Vec<RuntimeTransaction>) {
-    match self {
-      Self::Standard {
-        block,
-        transactions,
-      } => (block, transactions),
-      Self::Local { .. } => {
-        panic!("a local Runtime block has no standard fork representation")
-      }
     }
   }
 
   /// Returns the standard fork block, if this Runtime block has one.
   pub(crate) fn standard_block(&self) -> Option<&Block> {
-    match self {
-      Self::Standard { block, .. } => Some(block),
-      Self::Local { .. } => None,
+    match &self.representation {
+      BlockRepresentation::Standard(block) => Some(block),
+      BlockRepresentation::Local(_) => None,
     }
   }
 
   /// Returns the block header for either block representation.
   pub(crate) fn header(&self) -> &BlockHeader {
-    match self {
-      Self::Standard { block, .. } => &block.block_header,
-      Self::Local { header, .. } => header,
+    match &self.representation {
+      BlockRepresentation::Standard(block) => &block.block_header,
+      BlockRepresentation::Local(header) => header,
     }
   }
 
@@ -165,19 +147,7 @@ impl RuntimeBlock {
     self.header().hash()
   }
   pub(crate) fn transactions(&self) -> &[RuntimeTransaction] {
-    match self {
-      Self::Standard { transactions, .. } | Self::Local { transactions, .. } => transactions,
-    }
-  }
-
-  /// Returns a standard block for current standard-only callers.
-  ///
-  /// Callers that can handle local blocks should use `standard_block()` or
-  /// the representation-neutral `header()`/`transactions()` methods.
-  pub(crate) fn block(&self) -> &Block {
-    self
-      .standard_block()
-      .expect("a local Runtime block cannot be used as a standard fork Block")
+    &self.transactions
   }
 
   pub(crate) fn from_system_block(block: Block) -> Self {

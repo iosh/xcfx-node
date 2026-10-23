@@ -3,7 +3,7 @@ use std::{
   collections::{BTreeMap, BinaryHeap},
 };
 
-use cfx_executor::{spec::CommonParams, transaction_validation::PackingCheckResult};
+use cfx_executor::spec::CommonParams;
 use cfx_parameters::{
   block::{
     MAX_BLOCK_SIZE_IN_BYTES, MAX_TRANSACTION_COUNT_PER_BLOCK, cspace_block_gas_limit_after_cip1559,
@@ -20,8 +20,7 @@ use primitives::{
 use crate::{
   block_producer::BlockParent,
   runtime_transaction::RuntimeTransaction,
-  transaction_ingress::TransactionValidationContext,
-  transaction_pool::{AccountKey, PoolEntryState, PoolSelectionInput, PoolViewEntry},
+  transaction_pool::{AccountKey, PoolTransaction},
 };
 
 /// Resource limits applied by the deterministic selector.
@@ -47,57 +46,46 @@ struct AccountHeadCandidate {
   arrival_sequence: Reverse<u64>,
   hash: Reverse<H256>,
   account: Reverse<AccountKey>,
-  entry_index: Reverse<usize>,
+  queue_index: Reverse<usize>,
 }
 
 impl AccountHeadCandidate {
-  fn new(account: AccountKey, entry_index: usize, entry: &PoolViewEntry) -> Self {
+  fn new(account: AccountKey, queue_index: usize, pooled: &PoolTransaction) -> Self {
     Self {
-      gas_price: *entry.transaction.gas_price(),
-      arrival_sequence: Reverse(entry.arrival_sequence),
-      hash: Reverse(entry.transaction.hash()),
+      gas_price: *pooled.transaction().gas_price(),
+      arrival_sequence: Reverse(pooled.arrival_sequence()),
+      hash: Reverse(pooled.transaction().hash()),
       account: Reverse(account),
-      entry_index: Reverse(entry_index),
+      queue_index: Reverse(queue_index),
     }
   }
 }
 
-fn pending_transactions_by_account(
-  input: &PoolSelectionInput,
-) -> BTreeMap<AccountKey, Vec<&PoolViewEntry>> {
-  let mut transactions_by_account = BTreeMap::<AccountKey, Vec<&PoolViewEntry>>::new();
+fn candidate_transactions_by_account<'pool>(
+  candidates: Vec<&'pool PoolTransaction>,
+) -> BTreeMap<AccountKey, Vec<&'pool PoolTransaction>> {
+  let mut transactions_by_account = BTreeMap::<AccountKey, Vec<&PoolTransaction>>::new();
 
-  for entry in &input.view.entries {
-    let transaction = &entry.transaction;
-    let state = input
-      .entry_states
-      .states
-      .get(&transaction.hash())
-      .copied()
-      .expect("every pool view entry must have a selection state");
-
-    if state != PoolEntryState::Pending {
-      continue;
-    }
-
+  for pooled in candidates {
+    let transaction = pooled.transaction();
     transactions_by_account
       .entry((transaction.sender(), transaction.space()))
       .or_default()
-      .push(entry);
+      .push(pooled);
   }
 
   transactions_by_account
 }
 
 fn initial_account_heads(
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolViewEntry>>,
+  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolTransaction>>,
 ) -> BinaryHeap<AccountHeadCandidate> {
   let mut candidates = BinaryHeap::new();
 
   for (&account, transactions) in transactions_by_account {
     let head = transactions
       .first()
-      .expect("every pending account queue must have a head");
+      .expect("every candidate account queue must have a head");
 
     candidates.push(AccountHeadCandidate::new(account, 0, head));
   }
@@ -107,19 +95,19 @@ fn initial_account_heads(
 
 fn push_next_account_head(
   candidates: &mut BinaryHeap<AccountHeadCandidate>,
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolViewEntry>>,
+  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolTransaction>>,
   selected: AccountHeadCandidate,
 ) {
   let account = selected.account.0;
   let next_index = selected
-    .entry_index
+    .queue_index
     .0
     .checked_add(1)
     .expect("an account queue index must permit a successor");
 
   let transactions = transactions_by_account
     .get(&account)
-    .expect("a selected account must have a pending queue");
+    .expect("a selected account must have a candidate queue");
 
   if let Some(next) = transactions.get(next_index) {
     candidates.push(AccountHeadCandidate::new(account, next_index, next));
@@ -127,10 +115,10 @@ fn push_next_account_head(
 }
 
 fn select_account_transactions<'a>(
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&'a PoolViewEntry>>,
+  transactions_by_account: &BTreeMap<AccountKey, Vec<&'a PoolTransaction>>,
   limits: TransactionSelectionLimits,
-  mut accept: impl FnMut(&PoolViewEntry) -> bool,
-) -> Vec<&'a PoolViewEntry> {
+  mut accept: impl FnMut(&PoolTransaction) -> bool,
+) -> Vec<&'a PoolTransaction> {
   let mut candidates = initial_account_heads(transactions_by_account);
   let mut selected = Vec::new();
   let mut selected_bytes = 0usize;
@@ -141,15 +129,15 @@ fn select_account_transactions<'a>(
     };
 
     let account = candidate.account.0;
-    let entry_index = candidate.entry_index.0;
+    let queue_index = candidate.queue_index.0;
 
-    let entry = transactions_by_account
+    let pooled = transactions_by_account
       .get(&account)
-      .and_then(|transactions| transactions.get(entry_index))
+      .and_then(|transactions| transactions.get(queue_index))
       .copied()
       .expect("an account-head candidate must reference its queue");
 
-    let transaction_size = entry.transaction.selection_size();
+    let transaction_size = pooled.transaction().selection_size();
 
     let Some(next_selected_bytes) = selected_bytes.checked_add(transaction_size) else {
       continue;
@@ -159,12 +147,12 @@ fn select_account_transactions<'a>(
       continue;
     }
 
-    if !accept(entry) {
+    if !accept(pooled) {
       continue;
     }
 
     selected_bytes = next_selected_bytes;
-    selected.push(entry);
+    selected.push(pooled);
 
     push_next_account_head(&mut candidates, transactions_by_account, candidate);
   }
@@ -193,17 +181,16 @@ impl BlockTransactionSelection {
   }
 }
 
-/// Selector output, including pool entries dropped only after a successful commit.
+/// Block transactions and whether another eSpace packing height is needed.
 pub(crate) struct TransactionSelection {
   block_selection: BlockTransactionSelection,
-  transactions_to_drop: Vec<RuntimeTransaction>,
   waiting_for_espace: bool,
 }
 
 impl TransactionSelection {
-  /// No transactions to execute or remove from the pool.
+  /// No transactions selected for execution.
   pub(crate) fn is_empty(&self) -> bool {
-    self.block_selection.transactions.is_empty() && self.transactions_to_drop.is_empty()
+    self.block_selection.transactions.is_empty()
   }
 
   /// An eSpace account head fits the packing constraints but needs an eSpace
@@ -212,18 +199,18 @@ impl TransactionSelection {
     self.waiting_for_espace
   }
 
-  pub(crate) fn into_block_selection_and_transactions_to_drop(
-    self,
-  ) -> (BlockTransactionSelection, Vec<RuntimeTransaction>) {
-    (self.block_selection, self.transactions_to_drop)
+  pub(crate) fn into_block_selection(self) -> BlockTransactionSelection {
+    self.block_selection
   }
 }
 
+/// Selects from protocol-valid, affordable nonce prefixes for each account and Space.
+/// Runtime prepares candidates under one state version; packing height, prices,
+/// and block budgets are checked here.
 pub(crate) fn select_transactions(
-  input: &PoolSelectionInput,
+  candidates: Vec<&PoolTransaction>,
   parent: &BlockParent,
   params: &CommonParams,
-  validation: &TransactionValidationContext<'_>,
   block_gas_limit: U256,
   limits: TransactionSelectionLimits,
 ) -> TransactionSelection {
@@ -257,22 +244,12 @@ pub(crate) fn select_transactions(
   let mut base_price = SpaceMap::zip4(gas_targets, gas_used, parent_base_price, min_base_price)
     .map_all(compute_next_price_tuple);
 
-  let transactions_by_account = pending_transactions_by_account(input);
-  let mut transactions_to_drop = Vec::new();
+  let transactions_by_account = candidate_transactions_by_account(candidates);
   let mut waiting_for_espace = false;
 
-  let selected_entries = select_account_transactions(&transactions_by_account, limits, |entry| {
-    let transaction = &entry.transaction;
+  let selected = select_account_transactions(&transactions_by_account, limits, |pooled| {
+    let transaction = pooled.transaction();
     let space = transaction.space();
-
-    match validation.check_runtime_for_packing(transaction) {
-      PackingCheckResult::Pack => {}
-      PackingCheckResult::Pending => return false,
-      PackingCheckResult::Drop => {
-        transactions_to_drop.push(entry.transaction.clone());
-        return false;
-      }
-    }
 
     if space == Space::Ethereum && !can_pack_evm_transactions {
       // Size, nonce and protocol checks have already passed. Check whether this
@@ -323,9 +300,9 @@ pub(crate) fn select_transactions(
     true
   });
 
-  let transactions = selected_entries
+  let transactions = selected
     .into_iter()
-    .map(|entry| entry.transaction.clone())
+    .map(|pooled| pooled.transaction().clone())
     .collect();
 
   TransactionSelection {
@@ -334,7 +311,6 @@ pub(crate) fn select_transactions(
       transactions,
       base_price,
     },
-    transactions_to_drop,
     waiting_for_espace,
   }
 }

@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use cfx_parameters::consensus::DEFERRED_STATE_EPOCH_COUNT;
 use cfx_types::H256;
-use primitives::block::BlockHeight;
+use primitives::{BlockNumber, block::BlockHeight};
 
 use crate::{execution::ExecutionCommitment, fork::ForkReadError};
 
@@ -338,6 +338,26 @@ impl ChainHistory {
       .get(block_hash)
       .copied()
       .map(|location| self.mined_block_at(location))
+  }
+
+  /// Pins a local block by its Core execution-order number.
+  /// Skipped blocks have no number; the fixed Fork Base has no local artifacts.
+  pub(crate) fn mined_block_by_number(&self, number: BlockNumber) -> Option<MinedBlockView> {
+    let epoch_index = self
+      .views
+      .partition_point(|view| view.pivot_block_number() < number);
+    let epoch_view = self.views.get(epoch_index)?;
+    let artifacts = epoch_view.artifacts()?;
+
+    // Appends establish contiguous ranges, so the first pivot at or above
+    // this number contains it. The offset is bounded by the epoch's block count.
+    let block_index = usize::try_from(number - artifacts.start_block_number)
+      .expect("a Core block number within its epoch must fit the block index");
+
+    Some(MinedBlockView {
+      epoch_view: Arc::clone(epoch_view),
+      block_index: BlockIndex::Ordered(block_index),
+    })
   }
 
   fn mined_transaction_at(&self, location: TransactionLocation) -> MinedTransactionView {

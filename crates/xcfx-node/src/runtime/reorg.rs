@@ -365,8 +365,12 @@ impl NodeRuntime {
       &self.runtime_state.transaction_pool.capture_checkpoint(),
     );
     let mut dropped = Vec::new();
-    for entry in pool.view().entries {
-      let transaction = &entry.transaction;
+    // Capture shared transaction handles before pruning this unpublished pool.
+    let retained = pool
+      .transactions()
+      .map(|pooled| pooled.transaction().clone())
+      .collect::<Vec<_>>();
+    for transaction in retained {
       let hash = transaction.hash();
       if history.contains_mined_transaction(&hash) {
         pool.remove_by_hash(hash);
@@ -376,7 +380,7 @@ impl NodeRuntime {
           hash,
           reason: PoolDropReason::ExecutionRejected(error.clone()),
         });
-      } else if let Err(error) = validation.validate_runtime_for_pool_admission(transaction) {
+      } else if let Err(error) = validation.validate_runtime_for_pool_admission(&transaction) {
         pool.remove_by_hash(hash);
         dropped.push(PoolDrop {
           hash,
@@ -452,8 +456,6 @@ impl NodeRuntime {
         }
       }
     }
-    // Keep balance and sponsorship read failures inside the unpublished transition.
-    load_pool_accounts_and_costs(&state, &pool.view())?;
     Ok((pool, reinserted.into_iter().collect(), dropped))
   }
 }
