@@ -8,10 +8,11 @@ mod service;
 
 pub(crate) use cache::ForkCacheConfig;
 pub(crate) use client::ForkClient;
-pub(crate) use history::{HistoryBlockId, HistoryQuery, HistoryResult};
+pub(crate) use history::HistoryBlockId;
 pub(crate) use rpc::ForkRpc;
 pub(crate) use service::ForkReadTask;
 
+use history::{EspaceStateQuery, HistoryQuery, HistoryResult};
 use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use alloy_provider::Provider;

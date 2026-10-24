@@ -13,6 +13,64 @@ pub(crate) struct EthereumBlock {
   uncles: Vec<H256>,
 }
 
+impl EthereumBlock {
+  pub(crate) fn from_hashes(header: Header, hashes: Vec<H256>) -> Self {
+    Self {
+      header,
+      transactions: BlockTransactions::Hashes(hashes),
+      uncles: Vec::new(),
+    }
+  }
+
+  pub(crate) fn from_transactions(header: Header, transactions: Vec<Transaction>) -> Self {
+    Self {
+      header,
+      transactions: BlockTransactions::Full(transactions),
+      uncles: Vec::new(),
+    }
+  }
+
+  pub(crate) fn transaction_count(&self) -> usize {
+    match &self.transactions {
+      BlockTransactions::Hashes(transactions) => transactions.len(),
+      BlockTransactions::Full(transactions) => transactions.len(),
+    }
+  }
+
+  pub(crate) fn transaction_hashes(&self) -> impl Iterator<Item = H256> + '_ {
+    let (hashes, transactions): (&[H256], &[Transaction]) = match &self.transactions {
+      BlockTransactions::Hashes(hashes) => (hashes, &[]),
+      BlockTransactions::Full(transactions) => (&[], transactions),
+    };
+    hashes
+      .iter()
+      .copied()
+      .chain(transactions.iter().map(|transaction| transaction.hash))
+  }
+
+  pub(crate) fn full_transactions(&self) -> Option<&[Transaction]> {
+    match &self.transactions {
+      BlockTransactions::Full(transactions) => Some(transactions),
+      // An empty untagged JSON array also decodes as the hashes variant.
+      BlockTransactions::Hashes(hashes) if hashes.is_empty() => Some(&[]),
+      BlockTransactions::Hashes(_) => None,
+    }
+  }
+
+  pub(crate) fn into_hashes(mut self) -> Self {
+    self.transactions = match self.transactions {
+      BlockTransactions::Full(transactions) => BlockTransactions::Hashes(
+        transactions
+          .into_iter()
+          .map(|transaction| transaction.hash)
+          .collect(),
+      ),
+      hashes @ BlockTransactions::Hashes(_) => hashes,
+    };
+    self
+  }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 enum BlockTransactions {

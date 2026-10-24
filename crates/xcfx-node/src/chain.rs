@@ -194,8 +194,8 @@ impl EpochArtifacts {
       .expect("a projected transaction must retain its original receipt")
   }
 
-  fn espace_transaction_hashes(&self) -> impl Iterator<Item = H256> + '_ {
-    self.espace.transaction_hashes(self)
+  fn espace_transactions(&self) -> impl Iterator<Item = EspaceTransactionRef<'_>> + '_ {
+    self.espace.transactions(self)
   }
 
   /// Whether this epoch committed developer state controls, including no-op controls.

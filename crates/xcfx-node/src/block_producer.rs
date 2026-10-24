@@ -99,33 +99,6 @@ impl RuntimeBlock {
     }
   }
 
-  /// Builds a local block without inventing a standard transaction body.
-  fn from_local_parts(header: BlockHeader, transactions: Vec<RuntimeTransaction>) -> Self {
-    assert!(
-      transactions
-        .iter()
-        .any(|transaction| matches!(transaction, RuntimeTransaction::Impersonated(_))),
-      "a local Runtime block must contain at least one impersonated transaction",
-    );
-
-    let transaction_hashes = transactions
-      .iter()
-      .map(RuntimeTransaction::hash)
-      .collect::<Vec<_>>();
-    let transactions_root = indexed_mpt_root(transaction_hashes.iter().map(|hash| hash.as_bytes()));
-
-    assert_eq!(
-      *header.transactions_root(),
-      transactions_root,
-      "a local Runtime block header must commit its Runtime transaction hashes",
-    );
-
-    Self {
-      representation: BlockRepresentation::Local(header),
-      transactions,
-    }
-  }
-
   /// Returns the standard fork block, if this Runtime block has one.
   pub(crate) fn standard_block(&self) -> Option<&Block> {
     match &self.representation {
@@ -225,10 +198,15 @@ pub(crate) fn produce_block(
     .map(RuntimeTransaction::into_fork_transaction)
     .collect::<Option<Vec<_>>>();
 
-  match standard_transactions {
+  let representation = match standard_transactions {
     Some(signed_transactions) => {
-      RuntimeBlock::from_parts(Block::new(block_header, signed_transactions), transactions)
+      BlockRepresentation::Standard(Block::new(block_header, signed_transactions))
     }
-    None => RuntimeBlock::from_local_parts(block_header, transactions),
+    None => BlockRepresentation::Local(block_header),
+  };
+
+  RuntimeBlock {
+    representation,
+    transactions,
   }
 }

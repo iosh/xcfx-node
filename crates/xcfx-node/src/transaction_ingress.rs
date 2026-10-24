@@ -22,7 +22,6 @@ pub(crate) struct TransactionValidationContext<'a> {
   height: BlockHeight,
   transitions: &'a TransitionsEpochHeight,
   transaction_epoch_bound: u64,
-  max_nonce: Option<U256>,
   spec: &'a Spec,
 }
 
@@ -36,9 +35,6 @@ impl<'a> TransactionValidationContext<'a> {
       height,
       transitions: &params.transition_heights,
       transaction_epoch_bound: TRANSACTION_DEFAULT_EPOCH_BOUND,
-      // Non-skipped executions must consume a nonce; the executor cannot
-      // increment an account nonce at u64::MAX.
-      max_nonce: Some(U256::from(u64::MAX - 1)),
       spec,
     }
   }
@@ -55,7 +51,9 @@ impl<'a> TransactionValidationContext<'a> {
         height: self.height,
         transitions: self.transitions,
         transaction_epoch_bound: self.transaction_epoch_bound,
-        max_nonce: self.max_nonce,
+        // Non-skipped executions must consume a nonce; the executor cannot
+        // increment an account nonce at u64::MAX.
+        max_nonce: Some(U256::from(u64::MAX - 1)),
         mode: ValidationMode::Local(mode, self.spec),
       },
     )
@@ -146,7 +144,11 @@ pub(crate) fn decode_and_validate_raw_transaction(
   context.validate_for_pool_admission(&transaction)?;
   let public = transaction.recover_public()?;
 
-  Ok(RuntimeTransaction::from_recovered_signature(
-    SignedTransaction::new(public, transaction),
-  ))
+  let transaction =
+    RuntimeTransaction::from_recovered_signature(SignedTransaction::new(public, transaction));
+  if transaction.selection_size() > MAX_BLOCK_SIZE_IN_BYTES {
+    return Err(TransactionError::TooBig);
+  }
+
+  Ok(transaction)
 }

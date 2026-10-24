@@ -121,10 +121,7 @@ impl<'state, 'db> AccountTransactionReadiness<'state, 'db> {
     let affordable_cost =
       U256::try_from(cost).expect("a cost covered by a U256 balance must fit in U256");
     self.remaining_balance = Some(available - affordable_cost);
-    // Unique, ordered keys make U256::MAX this account's final entry.
-    if let Some(next_nonce) = nonce.checked_add(U256::one()) {
-      self.next_nonce = next_nonce;
-    }
+    self.next_nonce = nonce + U256::one();
     Ok(PoolTransactionStatus::Pending)
   }
 }
@@ -134,58 +131,28 @@ fn sender_transaction_cost(
   state: &State<'_>,
   transaction: &RuntimeTransaction,
 ) -> StateResult<U512> {
-  let (sponsored_gas, sponsored_storage) = sponsored_gas_and_storage(state, transaction)?;
-  let gas_cost = (*transaction.gas() - sponsored_gas).full_mul(*transaction.gas_price());
-  let storage_cost = transaction
-    .storage_limit()
-    .map_or_else(U256::zero, |limit| {
-      let unsponsored_storage = limit
-        .checked_sub(sponsored_storage)
-        .expect("sponsored storage cannot exceed transaction storage limit");
-      U256::from(unsponsored_storage) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT
-    });
-  Ok(U512::from(transaction.value()) + gas_cost + U512::from(storage_cost))
-}
-
-fn sponsored_gas_and_storage(
-  state: &State<'_>,
-  transaction: &RuntimeTransaction,
-) -> StateResult<(U256, u64)> {
-  let Transaction::Native(native_transaction) = transaction.transaction() else {
-    return Ok(Default::default());
-  };
-  let contract_address = match native_transaction.action() {
-    Action::Call(address) => address,
-    _ => return Ok(Default::default()),
-  };
-  if !state.is_contract_with_code(&contract_address.with_native_space())? {
-    return Ok(Default::default());
-  }
-  if !state.check_contract_whitelist(&contract_address, &transaction.sender())? {
-    return Ok(Default::default());
-  }
-
-  let declared_gas_cost = transaction.gas().full_mul(*transaction.gas_price());
-  let sponsored_gas = if declared_gas_cost
-    <= U512::from(state.sponsor_gas_bound(&contract_address)?)
-    && declared_gas_cost <= U512::from(state.sponsor_balance_for_gas(&contract_address)?)
+  let mut gas_cost = transaction.gas().full_mul(*transaction.gas_price());
+  let mut storage_cost = U512::from(transaction.storage_limit().unwrap_or_default())
+    * U512::from(*DRIPS_PER_STORAGE_COLLATERAL_UNIT);
+  if let Transaction::Native(native_transaction) = transaction.transaction()
+    && let Action::Call(contract_address) = native_transaction.action()
+    && state.is_contract_with_code(&contract_address.with_native_space())?
+    && state.check_contract_whitelist(&contract_address, &transaction.sender())?
   {
-    *native_transaction.gas()
-  } else {
-    U256::zero()
-  };
-  let required_storage_collateral =
-    U256::from(*native_transaction.storage_limit()) * *DRIPS_PER_STORAGE_COLLATERAL_UNIT;
-  let sponsored_storage = if state.sponsor_for_collateral(&contract_address)?.is_some()
-    && required_storage_collateral
-      <= state.sponsor_balance_for_collateral(&contract_address)?
-        + state.available_storage_points_for_collateral(&contract_address)?
-  {
-    *native_transaction.storage_limit()
-  } else {
-    0
-  };
-  Ok((sponsored_gas, sponsored_storage))
+    if gas_cost <= U512::from(state.sponsor_gas_bound(&contract_address)?)
+      && gas_cost <= U512::from(state.sponsor_balance_for_gas(&contract_address)?)
+    {
+      gas_cost = U512::zero();
+    }
+    if state.sponsor_for_collateral(&contract_address)?.is_some()
+      && storage_cost
+        <= U512::from(state.sponsor_balance_for_collateral(&contract_address)?)
+          + U512::from(state.available_storage_points_for_collateral(&contract_address)?)
+    {
+      storage_cost = U512::zero();
+    }
+  }
+  Ok(U512::from(transaction.value()) + gas_cost + storage_cost)
 }
 
 /// Prepares selectable account prefixes and a deletion plan without mutating the pool.
@@ -238,11 +205,10 @@ impl NodeRuntime {
   ///
   /// Pool presence does not imply balance or sponsorship readiness.
   /// The returned value need not satisfy the transaction admission nonce limit.
-  /// Returns `Ok(None)` only if advancing the contiguous pool sequence overflows U256.
   ///
   /// # Errors
   /// Propagates errors from reading the effective state.
-  pub(crate) fn pending_nonce(&self, address: AddressWithSpace) -> StateResult<Option<U256>> {
+  pub(crate) fn pending_nonce(&self, address: AddressWithSpace) -> StateResult<U256> {
     let state_nonce = self.open_effective_state_for_reading()?.nonce(&address)?;
     Ok(
       self

@@ -1,5 +1,12 @@
 //! Read-only access to retained history, state versions, and instance metadata.
 
+mod espace;
+
+pub(crate) use espace::{
+  EspaceBlockSelector, EspaceBlockSource, EspaceStateQueryError, EspaceStateSelector,
+  EspaceTransactionSource, LocalEspaceTransactionSource,
+};
+
 use std::sync::Arc;
 
 use cfx_executor::state::State;
@@ -148,32 +155,16 @@ impl NodeRuntime {
     &self,
     transaction_hash: &H256,
   ) -> Option<EspaceReceiptSource<'_>> {
-    if self
-      .runtime_state
-      .transaction_pool
-      .get_by_hash(*transaction_hash)
-      .is_some()
-    {
-      return None;
+    match self.espace_transaction_source(*transaction_hash)? {
+      EspaceTransactionSource::Local(LocalEspaceTransactionSource::Pool(_)) => None,
+      EspaceTransactionSource::Local(LocalEspaceTransactionSource::Mined(transaction)) => {
+        (transaction.block().epoch_height() <= self.runtime_state.history.latest_state_height())
+          .then_some(EspaceReceiptSource::Local(transaction))
+      }
+      EspaceTransactionSource::Fork { client, hash } => {
+        Some(EspaceReceiptSource::Fork { client, hash })
+      }
     }
-
-    let history = &self.runtime_state.history;
-    if let Some(transaction) = history.mined_espace_transaction_by_hash(transaction_hash) {
-      return (transaction.block().epoch_height() <= history.latest_state_height())
-        .then_some(EspaceReceiptSource::Local(transaction));
-    }
-    if history.contains_mined_transaction(transaction_hash) {
-      return None;
-    }
-
-    self
-      .reset_state
-      .initial_view
-      .fork_client()
-      .map(|client| EspaceReceiptSource::Fork {
-        client,
-        hash: *transaction_hash,
-      })
   }
 
   pub(crate) fn latest_state_epoch(&self) -> Arc<EpochView> {

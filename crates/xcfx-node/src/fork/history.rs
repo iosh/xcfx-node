@@ -12,7 +12,7 @@ use cfx_rpc_cfx_types::{Block, Log, Receipt, Transaction};
 use cfx_rpc_eth_types::{
   Log as EthereumLog, Receipt as EthereumReceipt, Transaction as EthereumTransaction,
 };
-use cfx_types::{H256, Space};
+use cfx_types::{Address, H256, Space, U256};
 use primitives::{BlockNumber, block::BlockHeight};
 
 use crate::rpc_client::EthereumBlock;
@@ -29,7 +29,30 @@ pub(crate) enum HistoryBlockId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum HistoryQuery {
+pub(super) enum EspaceStateQuery {
+  Balance(Address),
+  Nonce(Address),
+  Code(Address),
+  Storage { address: Address, position: H256 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum HistoryQuery {
+  EpochByHash {
+    hash: H256,
+    require_pivot: bool,
+  },
+  EspaceState {
+    epoch_height: BlockHeight,
+    query: EspaceStateQuery,
+  },
+  EspaceBlockReceipts {
+    selector: HistoryBlockId,
+  },
+  EspaceTransactionByBlockAndIndex {
+    selector: HistoryBlockId,
+    index: usize,
+  },
   Block {
     space: Space,
     selector: HistoryBlockId,
@@ -51,7 +74,12 @@ pub(crate) enum HistoryQuery {
 
 /// Results shared by callers waiting for the same history request.
 #[derive(Clone)]
-pub(crate) enum HistoryResult {
+pub(super) enum HistoryResult {
+  EpochHeight(Option<BlockHeight>),
+  EspaceQuantity(U256),
+  EspaceCode(Arc<Vec<u8>>),
+  EspaceStorage(H256),
+  EthereumBlockReceipts(Option<Arc<[EthereumReceipt]>>),
   CoreBlock(Option<Arc<Block>>),
   EthereumBlock(Option<Arc<EthereumBlock>>),
   CoreTransaction(Option<Arc<Transaction>>),
@@ -67,6 +95,22 @@ impl ForkRpc {
     // Numeric requests outside the prefix do not depend on remote availability.
     // Hash requests need a remote lookup before their position can be checked.
     match query {
+      HistoryQuery::EspaceState { epoch_height, .. } if epoch_height > self.base.epoch_height => {
+        return Err(ForkReadError::Unavailable(
+          "historical state outside the fixed prefix",
+        ));
+      }
+      HistoryQuery::EspaceBlockReceipts {
+        selector: HistoryBlockId::Epoch(height) | HistoryBlockId::Number(height),
+      } if height > self.base.epoch_height => {
+        return Ok(HistoryResult::EthereumBlockReceipts(None));
+      }
+      HistoryQuery::EspaceTransactionByBlockAndIndex {
+        selector: HistoryBlockId::Epoch(height) | HistoryBlockId::Number(height),
+        ..
+      } if height > self.base.epoch_height => {
+        return Ok(HistoryResult::EthereumTransaction(None));
+      }
       HistoryQuery::Block {
         space, selector, ..
       } => {
@@ -105,6 +149,28 @@ impl ForkRpc {
 
   async fn read_history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
     Ok(match query {
+      HistoryQuery::EpochByHash {
+        hash,
+        require_pivot,
+      } => HistoryResult::EpochHeight(self.read_history_epoch(hash, require_pivot).await?),
+      HistoryQuery::EspaceState {
+        epoch_height,
+        query,
+      } => self.read_espace_state(epoch_height, query).await?,
+      HistoryQuery::EspaceBlockReceipts { selector } => HistoryResult::EthereumBlockReceipts(
+        self
+          .read_espace_block_receipts(selector)
+          .await?
+          .map(Arc::from),
+      ),
+      HistoryQuery::EspaceTransactionByBlockAndIndex { selector, index } => {
+        HistoryResult::EthereumTransaction(
+          self
+            .read_espace_transaction_by_block_and_index(selector, index)
+            .await?
+            .map(Arc::new),
+        )
+      }
       HistoryQuery::Block {
         space: Space::Native,
         selector,

@@ -1,40 +1,31 @@
 use std::sync::Arc;
 
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256};
-use cfxkey::public_to_address;
 use keccak_hash::keccak;
 use primitives::{SignedTransaction, Transaction, TransactionWithSignature};
-use rlp::RlpStream;
+use rlp::{Encodable, RlpStream};
 
 // Identifies the versioned Runtime encoding for impersonated transactions.
 const IMPERSONATED_TRANSACTION_TAG: &[u8] = b"xcfx-node/impersonated/v1";
 
-fn encode_impersonated_transaction(transaction: &Transaction, sender: AddressWithSpace) -> Vec<u8> {
+fn encode_impersonated_transaction(transaction: &Transaction, sender: Address) -> Vec<u8> {
   let payload = TransactionWithSignature::new_unsigned(transaction.clone());
   let payload = rlp::encode(&payload);
   let mut encoded = RlpStream::new_list(4);
 
   encoded.append(&IMPERSONATED_TRANSACTION_TAG);
   encoded.append(&payload);
-  encoded.append(&sender.address);
-  encoded.append(&sender.space);
+  encoded.append(&sender);
+  encoded.append(&transaction.space());
 
   encoded.out().to_vec()
 }
 
-fn compute_impersonated_hash(transaction: &Transaction, sender: AddressWithSpace) -> H256 {
-  keccak(encode_impersonated_transaction(transaction, sender))
-}
-
 pub(crate) fn fake_sign_for_execution(
   transaction: Transaction,
-  sender: AddressWithSpace,
+  sender: Address,
 ) -> SignedTransaction {
-  assert_eq!(
-    transaction.space(),
-    sender.space,
-    "a locally resolved sender must use the transaction space",
-  );
+  let sender = sender.with_space(transaction.space());
 
   match transaction {
     Transaction::Native(transaction) => transaction.fake_sign_rpc(sender),
@@ -46,28 +37,10 @@ pub(crate) fn fake_sign_for_execution(
 pub(crate) struct RecoveredTransaction(Arc<SignedTransaction>);
 
 impl RecoveredTransaction {
-  fn new(transaction: SignedTransaction) -> Self {
-    assert!(
-      !transaction.is_unsigned(),
-      "a recovered transaction must be signed"
-    );
-
-    let public = transaction
-      .public
-      .as_ref()
-      .expect("a recovered transaction must contain a public key");
-    assert!(
-      transaction
-        .verify_public(false)
-        .expect("a recovered transaction signature must be verifiable"),
-      "a recovered transaction must contain a valid signature",
-    );
-
-    let expected_sender = public_to_address(public, transaction.space() == Space::Native);
-    assert_eq!(
-      transaction.sender, expected_sender,
-      "a recovered transaction sender must be derived from its public key",
-    );
+  fn new(mut transaction: SignedTransaction) -> Self {
+    // Raw decoding caches wire length; block selection and queries need the
+    // RLP item length used by a block body.
+    transaction.transaction.rlp_size = Some(transaction.transaction.rlp_bytes().len());
 
     Self(Arc::new(transaction))
   }
@@ -84,18 +57,22 @@ impl RecoveredTransaction {
 #[derive(Clone, Debug)]
 pub(crate) struct ImpersonatedTransaction {
   transaction: Arc<Transaction>,
-  sender: AddressWithSpace,
+  sender: Address,
   hash: H256,
+  selection_size: usize,
 }
 
 impl ImpersonatedTransaction {
-  fn new(transaction: Arc<Transaction>, sender: AddressWithSpace) -> Self {
-    let hash = compute_impersonated_hash(transaction.as_ref(), sender);
+  fn new(transaction: Arc<Transaction>, sender: Address) -> Self {
+    let encoded = encode_impersonated_transaction(transaction.as_ref(), sender);
+    let selection_size = encoded.len();
+    let hash = keccak(encoded);
 
     Self {
       transaction,
       sender,
       hash,
+      selection_size,
     }
   }
 
@@ -104,10 +81,6 @@ impl ImpersonatedTransaction {
   }
 
   fn sender(&self) -> Address {
-    self.sender.address
-  }
-
-  fn sender_with_space(&self) -> AddressWithSpace {
     self.sender
   }
 
@@ -137,7 +110,7 @@ pub(crate) enum RuntimeTransaction {
 }
 
 impl RuntimeTransaction {
-  /// Wraps a transaction after ingress validation and sender recovery.
+  /// Wraps a transaction whose signature and sender have been established by the caller.
   pub(crate) fn from_recovered_signature(transaction: SignedTransaction) -> Self {
     Self::Signed(RecoveredTransaction::new(transaction))
   }
@@ -145,12 +118,7 @@ impl RuntimeTransaction {
   /// Wraps a payload after the caller establishes its Runtime admission context.
   /// New submissions must check impersonation authorization; trusted replay may
   /// restore an already-admitted transaction without rechecking current state.
-  pub(crate) fn from_impersonated(transaction: Transaction, sender: AddressWithSpace) -> Self {
-    assert_eq!(
-      transaction.space(),
-      sender.space,
-      "an impersonated sender must use the transaction space",
-    );
+  pub(crate) fn from_impersonated(transaction: Transaction, sender: Address) -> Self {
     Self::Impersonated(ImpersonatedTransaction::new(Arc::new(transaction), sender))
   }
 
@@ -183,17 +151,7 @@ impl RuntimeTransaction {
   }
 
   pub(crate) fn sender_with_space(&self) -> AddressWithSpace {
-    match self {
-      Self::Signed(transaction) => transaction
-        .as_ref()
-        .sender
-        .with_space(transaction.as_ref().space()),
-      Self::Impersonated(transaction) => transaction.sender_with_space(),
-      Self::System(transaction) => transaction
-        .as_ref()
-        .sender
-        .with_space(transaction.as_ref().space()),
-    }
+    self.sender().with_space(self.space())
   }
 
   pub(crate) fn nonce(&self) -> &U256 {
@@ -218,17 +176,14 @@ impl RuntimeTransaction {
 
   /// Returns the size charged by local block selection.
   ///
-  /// Signed/System transactions use their standard encoding. An impersonated
+  /// Signed/System transactions use their block-body encoding. An impersonated
   /// transaction uses its canonical local envelope; the temporary fork shape
   /// used by validation/execution is a separate adapter detail.
   pub(crate) fn selection_size(&self) -> usize {
     match self {
       Self::Signed(transaction) => transaction.as_ref().rlp_size(),
       Self::System(transaction) => transaction.as_ref().rlp_size(),
-      Self::Impersonated(transaction) => {
-        encode_impersonated_transaction(transaction.transaction(), transaction.sender_with_space())
-          .len()
-      }
+      Self::Impersonated(transaction) => transaction.selection_size,
     }
   }
 
@@ -264,8 +219,45 @@ impl RuntimeTransaction {
   /// Returns canonical bytes only for a genuine signed user transaction.
   pub(crate) fn standard_raw(&self) -> Option<Vec<u8>> {
     match self {
-      Self::Signed(transaction) => Some(rlp::encode(&transaction.as_ref().transaction).to_vec()),
+      Self::Signed(transaction) => Some(
+        transaction
+          .as_ref()
+          .transaction
+          .transaction
+          .rlp_bytes()
+          .to_vec(),
+      ),
       Self::Impersonated(_) | Self::System(_) => None,
+    }
+  }
+
+  /// Returns the wire representation used by read-only transaction queries.
+  /// Impersonated signatures are placeholders: these bytes do not preserve the
+  /// Runtime hash or authorize the Runtime sender when submitted as a raw transaction.
+  pub(crate) fn query_raw(&self) -> Vec<u8> {
+    match self {
+      Self::Signed(transaction) => transaction
+        .as_ref()
+        .transaction
+        .transaction
+        .rlp_bytes()
+        .to_vec(),
+      Self::System(transaction) => transaction
+        .as_ref()
+        .transaction
+        .transaction
+        .rlp_bytes()
+        .to_vec(),
+      Self::Impersonated(transaction) => {
+        primitives::transaction::TransactionWithSignatureSerializePart {
+          unsigned: transaction.transaction().clone(),
+          v: 0,
+          r: U256::one(),
+          s: U256::one(),
+        }
+        .rlp_bytes()
+        .to_vec()
+      }
     }
   }
 
@@ -274,7 +266,7 @@ impl RuntimeTransaction {
     match self {
       Self::Impersonated(transaction) => Some(encode_impersonated_transaction(
         transaction.transaction(),
-        transaction.sender_with_space(),
+        transaction.sender(),
       )),
       Self::Signed(_) | Self::System(_) => None,
     }
@@ -301,19 +293,18 @@ impl RuntimeTransaction {
     }
 
     let payload_bytes: Vec<u8> = rlp.val_at(1)?;
-    let payload = TransactionWithSignature::from_raw(&payload_bytes)?;
+    let payload: TransactionWithSignature = rlp::decode(&payload_bytes)?;
     if !payload.is_unsigned() || !payload.is_canonical_rlp() {
       return Err(primitives::transaction::TransactionError::InvalidRlp(
         "impersonated transaction payload must be canonical and unsigned".into(),
       ));
     }
 
-    let address = rlp.val_at(2)?;
-    let space = rlp.val_at(3)?;
-    let sender = AddressWithSpace { address, space };
+    let sender: Address = rlp.val_at(2)?;
+    let space: Space = rlp.val_at(3)?;
     let transaction = payload.unsigned.clone();
 
-    if transaction.space() != sender.space {
+    if transaction.space() != space {
       return Err(primitives::transaction::TransactionError::InvalidRlp(
         "impersonated transaction sender space does not match payload".into(),
       ));
@@ -342,8 +333,8 @@ impl RuntimeTransaction {
       Self::Signed(transaction) => callback(transaction.as_ref()),
       Self::System(transaction) => callback(transaction.as_ref()),
       Self::Impersonated(transaction) => {
-        let sender = transaction.sender_with_space();
-        let signed = fake_sign_for_execution(transaction.transaction().clone(), sender);
+        let signed =
+          fake_sign_for_execution(transaction.transaction().clone(), transaction.sender());
         callback(&signed)
       }
     }

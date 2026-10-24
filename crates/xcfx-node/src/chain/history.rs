@@ -3,7 +3,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use cfx_parameters::consensus::DEFERRED_STATE_EPOCH_COUNT;
-use cfx_types::H256;
+use cfx_types::{Address, H256, U256};
 use primitives::{BlockNumber, block::BlockHeight};
 
 use crate::{execution::ExecutionCommitment, fork::ForkReadError};
@@ -37,6 +37,7 @@ pub(crate) struct ChainHistory {
   block_locations: HashMap<H256, BlockLocation>,
   transaction_locations: HashMap<H256, TransactionLocation>,
   espace_transaction_locations: HashMap<H256, EspaceTransactionLocation>,
+  espace_sender_nonce_locations: HashMap<(Address, U256), EspaceTransactionLocation>,
 }
 
 impl ChainHistory {
@@ -47,6 +48,7 @@ impl ChainHistory {
         block_locations: HashMap::new(),
         transaction_locations: HashMap::new(),
         espace_transaction_locations: HashMap::new(),
+        espace_sender_nonce_locations: HashMap::new(),
       };
     };
 
@@ -78,6 +80,7 @@ impl ChainHistory {
       block_locations,
       transaction_locations,
       espace_transaction_locations: HashMap::new(),
+      espace_sender_nonce_locations: HashMap::new(),
     }
   }
 
@@ -226,22 +229,27 @@ impl ChainHistory {
     }
 
     let mut espace_transaction_locations = HashMap::new();
-    for (transaction_index, hash) in artifacts.espace_transaction_hashes().enumerate() {
+    let mut espace_sender_nonce_locations = HashMap::new();
+    for (transaction_index, transaction) in artifacts.espace_transactions().enumerate() {
+      let hash = transaction.hash();
+      let location = EspaceTransactionLocation {
+        epoch_height,
+        transaction_index,
+      };
       assert!(
         !self.espace_transaction_locations.contains_key(&hash),
         "an eSpace transaction hash must not already exist in history",
       );
       assert!(
         espace_transaction_locations
-          .insert(
-            hash,
-            EspaceTransactionLocation {
-              epoch_height,
-              transaction_index,
-            },
-          )
+          .insert(hash, location,)
           .is_none(),
         "an epoch must not contain duplicate eSpace transaction hashes",
+      );
+      // Phantom entries may repeat sender/nonce. Projection order selects the last match.
+      espace_sender_nonce_locations.insert(
+        (transaction.sender(), *transaction.transaction().nonce()),
+        location,
       );
     }
 
@@ -253,6 +261,9 @@ impl ChainHistory {
     self
       .espace_transaction_locations
       .reserve(espace_transaction_locations.len());
+    self
+      .espace_sender_nonce_locations
+      .reserve(espace_sender_nonce_locations.len());
 
     self.views.push(view);
     self.block_locations.extend(block_locations);
@@ -260,6 +271,9 @@ impl ChainHistory {
     self
       .espace_transaction_locations
       .extend(espace_transaction_locations);
+    self
+      .espace_sender_nonce_locations
+      .extend(espace_sender_nonce_locations);
   }
 
   pub(crate) fn epoch_at_height(&self, epoch_height: BlockHeight) -> Option<&Arc<EpochView>> {
@@ -413,6 +427,18 @@ impl ChainHistory {
     self
       .espace_transaction_locations
       .get(transaction_hash)
+      .copied()
+      .map(|location| self.mined_espace_transaction_at(location))
+  }
+
+  pub(crate) fn mined_espace_transaction_by_sender_and_nonce(
+    &self,
+    sender: Address,
+    nonce: U256,
+  ) -> Option<EspaceTransactionView> {
+    self
+      .espace_sender_nonce_locations
+      .get(&(sender, nonce))
       .copied()
       .map(|location| self.mined_espace_transaction_at(location))
   }

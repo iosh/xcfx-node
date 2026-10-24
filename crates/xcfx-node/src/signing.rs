@@ -79,10 +79,10 @@ impl SigningKeys {
 
   pub(crate) fn sign(
     &self,
-    sender: AddressWithSpace,
+    sender: Address,
     transaction: Transaction,
   ) -> Option<SignedTransaction> {
-    debug_assert_eq!(transaction.space(), sender.space);
+    let sender = sender.with_space(transaction.space());
 
     self
       .by_address

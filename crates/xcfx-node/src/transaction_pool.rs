@@ -1,5 +1,5 @@
 use std::{
-  collections::{BTreeMap, BTreeSet, HashMap},
+  collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
   ops::RangeInclusive,
 };
 
@@ -68,6 +68,7 @@ pub(crate) struct TransactionPoolReconciliation {
   transaction_hashes_to_remove: Vec<H256>,
 }
 
+#[derive(Clone)]
 pub(crate) struct TransactionPool {
   policy: TransactionPoolPolicy,
   by_key: BTreeMap<TransactionKey, PoolTransaction>,
@@ -97,42 +98,22 @@ impl TransactionPool {
     }
   }
 
+  /// Restores entries captured under the same instance policy and rebuilds the indexes.
   pub(crate) fn from_checkpoint(
     policy: TransactionPoolPolicy,
     checkpoint: &TransactionPoolCheckpoint,
   ) -> Self {
-    assert!(
-      checkpoint.transactions.len() <= policy.max_transactions,
-      "a checkpoint cannot restore more transactions than the stable pool policy allows",
-    );
-
     let mut pool = Self::new(policy);
-    let mut arrival_sequences = BTreeSet::new();
 
     pool.key_by_hash.reserve(checkpoint.transactions.len());
     pool.next_arrival_sequence = checkpoint.next_arrival_sequence;
 
     for pooled in &checkpoint.transactions {
-      assert!(
-        pooled.arrival_sequence < checkpoint.next_arrival_sequence,
-        "a checkpoint pool entry must have an allocated arrival sequence",
-      );
-      assert!(
-        arrival_sequences.insert(pooled.arrival_sequence),
-        "checkpoint pool entries must have distinct arrival sequences",
-      );
-
       let key = TransactionKey::from_transaction(&pooled.transaction);
       let hash = pooled.transaction.hash();
 
-      assert!(
-        pool.by_key.insert(key, pooled.clone()).is_none(),
-        "checkpoint pool entries must have distinct conflict keys",
-      );
-      assert!(
-        pool.key_by_hash.insert(hash, key).is_none(),
-        "checkpoint pool entries must have distinct transaction hashes",
-      );
+      pool.by_key.insert(key, pooled.clone());
+      pool.key_by_hash.insert(hash, key);
     }
 
     pool
@@ -194,8 +175,8 @@ impl TransactionPool {
   }
 
   /// Finds the first unoccupied nonce at or above `state_nonce`.
-  /// Returns `None` if the contiguous sequence exhausts the `U256` range.
-  pub(crate) fn next_nonce(&self, address: AddressWithSpace, state_nonce: U256) -> Option<U256> {
+  /// Admitted transaction nonces are below `u64::MAX`, leaving room to advance.
+  pub(crate) fn next_nonce(&self, address: AddressWithSpace, state_nonce: U256) -> U256 {
     let first = TransactionKey {
       sender: address.address,
       space: address.space,
@@ -211,10 +192,10 @@ impl TransactionPool {
       if key.nonce != nonce {
         break;
       }
-      nonce = nonce.checked_add(U256::one())?;
+      nonce += U256::one();
     }
 
-    Some(nonce)
+    nonce
   }
 
   pub(crate) fn insert(
@@ -251,70 +232,48 @@ impl TransactionPool {
       return Err(TransactionError::AlreadyImported);
     }
     let key = TransactionKey::from_transaction(&transaction);
-    if let Some((previous, previous_hash)) = self
-      .by_key
-      .get(&key)
-      .map(|entry| (entry.transaction.clone(), entry.transaction.hash()))
-    {
-      if matches!(replacement_policy, ReplacementPolicy::RequirePriceBump)
-        && !Self::replacement_is_sufficient(&transaction, &previous)
-      {
-        return Err(TransactionError::TooCheapToReplace);
-      }
+    let at_capacity = self.by_key.len() >= self.policy.max_transactions;
+    match self.by_key.entry(key) {
+      Entry::Occupied(mut entry) => {
+        if matches!(replacement_policy, ReplacementPolicy::RequirePriceBump)
+          && !Self::replacement_is_sufficient(&transaction, &entry.get().transaction)
+        {
+          return Err(TransactionError::TooCheapToReplace);
+        }
 
-      let arrival_sequence = self.next_arrival_sequence();
-      self
-        .key_by_hash
-        .remove(&previous_hash)
-        .expect("pool hash index must match primary index");
-
-      let replaced = self.by_key.insert(
-        key,
-        PoolTransaction {
+        let arrival_sequence = Self::next_arrival_sequence(&mut self.next_arrival_sequence);
+        let previous = entry.insert(PoolTransaction {
           transaction,
           arrival_sequence,
-        },
-      );
+        });
+        self
+          .key_by_hash
+          .remove(&previous.transaction.hash())
+          .expect("pool hash index must match primary index");
+        self.key_by_hash.insert(hash, key);
+        Ok(TransactionPoolInsertOutcome::Replaced {
+          previous: previous.transaction,
+        })
+      }
+      Entry::Vacant(entry) => {
+        if at_capacity {
+          return Err(TransactionError::LimitReached);
+        }
 
-      let replaced = replaced.expect("pool key must exist during replacement");
-      assert_eq!(
-        replaced.transaction.hash(),
-        previous_hash,
-        "pool primary index must contain the replaced transaction",
-      );
-
-      assert!(
-        self.key_by_hash.insert(hash, key).is_none(),
-        "pool hash index must not contain a replacement hash",
-      );
-
-      return Ok(TransactionPoolInsertOutcome::Replaced { previous });
+        let arrival_sequence = Self::next_arrival_sequence(&mut self.next_arrival_sequence);
+        entry.insert(PoolTransaction {
+          transaction,
+          arrival_sequence,
+        });
+        self.key_by_hash.insert(hash, key);
+        Ok(TransactionPoolInsertOutcome::Inserted)
+      }
     }
-
-    if self.by_key.len() >= self.policy.max_transactions {
-      return Err(TransactionError::LimitReached);
-    }
-
-    let arrival_sequence = self.next_arrival_sequence();
-    assert!(
-      self.key_by_hash.insert(hash, key).is_none(),
-      "pool hash index must not contain a new transaction hash",
-    );
-
-    self.by_key.insert(
-      key,
-      PoolTransaction {
-        transaction,
-        arrival_sequence,
-      },
-    );
-
-    Ok(TransactionPoolInsertOutcome::Inserted)
   }
 
-  fn next_arrival_sequence(&mut self) -> u64 {
-    let sequence = self.next_arrival_sequence;
-    self.next_arrival_sequence = sequence
+  fn next_arrival_sequence(next: &mut u64) -> u64 {
+    let sequence = *next;
+    *next = sequence
       .checked_add(1)
       .expect("transaction pool arrival sequence exhausted");
     sequence

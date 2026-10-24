@@ -14,7 +14,7 @@ use cfx_rpc_cfx_types::{
   VoteParamsInfo,
 };
 
-use cfx_types::{H256, U64, U256};
+use cfx_types::{Address, H256, U64, U256};
 use primitives::{DepositInfo, VoteStakeInfo};
 use serde::{Deserialize, Serialize};
 
@@ -189,6 +189,67 @@ impl ConfluxRpcClient {
       .await
   }
 
+  pub(crate) async fn eth_getBalance(
+    &self,
+    address: Address,
+    block: cfx_rpc_eth_types::BlockId,
+  ) -> TransportResult<U256> {
+    self
+      .espace
+      .client()
+      .request("eth_getBalance", (address, block))
+      .await
+  }
+
+  pub(crate) async fn eth_getTransactionCount(
+    &self,
+    address: Address,
+    block: cfx_rpc_eth_types::BlockId,
+  ) -> TransportResult<U256> {
+    self
+      .espace
+      .client()
+      .request("eth_getTransactionCount", (address, block))
+      .await
+  }
+
+  pub(crate) async fn eth_getCode(
+    &self,
+    address: Address,
+    block: cfx_rpc_eth_types::BlockId,
+  ) -> TransportResult<cfx_rpc_eth_types::Bytes> {
+    self
+      .espace
+      .client()
+      .request("eth_getCode", (address, block))
+      .await
+  }
+
+  pub(crate) async fn eth_getStorageAt(
+    &self,
+    address: Address,
+    position: U256,
+    block: cfx_rpc_eth_types::BlockId,
+  ) -> TransportResult<H256> {
+    self
+      .espace
+      .client()
+      .request("eth_getStorageAt", (address, position, block))
+      .await
+  }
+
+  pub(crate) async fn eth_getBlockReceipts(
+    &self,
+    block: cfx_rpc_eth_types::BlockId,
+  ) -> TransportResult<Option<Vec<cfx_rpc_eth_types::Receipt>>> {
+    let receipts: Option<Vec<EthereumReceiptResponse>> = self
+      .espace
+      .client()
+      .request("eth_getBlockReceipts", (block,))
+      .await?;
+    Ok(receipts.map(|receipts| receipts.into_iter().map(|receipt| receipt.0).collect()))
+  }
+
   pub(crate) async fn eth_getBlockByHash(
     &self,
     hash: H256,
@@ -198,6 +259,18 @@ impl ConfluxRpcClient {
       .espace
       .client()
       .request("eth_getBlockByHash", (hash, full_transactions))
+      .await
+  }
+
+  pub(crate) async fn eth_getTransactionByBlockHashAndIndex(
+    &self,
+    hash: H256,
+    index: U256,
+  ) -> TransportResult<Option<cfx_rpc_eth_types::Transaction>> {
+    self
+      .espace
+      .client()
+      .request("eth_getTransactionByBlockHashAndIndex", (hash, index))
       .await
   }
 

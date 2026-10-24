@@ -50,10 +50,7 @@ impl VirtualExecutionRequest {
       return Err(VirtualExecutionError::InvalidNativeSender(self.sender));
     }
 
-    Ok(fake_sign_for_execution(
-      self.transaction,
-      self.sender.with_space(transaction_space),
-    ))
+    Ok(fake_sign_for_execution(self.transaction, self.sender))
   }
 }
 

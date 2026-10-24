@@ -6,8 +6,8 @@ use std::{
   time::Duration,
 };
 
-use cfx_rpc_eth_types::Receipt as EthereumReceipt;
-use cfx_types::{AddressWithSpace, H256, Space, U256};
+use cfx_rpc_eth_types::{Receipt as EthereumReceipt, Transaction as EthereumTransaction};
+use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::BlockNumber;
 use tokio::{
   runtime::Handle,
@@ -15,13 +15,15 @@ use tokio::{
 };
 
 use crate::{
-  chain::{EspaceTransactionView, MinedBlockView, TransactionReceiptView},
+  chain::{EspaceBlockView, EspaceTransactionView, MinedBlockView, TransactionReceiptView},
   config::{MiningMode, NodeConfig},
-  fork::{ForkReadError, HistoryQuery, HistoryResult},
+  fork::ForkReadError,
   production_environment::BlockTimestamp,
+  rpc_client::EthereumBlock,
   runtime::{
-    AccountPoolTransactions, EpochSelector, EspaceReceiptSource, RuntimeCommitOutcome,
-    RuntimeTransactionError, StateQueryError,
+    AccountPoolTransactions, EpochSelector, EspaceBlockSelector, EspaceBlockSource,
+    EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,
+    LocalEspaceTransactionSource, RuntimeCommitOutcome, RuntimeTransactionError, StateQueryError,
   },
   runtime_transaction::RuntimeTransaction,
   state_overlay::{StateControlBatch, StateControlPreparationError},
@@ -375,6 +377,45 @@ pub(crate) enum EspaceReceipt {
   Fork(Arc<EthereumReceipt>),
 }
 
+pub(crate) enum EspaceBlock {
+  Local(EspaceBlockView),
+  Fork(Arc<EthereumBlock>),
+}
+
+pub(crate) enum EspaceTransaction {
+  Pool(RuntimeTransaction),
+  Local(EspaceTransactionView),
+  Fork(Arc<EthereumTransaction>),
+}
+
+pub(crate) enum EspaceBlockReceipts {
+  Local(EspaceBlockView),
+  Fork(Arc<[EthereumReceipt]>),
+}
+
+fn capture_local_espace_transaction(source: LocalEspaceTransactionSource<'_>) -> EspaceTransaction {
+  match source {
+    LocalEspaceTransactionSource::Pool(transaction) => EspaceTransaction::Pool(transaction.clone()),
+    LocalEspaceTransactionSource::Mined(transaction) => EspaceTransaction::Local(transaction),
+  }
+}
+
+fn capture_espace_transaction(
+  source: Option<EspaceTransactionSource<'_>>,
+) -> Result<Option<EspaceTransaction>, ForkReadError> {
+  match source {
+    None => Ok(None),
+    Some(EspaceTransactionSource::Local(source)) => {
+      Ok(Some(capture_local_espace_transaction(source)))
+    }
+    Some(EspaceTransactionSource::Fork { client, hash }) => Ok(
+      client
+        .espace_transaction_by_hash(hash)?
+        .map(EspaceTransaction::Fork),
+    ),
+  }
+}
+
 /// Access to one operation after its cancellation and health checks have passed.
 /// Methods consume this capability so a task cannot start another operation
 /// without going through the worker's boundaries again. No Runtime borrow escapes.
@@ -410,6 +451,127 @@ impl NodeCall<'_, '_> {
     epoch: EpochSelector,
   ) -> Result<U256, StateQueryError> {
     self.worker.node.runtime().balance_at(address, epoch)
+  }
+
+  pub(crate) fn espace_balance_at(
+    self,
+    address: Address,
+    selector: EspaceStateSelector,
+  ) -> Result<U256, EspaceStateQueryError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_balance_at(address, selector)
+  }
+
+  pub(crate) fn espace_nonce_at(
+    self,
+    address: Address,
+    selector: EspaceStateSelector,
+  ) -> Result<U256, EspaceStateQueryError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_nonce_at(address, selector)
+  }
+
+  pub(crate) fn espace_pending_nonce(
+    self,
+    address: Address,
+  ) -> Result<U256, EspaceStateQueryError> {
+    self.worker.node.runtime().espace_pending_nonce(address)
+  }
+
+  pub(crate) fn espace_code_at(
+    self,
+    address: Address,
+    selector: EspaceStateSelector,
+  ) -> Result<Arc<Vec<u8>>, EspaceStateQueryError> {
+    self.worker.node.runtime().espace_code_at(address, selector)
+  }
+
+  pub(crate) fn espace_storage_at(
+    self,
+    address: Address,
+    position: H256,
+    selector: EspaceStateSelector,
+  ) -> Result<H256, EspaceStateQueryError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_storage_at(address, position, selector)
+  }
+
+  pub(crate) fn espace_block(
+    self,
+    selector: EspaceBlockSelector,
+    full_transactions: bool,
+  ) -> Result<Option<EspaceBlock>, ForkReadError> {
+    match self.worker.node.runtime().espace_block_source(selector) {
+      None => Ok(None),
+      Some(EspaceBlockSource::Local(block)) => Ok(Some(EspaceBlock::Local(block))),
+      Some(EspaceBlockSource::Fork { client, selector }) => Ok(
+        client
+          .espace_block(selector, full_transactions)?
+          .map(EspaceBlock::Fork),
+      ),
+    }
+  }
+
+  pub(crate) fn espace_transaction_by_hash(
+    self,
+    hash: H256,
+  ) -> Result<Option<EspaceTransaction>, ForkReadError> {
+    capture_espace_transaction(self.worker.node.runtime().espace_transaction_source(hash))
+  }
+
+  pub(crate) fn espace_transaction_by_sender_and_nonce(
+    self,
+    address: Address,
+    nonce: U256,
+  ) -> Option<EspaceTransaction> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_transaction_by_sender_and_nonce(address, nonce)
+      .map(capture_local_espace_transaction)
+  }
+
+  pub(crate) fn espace_transaction_by_block_and_index(
+    self,
+    selector: EspaceBlockSelector,
+    index: usize,
+  ) -> Result<Option<EspaceTransaction>, ForkReadError> {
+    match self.worker.node.runtime().espace_block_source(selector) {
+      None => Ok(None),
+      Some(EspaceBlockSource::Local(block)) => {
+        Ok(block.transaction_at(index).map(EspaceTransaction::Local))
+      }
+      Some(EspaceBlockSource::Fork { client, selector }) => Ok(
+        client
+          .espace_transaction_by_block_and_index(selector, index)?
+          .map(EspaceTransaction::Fork),
+      ),
+    }
+  }
+
+  pub(crate) fn espace_block_receipts(
+    self,
+    selector: EspaceBlockSelector,
+  ) -> Result<Option<EspaceBlockReceipts>, ForkReadError> {
+    match self.worker.node.runtime().espace_block_source(selector) {
+      None => Ok(None),
+      Some(EspaceBlockSource::Local(block)) => Ok(Some(EspaceBlockReceipts::Local(block))),
+      Some(EspaceBlockSource::Fork { client, selector }) => Ok(
+        client
+          .espace_block_receipts(selector)?
+          .map(EspaceBlockReceipts::Fork),
+      ),
+    }
   }
 
   pub(crate) fn mined_block_by_number(self, number: BlockNumber) -> Option<MinedBlockView> {
@@ -457,14 +619,7 @@ impl NodeCall<'_, '_> {
       None => Ok(None),
       Some(EspaceReceiptSource::Local(transaction)) => Ok(Some(EspaceReceipt::Local(transaction))),
       Some(EspaceReceiptSource::Fork { client, hash }) => {
-        let result = client.history(HistoryQuery::Receipt {
-          space: Space::Ethereum,
-          hash,
-        })?;
-        let HistoryResult::EthereumReceipt(receipt) = result else {
-          unreachable!("an eSpace receipt history request must return an eSpace receipt result");
-        };
-        Ok(receipt.map(EspaceReceipt::Fork))
+        Ok(client.espace_receipt(hash)?.map(EspaceReceipt::Fork))
       }
     }
   }

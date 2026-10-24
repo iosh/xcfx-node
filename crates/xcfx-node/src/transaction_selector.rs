@@ -1,6 +1,6 @@
 use std::{
-  cmp::Reverse,
-  collections::{BTreeMap, BinaryHeap},
+  cmp::{Ordering, Reverse},
+  collections::BinaryHeap,
 };
 
 use cfx_executor::spec::CommonParams;
@@ -18,9 +18,8 @@ use primitives::{
 };
 
 use crate::{
-  block_producer::BlockParent,
-  runtime_transaction::RuntimeTransaction,
-  transaction_pool::{AccountKey, PoolTransaction},
+  block_producer::BlockParent, runtime_transaction::RuntimeTransaction,
+  transaction_pool::PoolTransaction,
 };
 
 /// Resource limits applied by the deterministic selector.
@@ -39,87 +38,71 @@ impl Default for TransactionSelectionLimits {
   }
 }
 
-/// Priority key for the currently selectable transaction of one account.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct AccountHeadCandidate {
-  gas_price: U256,
-  arrival_sequence: Reverse<u64>,
-  hash: Reverse<H256>,
-  account: Reverse<AccountKey>,
-  queue_index: Reverse<usize>,
+/// One account's head and the remaining borrowed nonce prefix.
+struct AccountHeadCandidate<'a> {
+  priority: (U256, Reverse<u64>, Reverse<H256>),
+  pooled: &'a PoolTransaction,
+  remaining: &'a [&'a PoolTransaction],
 }
 
-impl AccountHeadCandidate {
-  fn new(account: AccountKey, queue_index: usize, pooled: &PoolTransaction) -> Self {
+impl<'a> AccountHeadCandidate<'a> {
+  fn new(pooled: &'a PoolTransaction, remaining: &'a [&'a PoolTransaction]) -> Self {
     Self {
-      gas_price: *pooled.transaction().gas_price(),
-      arrival_sequence: Reverse(pooled.arrival_sequence()),
-      hash: Reverse(pooled.transaction().hash()),
-      account: Reverse(account),
-      queue_index: Reverse(queue_index),
+      priority: (
+        *pooled.transaction().gas_price(),
+        Reverse(pooled.arrival_sequence()),
+        Reverse(pooled.transaction().hash()),
+      ),
+      pooled,
+      remaining,
     }
   }
 }
 
-fn candidate_transactions_by_account<'pool>(
-  candidates: Vec<&'pool PoolTransaction>,
-) -> BTreeMap<AccountKey, Vec<&'pool PoolTransaction>> {
-  let mut transactions_by_account = BTreeMap::<AccountKey, Vec<&PoolTransaction>>::new();
-
-  for pooled in candidates {
-    let transaction = pooled.transaction();
-    transactions_by_account
-      .entry((transaction.sender(), transaction.space()))
-      .or_default()
-      .push(pooled);
+impl PartialEq for AccountHeadCandidate<'_> {
+  fn eq(&self, other: &Self) -> bool {
+    self.priority == other.priority
   }
-
-  transactions_by_account
 }
 
-fn initial_account_heads(
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolTransaction>>,
-) -> BinaryHeap<AccountHeadCandidate> {
-  let mut candidates = BinaryHeap::new();
+impl Eq for AccountHeadCandidate<'_> {}
 
-  for (&account, transactions) in transactions_by_account {
-    let head = transactions
-      .first()
-      .expect("every candidate account queue must have a head");
-
-    candidates.push(AccountHeadCandidate::new(account, 0, head));
+impl PartialOrd for AccountHeadCandidate<'_> {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
   }
+}
 
+impl Ord for AccountHeadCandidate<'_> {
+  fn cmp(&self, other: &Self) -> Ordering {
+    // Pool hashes are unique, so the remaining queue cannot break a priority tie.
+    self.priority.cmp(&other.priority)
+  }
+}
+
+fn initial_account_heads<'a>(
+  mut transactions: &'a [&'a PoolTransaction],
+) -> BinaryHeap<AccountHeadCandidate<'a>> {
+  let mut candidates = BinaryHeap::new();
+  while let Some((head, tail)) = transactions.split_first() {
+    let address = head.transaction().sender_with_space();
+    let next_account = tail
+      .iter()
+      .position(|pooled| pooled.transaction().sender_with_space() != address)
+      .unwrap_or(tail.len());
+    let (remaining, next) = tail.split_at(next_account);
+    candidates.push(AccountHeadCandidate::new(head, remaining));
+    transactions = next;
+  }
   candidates
 }
 
-fn push_next_account_head(
-  candidates: &mut BinaryHeap<AccountHeadCandidate>,
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&PoolTransaction>>,
-  selected: AccountHeadCandidate,
-) {
-  let account = selected.account.0;
-  let next_index = selected
-    .queue_index
-    .0
-    .checked_add(1)
-    .expect("an account queue index must permit a successor");
-
-  let transactions = transactions_by_account
-    .get(&account)
-    .expect("a selected account must have a candidate queue");
-
-  if let Some(next) = transactions.get(next_index) {
-    candidates.push(AccountHeadCandidate::new(account, next_index, next));
-  }
-}
-
 fn select_account_transactions<'a>(
-  transactions_by_account: &BTreeMap<AccountKey, Vec<&'a PoolTransaction>>,
+  transactions: &'a [&'a PoolTransaction],
   limits: TransactionSelectionLimits,
   mut accept: impl FnMut(&PoolTransaction) -> bool,
 ) -> Vec<&'a PoolTransaction> {
-  let mut candidates = initial_account_heads(transactions_by_account);
+  let mut candidates = initial_account_heads(transactions);
   let mut selected = Vec::new();
   let mut selected_bytes = 0usize;
 
@@ -128,14 +111,7 @@ fn select_account_transactions<'a>(
       break;
     };
 
-    let account = candidate.account.0;
-    let queue_index = candidate.queue_index.0;
-
-    let pooled = transactions_by_account
-      .get(&account)
-      .and_then(|transactions| transactions.get(queue_index))
-      .copied()
-      .expect("an account-head candidate must reference its queue");
+    let pooled = candidate.pooled;
 
     let transaction_size = pooled.transaction().selection_size();
 
@@ -154,7 +130,9 @@ fn select_account_transactions<'a>(
     selected_bytes = next_selected_bytes;
     selected.push(pooled);
 
-    push_next_account_head(&mut candidates, transactions_by_account, candidate);
+    if let Some((next, remaining)) = candidate.remaining.split_first() {
+      candidates.push(AccountHeadCandidate::new(next, remaining));
+    }
   }
 
   selected
@@ -205,8 +183,8 @@ impl TransactionSelection {
 }
 
 /// Selects from protocol-valid, affordable nonce prefixes for each account and Space.
-/// Runtime prepares candidates under one state version; packing height, prices,
-/// and block budgets are checked here.
+/// Runtime supplies contiguous account groups in ascending nonce order under one
+/// state version; packing height, prices, and block budgets are checked here.
 pub(crate) fn select_transactions(
   candidates: Vec<&PoolTransaction>,
   parent: &BlockParent,
@@ -244,10 +222,9 @@ pub(crate) fn select_transactions(
   let mut base_price = SpaceMap::zip4(gas_targets, gas_used, parent_base_price, min_base_price)
     .map_all(compute_next_price_tuple);
 
-  let transactions_by_account = candidate_transactions_by_account(candidates);
   let mut waiting_for_espace = false;
 
-  let selected = select_account_transactions(&transactions_by_account, limits, |pooled| {
+  let selected = select_account_transactions(&candidates, limits, |pooled| {
     let transaction = pooled.transaction();
     let space = transaction.space();
 

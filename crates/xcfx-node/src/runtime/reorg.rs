@@ -360,10 +360,7 @@ impl NodeRuntime {
       head.epoch_height(),
     );
     let state = open_state_version(effective)?;
-    let mut pool = TransactionPool::from_checkpoint(
-      self.transaction_pool_policy,
-      &self.runtime_state.transaction_pool.capture_checkpoint(),
-    );
+    let mut pool = self.runtime_state.transaction_pool.clone();
     let mut dropped = Vec::new();
     // Capture shared transaction handles before pruning this unpublished pool.
     let retained = pool

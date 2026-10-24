@@ -68,11 +68,13 @@ enum ProjectedTransaction {
   Original {
     source: EpochTransactionIndex,
     accumulated_gas_used: U256,
+    first_log_index: usize,
   },
   Phantom {
     source: EpochTransactionIndex,
     index_in_source: usize,
     execution: Box<PhantomExecution>,
+    first_log_index: usize,
   },
 }
 
@@ -97,6 +99,7 @@ impl ProjectedTransaction {
       Self::Original {
         source,
         accumulated_gas_used,
+        ..
       } => {
         let result = artifacts.transaction_receipt(*source);
         EspaceReceiptRef {
@@ -136,6 +139,17 @@ impl ProjectedTransaction {
       Self::Phantom { execution, .. } => execution.receipt.accumulated_gas_used,
     }
   }
+
+  fn first_log_index(&self) -> usize {
+    match self {
+      Self::Original {
+        first_log_index, ..
+      }
+      | Self::Phantom {
+        first_log_index, ..
+      } => *first_log_index,
+    }
+  }
 }
 
 /// Ordinary transactions borrow their epoch's artifacts; only phantom entries own
@@ -163,6 +177,7 @@ impl EspaceProjection {
       .in_evm_space();
     let mut projection = Self::default();
     let mut accumulated_gas_used = U256::zero();
+    let mut first_log_index = 0;
 
     for (block_index, epoch_block) in blocks.iter().enumerate() {
       let block = epoch_block.runtime_block();
@@ -193,7 +208,9 @@ impl EspaceProjection {
               .push(ProjectedTransaction::Original {
                 source,
                 accumulated_gas_used,
+                first_log_index,
               });
+            first_log_index += receipt.logs.len();
           }
           Space::Native if receipt.tx_success() && spec.cip90 => {
             for (index_in_source, phantom) in recover_phantom(&receipt.logs, transaction.hash())
@@ -203,11 +220,14 @@ impl EspaceProjection {
               let execution =
                 PhantomExecution::from_recovered(phantom, chain_id, accumulated_gas_used);
               projection.bloom.accrue_bloom(&execution.receipt.log_bloom);
+              let log_count = execution.receipt.logs.len();
               projection.transactions.push(ProjectedTransaction::Phantom {
                 source,
                 index_in_source,
                 execution: Box::new(execution),
+                first_log_index,
               });
+              first_log_index += log_count;
             }
           }
           Space::Native | Space::Ethereum => {}
@@ -218,14 +238,14 @@ impl EspaceProjection {
     projection
   }
 
-  pub(super) fn transaction_hashes<'a>(
+  pub(super) fn transactions<'a>(
     &'a self,
     artifacts: &'a EpochArtifacts,
-  ) -> impl Iterator<Item = H256> + 'a {
+  ) -> impl Iterator<Item = EspaceTransactionRef<'a>> + 'a {
     self
       .transactions
       .iter()
-      .map(move |transaction| transaction.hash(artifacts))
+      .map(move |transaction| transaction.transaction(artifacts))
   }
 }
 
@@ -312,6 +332,20 @@ impl EspaceTransactionRef<'_> {
       Self::Phantom(transaction) => transaction.hash(),
     }
   }
+
+  pub(crate) fn sender(&self) -> cfx_types::Address {
+    match self {
+      Self::Original(transaction) => transaction.sender(),
+      Self::Phantom(transaction) => transaction.sender,
+    }
+  }
+
+  pub(crate) fn transaction(&self) -> &primitives::Transaction {
+    match self {
+      Self::Original(transaction) => transaction.transaction(),
+      Self::Phantom(transaction) => &transaction.unsigned,
+    }
+  }
 }
 
 /// Borrows eSpace receipt fields while keeping cumulative gas in projected order.
@@ -383,6 +417,22 @@ impl EspaceTransactionView {
 
   pub(crate) fn receipt(&self) -> EspaceReceiptRef<'_> {
     self.projected().receipt(self.block.artifacts())
+  }
+
+  /// Gas attributed to this entry by adjacent projected cumulative values.
+  pub(crate) fn gas_used(&self) -> U256 {
+    let previous_gas = self
+      .transaction_index
+      .checked_sub(1)
+      .map_or(U256::zero(), |index| {
+        self.block.artifacts().espace.transactions[index].accumulated_gas_used()
+      });
+    self.projected().accumulated_gas_used() - previous_gas
+  }
+
+  /// The first log's index in the entire epoch's eSpace sequence.
+  pub(crate) fn first_log_index(&self) -> usize {
+    self.projected().first_log_index()
   }
 
   /// Ordinal among phantom transactions recovered from the same Native transaction.

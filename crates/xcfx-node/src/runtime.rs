@@ -42,7 +42,11 @@ use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
 pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
 pub(crate) use pool::{AccountPoolTransactions, PoolTransactionStatus, QueuedReason};
-pub(crate) use query::{EpochSelector, EspaceReceiptSource, StateQueryError};
+pub(crate) use query::{
+  EpochSelector, EspaceBlockSelector, EspaceBlockSource, EspaceReceiptSource,
+  EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,
+  LocalEspaceTransactionSource, StateQueryError,
+};
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
 use std::{
@@ -613,7 +617,7 @@ impl NodeRuntime {
     Self::validate_sender_space(sender, &transaction)?;
     let transaction = self
       .signing_keys
-      .sign(sender, transaction)
+      .sign(sender.address, transaction)
       .ok_or(RuntimeTransactionError::SigningKeyNotFound { address: sender })?;
 
     Ok(RuntimeTransaction::from_recovered_signature(transaction))
@@ -644,7 +648,10 @@ impl NodeRuntime {
       return Err(RuntimeTransactionError::ImpersonationNotAuthorized { address: sender });
     }
 
-    Ok(RuntimeTransaction::from_impersonated(transaction, sender))
+    Ok(RuntimeTransaction::from_impersonated(
+      transaction,
+      sender.address,
+    ))
   }
 
   /// Checks authorization, validates, and admits an impersonated transaction.

@@ -261,6 +261,9 @@ impl ForkRpc {
 
   pub(super) async fn load_historical_pivot(&self, epoch: u64) -> Result<Block, ForkReadError> {
     let pivot = self.load_pivot(epoch).await?;
+    if pivot.epoch_number != Some(epoch.into()) {
+      return Err(ForkReadError::Inconsistent("historical pivot epoch"));
+    }
     self.check_block_number(&pivot)?;
     Ok(pivot)
   }
