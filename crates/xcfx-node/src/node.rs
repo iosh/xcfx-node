@@ -30,7 +30,7 @@ use tokio::{runtime::Handle, task::JoinError};
 
 use crate::{
   chain_spec::{ChainIds, ChainSpec},
-  config::{ConfigError, MiningMode, NodeConfig},
+  config::{ConfigError, NodeConfig},
   fork::{ForkBase, ForkCacheConfig, ForkLoadError, ForkReadError, ForkReadTask, ForkRpc},
   genesis::{GenesisError, GenesisHeaderInput},
   pos::GenesisPosDefinition,
@@ -153,6 +153,7 @@ struct Node {
 
 impl Node {
   /// Resolves typed configuration and starts a local or fork Runtime.
+  /// Local configuration constraints have been checked by the service owner.
   ///
   /// Runs synchronously on a thread that allows blocking, outside async tasks.
   /// The supplied IO runtime must remain active to serve remote reads and cleanup.
@@ -164,12 +165,6 @@ impl Node {
   /// # Panics
   /// Fork startup panics if called inside an async task.
   fn start(io: Handle, config: NodeConfig) -> Result<Self, NodeStartError> {
-    config.validate()?;
-    if let MiningMode::Interval(period) = config.mining {
-      // Reject unusable timing before initialization. The scheduler computes a
-      // fresh deadline afterwards so startup time does not consume the interval.
-      mining::interval_deadline(period)?;
-    }
     let balance = config.accounts.balance;
     let signing_keys = config.accounts.source.build_signing_keys()?;
     let allocations = [Space::Native, Space::Ethereum]

@@ -17,12 +17,12 @@ use tokio::{
   task::{JoinError, JoinHandle},
 };
 
-use crate::config::NodeConfig;
+use crate::config::{MiningMode, NodeConfig};
 
 use super::{
   NodeError, NodeEvent, NodeStartError,
   lifecycle::{Lifecycle, NodeStatus},
-  mining::run_timer,
+  mining::{interval_deadline, run_timer},
   request::{BatchResult, Call, Cancellation, Message, MessageId, NodeTask, RequestError, Work},
   worker,
 };
@@ -52,6 +52,11 @@ impl NodeService {
     F: FnOnce(NodeHandle, NodeEvents) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
   {
+    config.validate()?;
+    if let MiningMode::Interval(period) = config.mining {
+      // Initialization must not consume the first scheduling interval.
+      interval_deadline(period)?;
+    }
     let lifecycle = Arc::new(Lifecycle::new());
     let (requests, receiver) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
     let (events, event_receiver) = mpsc::unbounded_channel();
