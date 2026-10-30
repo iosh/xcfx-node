@@ -7199,11 +7199,13 @@ dependencies = [
  "cfx-internal-common",
  "cfx-mpt",
  "cfx-parameters",
+ "cfx-parity-trace-types",
  "cfx-rpc-cfx-types",
  "cfx-rpc-eth-types",
  "cfx-statedb",
  "cfx-storage-types",
  "cfx-types",
+ "cfx-vm-interpreter",
  "cfx-vm-types",
  "cfxkey",
  "coins-bip32",
@@ -7224,6 +7226,7 @@ dependencies = [
  "solidity-abi",
  "thiserror 2.0.20",
  "tokio",
+ "typemap-ors",
 ]
 
 [[package]]

@@ -23,12 +23,14 @@ cfx-executor = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0"
 cfx-internal-common = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-mpt = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-parameters = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
+cfx-parity-trace-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-rpc-cfx-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-rpc-eth-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-statedb = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-storage-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-vm-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
+cfx-vm-interpreter = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 primitives = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 solidity-abi = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 diem-crypto = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
@@ -44,3 +46,4 @@ tokio = { version = "1.53.1", features = ["rt", "net", "sync", "time", "macros"]
 thiserror = "2"
 rlp = "0.6"
 keccak-hash = "0.12"
+typemap = { package = "typemap-ors", version = "1.0" }

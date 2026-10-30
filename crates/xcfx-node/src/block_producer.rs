@@ -57,31 +57,8 @@ enum BlockRepresentation {
 
 impl RuntimeBlock {
   /// Wraps a standard fork block and its Runtime transactions.
+  /// Internal callers derive the transactions from this block in body order.
   fn from_parts(block: Block, transactions: Vec<RuntimeTransaction>) -> Self {
-    assert_eq!(
-      block.transactions.len(),
-      transactions.len(),
-      "a Runtime block and its fork Block must contain the same number of transactions",
-    );
-
-    for (runtime_transaction, block_transaction) in transactions.iter().zip(&block.transactions) {
-      let runtime_fork_transaction = runtime_transaction.fork_transaction().unwrap_or_else(|| {
-        panic!("a standard Runtime block cannot contain an impersonated transaction")
-      });
-
-      assert_eq!(
-        runtime_transaction.hash(),
-        runtime_fork_transaction.hash(),
-        "a Runtime transaction must preserve its fork transaction hash",
-      );
-
-      assert_eq!(
-        runtime_transaction.hash(),
-        block_transaction.hash(),
-        "a Runtime block and its fork Block must preserve transaction order and hashes",
-      );
-    }
-
     let transaction_hashes = transactions
       .iter()
       .map(RuntimeTransaction::hash)

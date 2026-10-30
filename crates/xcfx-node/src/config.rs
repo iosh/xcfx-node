@@ -92,7 +92,6 @@ pub(crate) struct NodeConfig {
   /// Zero adds no finality delay; the baseline and monotonicity still apply.
   pub(crate) finalized_depth: u64,
   pub(crate) fork: Option<ForkOptions>,
-  pub(crate) max_call_gas: u64,
   pub(crate) max_transactions: usize,
   pub(crate) max_state_controls: usize,
   pub(crate) filter_idle_timeout: Duration,
@@ -111,7 +110,6 @@ impl Default for NodeConfig {
       confirmed_depth: 32,
       finalized_depth: 64,
       fork: None,
-      max_call_gas: 30_000_000,
       max_transactions: 4_096,
       max_state_controls: 4_096,
       filter_idle_timeout: Duration::from_secs(300),

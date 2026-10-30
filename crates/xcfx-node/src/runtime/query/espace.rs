@@ -165,13 +165,7 @@ impl NodeRuntime {
     &self,
     selector: EspaceStateSelector,
   ) -> Result<EspaceStateSource<'_>, EspaceStateQueryError> {
-    let epoch = match selector {
-      EspaceStateSelector::Epoch(epoch) => epoch,
-      EspaceStateSelector::Hash {
-        hash,
-        require_pivot,
-      } => EpochSelector::Number(self.espace_state_epoch_by_hash(hash, require_pivot)?),
-    };
+    let epoch = self.espace_epoch_selector(selector)?;
     let height = self.epoch_height(epoch);
     if let Some(client) = self.reset_state.initial_view.fork_client()
       && height < client.base().epoch_height
@@ -182,6 +176,28 @@ impl NodeRuntime {
       });
     }
     Ok(EspaceStateSource::Local(self.epoch_for_state(epoch)?))
+  }
+
+  fn espace_epoch_selector(
+    &self,
+    selector: EspaceStateSelector,
+  ) -> Result<EpochSelector, EspaceStateQueryError> {
+    Ok(match selector {
+      EspaceStateSelector::Epoch(epoch) => epoch,
+      EspaceStateSelector::Hash {
+        hash,
+        require_pivot,
+      } => EpochSelector::Number(self.espace_state_epoch_by_hash(hash, require_pivot)?),
+    })
+  }
+
+  /// Simulation requires an executable local version, including the funded Fork Base.
+  /// The earlier remote scalar-query prefix cannot supply this execution state.
+  pub(in crate::runtime) fn espace_epoch_for_simulation(
+    &self,
+    selector: EspaceStateSelector,
+  ) -> Result<&EpochView, EspaceStateQueryError> {
+    Ok(self.epoch_for_state(self.espace_epoch_selector(selector)?)?)
   }
 
   fn espace_state_epoch_by_hash(

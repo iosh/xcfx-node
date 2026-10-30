@@ -18,6 +18,7 @@ mod state;
 mod state_overlay;
 mod transaction_ingress;
 mod transaction_pool;
+mod transaction_request;
 mod transaction_selector;
 mod virtual_execution;
 

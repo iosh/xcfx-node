@@ -4,6 +4,7 @@ mod mining;
 mod pool;
 mod query;
 mod reorg;
+mod simulation;
 
 use crate::{
   block_producer::RuntimeBlock,
@@ -29,12 +30,8 @@ use crate::{
     AccountKey, TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
     TransactionPoolPolicy,
   },
-  virtual_execution::{
-    VirtualExecutionError, VirtualExecutionOverrides, VirtualExecutionRequest,
-    execute_virtual_transaction as execute_isolated_transaction,
-  },
 };
-use cfx_executor::{executive::ExecutionOutcome, state::State};
+use cfx_executor::state::State;
 use cfx_statedb::{Result as StateResult, global_params::TOTAL_GLOBAL_PARAMS};
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use cfxkey::KeyPair;
@@ -49,6 +46,7 @@ pub(crate) use query::{
 };
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason};
+pub(crate) use simulation::RuntimeSimulationError;
 use std::{
   collections::BTreeMap,
   sync::{
@@ -346,12 +344,7 @@ impl NodeRuntime {
     };
     let checkpoint = Checkpoint::capture(&self.runtime_state);
 
-    assert!(
-      !self.checkpoints.contains_key(&checkpoint_id.sequence),
-      "a checkpoint sequence must never be reused",
-    );
-
-    let _previous = self.checkpoints.insert(checkpoint_id.sequence, checkpoint);
+    let _ = self.checkpoints.insert(checkpoint_id.sequence, checkpoint);
 
     self.next_checkpoint_sequence = next_checkpoint_sequence;
 
@@ -449,26 +442,6 @@ impl NodeRuntime {
       .apply_reconciliation(reconciliation);
 
     Ok(())
-  }
-
-  /// Executes one fully resolved transaction against the current effective
-  /// state without publishing any state transition.
-  pub(crate) fn execute_virtual_transaction(
-    &self,
-    request: VirtualExecutionRequest,
-    overrides: VirtualExecutionOverrides,
-  ) -> Result<ExecutionOutcome, VirtualExecutionError> {
-    let parent = self.runtime_state.history.optimistic_head();
-
-    execute_isolated_transaction(
-      self.chain_spec.machine().as_ref(),
-      &parent.execution_parent(),
-      parent.pos_context(),
-      self.runtime_state.effective_state.state(),
-      parent.next_epoch_start_block_number(),
-      request,
-      overrides,
-    )
   }
 
   fn read_nonces_for_pool_reconciliation(
