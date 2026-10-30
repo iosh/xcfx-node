@@ -6,9 +6,16 @@ use std::{
   time::Duration,
 };
 
+use alloy_dyn_abi::TypedData;
+use cfx_addr::Network;
+use cfx_rpc_cfx_types::{
+  RpcAddress,
+  address::{UnexpectedRpcAddressNetwork, check_rpc_address_network},
+};
 use cfx_rpc_eth_types::{Receipt as EthereumReceipt, Transaction as EthereumTransaction};
-use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256};
 use primitives::BlockNumber;
+use thiserror::Error;
 use tokio::{
   runtime::Handle,
   sync::{mpsc, oneshot, watch},
@@ -23,10 +30,14 @@ use crate::{
   runtime::{
     AccountPoolTransactions, EpochSelector, EspaceBlockSelector, EspaceBlockSource,
     EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,
-    LocalEspaceTransactionSource, RuntimeCommitOutcome, RuntimeTransactionError, StateQueryError,
+    LocalEspaceTransactionSource, RuntimeCommitOutcome, RuntimeSimulationError,
+    RuntimeTransactionError, StateQueryError,
   },
   runtime_transaction::RuntimeTransaction,
+  signing::MessageSigningError,
   state_overlay::{StateControlBatch, StateControlPreparationError},
+  transaction_request::TransactionRequest,
+  virtual_execution::{AccessListResult, TransactionEstimate, VirtualExecutionOverrides},
 };
 
 use super::{
@@ -416,6 +427,14 @@ fn capture_espace_transaction(
   }
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum NativeNonceError {
+  #[error("{0}")]
+  Network(UnexpectedRpcAddressNetwork),
+  #[error(transparent)]
+  State(#[from] cfx_statedb::Error),
+}
+
 /// Access to one operation after its cancellation and health checks have passed.
 /// Methods consume this capability so a task cannot start another operation
 /// without going through the worker's boundaries again. No Runtime borrow escapes.
@@ -428,6 +447,25 @@ pub(crate) struct NodeCall<'call, 'worker> {
 }
 
 impl NodeCall<'_, '_> {
+  pub(crate) fn signing_accounts(self, space: Space) -> Vec<Address> {
+    self.worker.node.runtime().signing_accounts(space)
+  }
+
+  pub(crate) fn sign_message(
+    self,
+    address: AddressWithSpace,
+    message: &[u8],
+  ) -> Result<cfxkey::Signature, MessageSigningError> {
+    self.worker.node.runtime().sign_message(address, message)
+  }
+
+  pub(crate) fn sign_typed_data(
+    self,
+    address: Address,
+    data: &TypedData,
+  ) -> Result<cfxkey::Signature, MessageSigningError> {
+    self.worker.node.runtime().sign_typed_data(address, data)
+  }
   /// Orders one connection observation change against this thread's facts.
   /// The IO consumer applies it before processing any subsequent fact.
   pub(crate) fn observation_boundary(self) {
@@ -624,10 +662,89 @@ impl NodeCall<'_, '_> {
     }
   }
 
-  pub(crate) fn submit_raw_transaction(self, raw: &[u8]) -> Result<H256, RuntimeTransactionError> {
-    let hash = self.worker.node.runtime_mut().submit_raw_transaction(raw)?;
+  pub(crate) fn submit_raw_transaction(
+    self,
+    raw: &[u8],
+    space: Space,
+  ) -> Result<H256, RuntimeTransactionError> {
+    let hash = self
+      .worker
+      .node
+      .runtime_mut()
+      .submit_raw_transaction(raw, space)?;
     *self.auto_mine = true;
     Ok(hash)
+  }
+
+  pub(crate) fn submit_transaction_request(
+    self,
+    request: TransactionRequest,
+  ) -> Result<H256, RuntimeTransactionError> {
+    let hash = self
+      .worker
+      .node
+      .runtime_mut()
+      .submit_transaction_request(request)?;
+    *self.auto_mine = true;
+    Ok(hash)
+  }
+
+  pub(crate) fn sign_transaction_request(
+    self,
+    request: TransactionRequest,
+  ) -> Result<Vec<u8>, RuntimeTransactionError> {
+    self.worker.node.runtime().sign_transaction_request(request)
+  }
+
+  pub(crate) fn native_pending_nonce(self, address: RpcAddress) -> Result<U256, NativeNonceError> {
+    let runtime = self.worker.node.runtime();
+    let network = match runtime.network_id() {
+      1 => Network::Test,
+      1029 => Network::Main,
+      id => Network::Id(id),
+    };
+    check_rpc_address_network(Some(address.network), &network)
+      .map_err(NativeNonceError::Network)?;
+    Ok(runtime.pending_nonce(address.hex_address.with_native_space())?)
+  }
+
+  pub(crate) fn espace_call(
+    self,
+    request: TransactionRequest,
+    selector: EspaceStateSelector,
+    overrides: VirtualExecutionOverrides,
+  ) -> Result<Vec<u8>, RuntimeSimulationError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_call(request, selector, overrides)
+  }
+
+  pub(crate) fn espace_estimate_gas(
+    self,
+    request: TransactionRequest,
+    selector: EspaceStateSelector,
+    overrides: VirtualExecutionOverrides,
+  ) -> Result<TransactionEstimate, RuntimeSimulationError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_estimate_gas(request, selector, overrides)
+  }
+
+  pub(crate) fn espace_create_access_list(
+    self,
+    request: TransactionRequest,
+    selector: EspaceStateSelector,
+    overrides: VirtualExecutionOverrides,
+  ) -> Result<AccessListResult, RuntimeSimulationError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_create_access_list(request, selector, overrides)
   }
 
   pub(crate) fn apply_state_controls(

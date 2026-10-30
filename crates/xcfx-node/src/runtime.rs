@@ -4,7 +4,9 @@ mod mining;
 mod pool;
 mod query;
 mod reorg;
+mod signing;
 mod simulation;
+mod transactions;
 
 use crate::{
   block_producer::RuntimeBlock,
@@ -25,15 +27,13 @@ use crate::{
     state_version::{CommittedStateVersion, StateVersion},
   },
   state_overlay::{StateControlBatch, StateControlPreparationError, StateOverlay},
-  transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_pool::{
-    AccountKey, TransactionPool, TransactionPoolCheckpoint, TransactionPoolInsertOutcome,
-    TransactionPoolPolicy,
+    AccountKey, TransactionPool, TransactionPoolCheckpoint, TransactionPoolPolicy,
   },
 };
 use cfx_executor::state::State;
 use cfx_statedb::{Result as StateResult, global_params::TOTAL_GLOBAL_PARAMS};
-use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
+use cfx_types::{Address, AddressWithSpace, H256, U256};
 use cfxkey::KeyPair;
 use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
@@ -55,8 +55,9 @@ use std::{
   },
 };
 use thiserror::Error;
+pub(crate) use transactions::RuntimeTransactionError;
 
-use primitives::{Account, Transaction, transaction::TransactionError};
+use primitives::Account;
 
 static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -76,23 +77,6 @@ fn allocate_runtime_instance_id() -> RuntimeInstanceId {
 pub(crate) struct CheckpointId {
   runtime_instance_id: RuntimeInstanceId,
   sequence: u64,
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum RuntimeTransactionError {
-  #[error(transparent)]
-  Transaction(#[from] TransactionError),
-  #[error(transparent)]
-  State(#[from] cfx_statedb::Error),
-  #[error("no signing key is configured for address {address:?}")]
-  SigningKeyNotFound { address: AddressWithSpace },
-  #[error("impersonation is not authorized for {address:?}")]
-  ImpersonationNotAuthorized { address: AddressWithSpace },
-  #[error("the transaction uses {transaction_space:?}, but the sender uses {sender:?}")]
-  SenderSpaceMismatch {
-    sender: AddressWithSpace,
-    transaction_space: Space,
-  },
 }
 
 pub(crate) struct TransactionPoolUpdates {
@@ -526,10 +510,6 @@ impl NodeRuntime {
     self.signing_keys.add(key_pair)
   }
 
-  pub(crate) fn can_sign_for(&self, address: AddressWithSpace) -> bool {
-    self.signing_keys.can_sign_for(address)
-  }
-
   pub(crate) fn impersonate_account(&mut self, address: AddressWithSpace) -> bool {
     self.impersonation.authorize(address)
   }
@@ -540,153 +520,6 @@ impl NodeRuntime {
 
   pub(crate) fn is_impersonated(&self, address: AddressWithSpace) -> bool {
     self.impersonation.is_authorized(address)
-  }
-
-  fn with_current_transaction_validation<T>(
-    &self,
-    callback: impl FnOnce(&TransactionValidationContext<'_>) -> T,
-  ) -> T {
-    let optimistic_head = self.runtime_state.history.optimistic_head();
-    let epoch_height = self.runtime_state.history.optimistic_height();
-    let block_number = optimistic_head.pivot_block_number();
-    let params = self.chain_spec.machine().params();
-    let spec = self.chain_spec.machine().spec(block_number, epoch_height);
-    let validation = TransactionValidationContext::new(params, &spec, epoch_height);
-
-    callback(&validation)
-  }
-
-  fn validate_runtime_transaction_for_pool(
-    &self,
-    transaction: &RuntimeTransaction,
-  ) -> Result<(), TransactionError> {
-    self.with_current_transaction_validation(|validation| {
-      validation.validate_runtime_for_pool_admission(transaction)
-    })
-  }
-
-  fn validate_sender_space(
-    sender: AddressWithSpace,
-    transaction: &Transaction,
-  ) -> Result<(), RuntimeTransactionError> {
-    if transaction.space() != sender.space {
-      return Err(RuntimeTransactionError::SenderSpaceMismatch {
-        sender,
-        transaction_space: transaction.space(),
-      });
-    }
-
-    Ok(())
-  }
-
-  /// Signs a payload with an instance-owned key and returns a Runtime
-  /// transaction backed by that signature. This method does not insert into
-  /// the pool.
-  pub(crate) fn sign_transaction(
-    &self,
-    sender: AddressWithSpace,
-    transaction: Transaction,
-  ) -> Result<RuntimeTransaction, RuntimeTransactionError> {
-    Self::validate_sender_space(sender, &transaction)?;
-    let transaction = self
-      .signing_keys
-      .sign(sender.address, transaction)
-      .ok_or(RuntimeTransactionError::SigningKeyNotFound { address: sender })?;
-
-    Ok(RuntimeTransaction::from_recovered_signature(transaction))
-  }
-
-  /// Signs, validates, and admits a transaction using an instance-owned key.
-  pub(crate) fn submit_node_transaction(
-    &mut self,
-    sender: AddressWithSpace,
-    transaction: Transaction,
-  ) -> Result<H256, RuntimeTransactionError> {
-    let transaction = self.sign_transaction(sender, transaction)?;
-    self.validate_runtime_transaction_for_pool(&transaction)?;
-    let transaction_hash = transaction.hash();
-    self.insert_admitted_transaction(transaction)?;
-    Ok(transaction_hash)
-  }
-
-  /// Builds an impersonated transaction only when the sender is currently
-  /// authorized. The returned value belongs to this Runtime instance.
-  pub(crate) fn build_impersonated_transaction(
-    &self,
-    sender: AddressWithSpace,
-    transaction: Transaction,
-  ) -> Result<RuntimeTransaction, RuntimeTransactionError> {
-    Self::validate_sender_space(sender, &transaction)?;
-    if !self.impersonation.is_authorized(sender) {
-      return Err(RuntimeTransactionError::ImpersonationNotAuthorized { address: sender });
-    }
-
-    Ok(RuntimeTransaction::from_impersonated(
-      transaction,
-      sender.address,
-    ))
-  }
-
-  /// Checks authorization, validates, and admits an impersonated transaction.
-  pub(crate) fn submit_impersonated_transaction(
-    &mut self,
-    sender: AddressWithSpace,
-    transaction: Transaction,
-  ) -> Result<H256, RuntimeTransactionError> {
-    let transaction = self.build_impersonated_transaction(sender, transaction)?;
-    self.validate_runtime_transaction_for_pool(&transaction)?;
-    let transaction_hash = transaction.hash();
-    self.insert_admitted_transaction(transaction)?;
-    Ok(transaction_hash)
-  }
-
-  /// Validates raw transaction bytes against the current optimistic view and
-  /// the sender's effective nonce before inserting into this Runtime's pool.
-  pub(crate) fn submit_raw_transaction(
-    &mut self,
-    raw: &[u8],
-  ) -> Result<H256, RuntimeTransactionError> {
-    let transaction = {
-      let optimistic_head = self.runtime_state.history.optimistic_head();
-      let epoch_height = self.runtime_state.history.optimistic_height();
-      let block_number = optimistic_head.pivot_block_number();
-      let params = self.chain_spec.machine().params();
-      let spec = self.chain_spec.machine().spec(block_number, epoch_height);
-      let validation = TransactionValidationContext::new(params, &spec, epoch_height);
-
-      decode_and_validate_raw_transaction(raw, &validation)?
-    };
-
-    let transaction_hash = transaction.hash();
-    self.insert_admitted_transaction(transaction)?;
-
-    Ok(transaction_hash)
-  }
-
-  /// Checks the effective nonce before insertion. Callers have already validated
-  /// transaction identity and protocol rules; all checks precede pool mutation.
-  fn insert_admitted_transaction(
-    &mut self,
-    transaction: RuntimeTransaction,
-  ) -> Result<TransactionPoolInsertOutcome, RuntimeTransactionError> {
-    let transaction_hash = transaction.hash();
-
-    if self
-      .runtime_state
-      .history
-      .contains_mined_transaction(&transaction_hash)
-    {
-      return Err(TransactionError::AlreadyImported.into());
-    }
-
-    let state_nonce = self
-      .open_effective_state_for_reading()?
-      .nonce(&transaction.sender_with_space())?;
-    if *transaction.nonce() < state_nonce {
-      return Err(TransactionError::Stale.into());
-    }
-
-    Ok(self.runtime_state.transaction_pool.insert(transaction)?)
   }
 
   /// Opens the current effective version through Conflux's `State` interface

@@ -1,4 +1,7 @@
 mod accounts;
+mod message;
+
+pub(crate) use message::MessageSigningError;
 
 pub(crate) use accounts::{
   AccountConfigError, AccountSource, DerivationPathPrefix, MnemonicAccountConfig, MnemonicPhrase,
@@ -61,33 +64,47 @@ impl SigningKeys {
     Ok(())
   }
 
-  pub(crate) fn can_sign_for(&self, address: AddressWithSpace) -> bool {
-    self.by_address.contains_key(&address)
-  }
-
   /// Returns addresses in the order their keys were first registered.
-  pub(crate) fn addresses(&self, space: Space) -> Vec<Address> {
-    self
-      .keys
-      .iter()
-      .map(|key| match space {
-        Space::Native => key.address(),
-        Space::Ethereum => key.evm_address(),
-      })
-      .collect()
+  pub(crate) fn addresses(&self, space: Space) -> impl Iterator<Item = Address> + '_ {
+    self.keys.iter().map(move |key| match space {
+      Space::Native => key.address(),
+      Space::Ethereum => key.evm_address(),
+    })
   }
 
-  pub(crate) fn sign(
-    &self,
-    sender: Address,
-    transaction: Transaction,
-  ) -> Option<SignedTransaction> {
-    let sender = sender.with_space(transaction.space());
-
+  fn key_pair(&self, address: AddressWithSpace) -> Option<&KeyPair> {
     self
       .by_address
-      .get(&sender)
-      .map(|index| transaction.sign(self.keys[*index].secret()))
+      .get(&address)
+      .map(|index| &self.keys[*index])
+  }
+
+  /// Borrows a registered key without exposing its secret material.
+  pub(crate) fn transaction_signer(
+    &self,
+    address: AddressWithSpace,
+  ) -> Option<TransactionSigner<'_>> {
+    self.key_pair(address).map(|key| TransactionSigner {
+      key,
+      space: address.space,
+    })
+  }
+}
+
+/// An instance-owned key borrowed for a transaction in one Space.
+pub(crate) struct TransactionSigner<'a> {
+  key: &'a KeyPair,
+  space: Space,
+}
+
+impl TransactionSigner<'_> {
+  pub(crate) fn sign(self, transaction: Transaction) -> SignedTransaction {
+    assert_eq!(
+      transaction.space(),
+      self.space,
+      "transaction preparation preserves the signer's Space"
+    );
+    transaction.sign(self.key.secret())
   }
 }
 

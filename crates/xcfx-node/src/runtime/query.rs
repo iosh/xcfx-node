@@ -10,6 +10,7 @@ pub(crate) use espace::{
 use std::sync::Arc;
 
 use cfx_executor::state::State;
+use cfx_parameters::rpc::GAS_PRICE_DEFAULT_VALUE;
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::{BlockNumber, block::BlockHeight};
 use thiserror::Error;
@@ -59,6 +60,26 @@ pub(crate) enum EspaceReceiptSource<'a> {
 }
 
 impl NodeRuntime {
+  /// The eSpace header price is also used when preparing node transactions.
+  /// Native preparation retains its default floor until its fee oracle is available.
+  pub(crate) fn suggested_gas_price(&self, space: Space) -> U256 {
+    let prices = self
+      .runtime_state
+      .history
+      .optimistic_head()
+      .execution_parent()
+      .base_price;
+    let default = U256::from(GAS_PRICE_DEFAULT_VALUE);
+    match (space, prices) {
+      (Space::Ethereum, Some(prices)) => prices[Space::Ethereum],
+      (_, prices) => prices.map_or(default, |prices| prices[space].max(default)),
+    }
+  }
+
+  pub(crate) fn network_id(&self) -> u64 {
+    self.chain_spec.machine().params().network_id
+  }
+
   pub(crate) fn espace_chain_id(&self) -> u32 {
     self
       .chain_spec
@@ -188,7 +209,7 @@ impl NodeRuntime {
 
   /// Lists key-backed accounts; impersonation does not add entries.
   pub(crate) fn signing_accounts(&self, space: Space) -> Vec<Address> {
-    self.signing_keys.addresses(space)
+    self.signing_keys.addresses(space).collect()
   }
 
   /// Resolves a position without checking whether its history or state is available.

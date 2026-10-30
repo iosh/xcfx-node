@@ -11,6 +11,7 @@ repository = "https://github.com/iosh/xcfx-node"
 
 
 [workspace.dependencies]
+alloy-dyn-abi = { version = "1.6.0", default-features = false, features = ["std", "eip712"] }
 alloy-provider = { version = "2.4.1", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-rpc-client = { version = "2.4.1", default-features = false, features = ["reqwest"] }
 alloy-rpc-types-eth = { version = "2.4.1", default-features = false }

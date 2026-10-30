@@ -2,9 +2,13 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use primitives::transaction::TransactionError;
+
 use super::*;
 use crate::chain::{GraphError, OrderedEpoch};
 use crate::production_environment::ProductionTimeError;
+use crate::transaction_ingress::TransactionValidationContext;
+use crate::transaction_pool::TransactionPoolInsertOutcome;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChainChangeReason {

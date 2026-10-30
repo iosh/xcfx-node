@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+alloy-dyn-abi.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
 alloy-rpc-types-eth.workspace = true
