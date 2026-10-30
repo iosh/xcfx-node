@@ -5,7 +5,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::node::{NodeCall, NodeHandle, NodeTask};
 
-use super::{connection::ConnectionCall, response::RpcError};
+use super::{connection::ConnectionCall, protocol::RpcError};
 
 pub(super) type RpcResult = Result<Value, RpcError>;
 

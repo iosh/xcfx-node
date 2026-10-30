@@ -1,4 +1,4 @@
-//! Converts captured eSpace query results without consulting the current Runtime.
+//! Converts captured eSpace results without consulting the current Runtime.
 
 use cfx_rpc_eth_types::{Bytes, Header, Log, LogData, Receipt, Transaction as RpcTransaction};
 use cfx_types::{
@@ -17,14 +17,54 @@ use crate::{
   chain::{EspaceBlockView, EspaceTransactionRef, EspaceTransactionView},
   fork::ForkReadError,
   node::{EspaceBlock, EspaceBlockReceipts, EspaceReceipt, EspaceTransaction},
-  rpc::{operation::RpcResult, response::RpcError},
+  rpc::{operation::RpcResult, protocol::RpcError},
   rpc_client::EthereumBlock,
-  runtime::EspaceStateQueryError,
+  runtime::{EspaceStateQueryError, RuntimeSimulationError, RuntimeTransactionError},
   runtime_transaction::RuntimeTransaction,
+  signing::MessageSigningError,
+  virtual_execution::{AccessListResult, TransactionEstimate},
 };
 
+use super::error::{execution_error, fork_error, simulation_error, state_error, transaction_error};
+
 fn value<T: Serialize>(value: T) -> RpcResult {
-  serde_json::to_value(value).map_err(|_| RpcError::internal())
+  Ok(serde_json::to_value(value).expect("typed RPC results have a JSON wire representation"))
+}
+
+pub(super) fn message_signature(
+  result: Result<cfxkey::Signature, MessageSigningError>,
+) -> RpcResult {
+  let signature = result.map_err(|error| RpcError {
+    code: -32602,
+    message: error.to_string(),
+    data: None,
+  })?;
+  value(Bytes::new(signature.into_electrum().to_vec()))
+}
+
+pub(super) fn transaction_hash(result: Result<H256, RuntimeTransactionError>) -> RpcResult {
+  value(result.map_err(transaction_error)?)
+}
+
+pub(super) fn signed_transaction(result: Result<Vec<u8>, RuntimeTransactionError>) -> RpcResult {
+  value(Bytes::new(result.map_err(transaction_error)?))
+}
+
+pub(super) fn call(result: Result<Vec<u8>, RuntimeSimulationError>) -> RpcResult {
+  value(Bytes::new(result.map_err(simulation_error)?))
+}
+
+pub(super) fn estimate(result: Result<TransactionEstimate, RuntimeSimulationError>) -> RpcResult {
+  value(result.map_err(simulation_error)?.gas_limit)
+}
+
+pub(super) fn access_list(result: Result<AccessListResult, RuntimeSimulationError>) -> RpcResult {
+  let result = result.map_err(simulation_error)?;
+  value(cfx_rpc_eth_types::AccessListResult {
+    access_list: result.access_list,
+    gas_used: result.gas_used,
+    error: result.error.map(|error| execution_error(error).message),
+  })
 }
 
 pub(super) fn state<T: Serialize>(result: Result<T, EspaceStateQueryError>) -> RpcResult {
@@ -357,36 +397,5 @@ fn local_receipt(view: &EspaceTransactionView) -> Receipt {
     effective_gas_price,
     tx_exec_error_msg: receipt.execution_error_message().map(str::to_owned),
     burnt_gas_fee: receipt.burnt_gas_fee(),
-  }
-}
-
-fn state_error(error: EspaceStateQueryError) -> RpcError {
-  match error {
-    EspaceStateQueryError::Unavailable(_) | EspaceStateQueryError::UnknownBlock(_) => {
-      RpcError::invalid_params()
-    }
-    EspaceStateQueryError::Fork(error) => fork_error(error),
-    EspaceStateQueryError::State(_) => processing_error("State query failed"),
-  }
-}
-
-fn fork_error(error: ForkReadError) -> RpcError {
-  match error {
-    ForkReadError::Closed => RpcError {
-      code: -32000,
-      message: "Node is closed".into(),
-      data: None,
-    },
-    ForkReadError::ServiceStopped => RpcError::internal(),
-    _ => processing_error("Remote query failed"),
-  }
-}
-
-fn processing_error(message: &str) -> RpcError {
-  // Conflux maps state/storage processing failures to EXCEPTION_ERROR.
-  RpcError {
-    code: -32016,
-    message: message.into(),
-    data: None,
   }
 }

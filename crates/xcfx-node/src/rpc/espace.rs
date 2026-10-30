@@ -1,17 +1,65 @@
 mod convert;
+mod error;
+mod params;
 
+use alloy_dyn_abi::TypedData;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use cfx_rpc_eth_types::{BlockId, Bytes, Index};
-use cfx_types::{Address, BigEndianHash, H64, H256, U256};
+use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H64, H256, Space, U256};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector};
+use crate::{
+  runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector},
+  virtual_execution::VirtualExecutionOverrides,
+};
 
-use super::{operation::Operation, serde_helpers};
+use super::{operation::Operation, protocol};
+use params::{BlockOverrides, EspaceTransactionRequest, StateOverrides};
 
 #[derive(Deserialize)]
 pub(super) enum EspaceRequest {
+  #[serde(rename = "eth_accounts")]
+  Accounts,
+  #[serde(rename = "personal_sign")]
+  PersonalSign(Bytes, Address),
+  #[serde(rename = "eth_signTypedData_v4")]
+  SignTypedData(Address, TypedData),
+  #[serde(
+    rename = "eth_sendRawTransaction",
+    alias = "eth_submitTransaction",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  SendRawTransaction(Bytes),
+  #[serde(
+    rename = "eth_sendTransaction",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  SendTransaction(EspaceTransactionRequest),
+  #[serde(
+    rename = "eth_signTransaction",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  SignTransaction(EspaceTransactionRequest),
+  #[serde(rename = "eth_call")]
+  Call(
+    EspaceTransactionRequest,
+    #[serde(default)] Option<BlockId>,
+    #[serde(default)] Option<StateOverrides>,
+    #[serde(default)] Option<BlockOverrides>,
+  ),
+  #[serde(rename = "eth_estimateGas")]
+  EstimateGas(
+    EspaceTransactionRequest,
+    #[serde(default)] Option<BlockId>,
+    #[serde(default)] Option<StateOverrides>,
+  ),
+  #[serde(rename = "eth_createAccessList")]
+  CreateAccessList(
+    EspaceTransactionRequest,
+    #[serde(default)] Option<BlockId>,
+    #[serde(default)] Option<StateOverrides>,
+  ),
   #[serde(rename = "eth_getBalance")]
   Balance(Address, #[serde(default)] Option<BlockId>),
   #[serde(rename = "eth_getCode")]
@@ -26,17 +74,17 @@ pub(super) enum EspaceRequest {
   BlockByNumber(BlockNumberOrTag, bool),
   #[serde(
     rename = "eth_getBlockTransactionCountByHash",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   BlockTransactionCountByHash(H256),
   #[serde(
     rename = "eth_getBlockTransactionCountByNumber",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   BlockTransactionCountByNumber(BlockNumberOrTag),
   #[serde(
     rename = "eth_getTransactionByHash",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   TransactionByHash(H256),
   #[serde(rename = "eth_getTransactionByBlockHashAndIndex")]
@@ -45,18 +93,18 @@ pub(super) enum EspaceRequest {
   TransactionByBlockNumberAndIndex(BlockNumberOrTag, Index),
   #[serde(
     rename = "eth_getTransactionReceipt",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   TransactionReceipt(H256),
   #[serde(
     rename = "eth_getBlockReceipts",
     alias = "parity_getBlockReceipts",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   BlockReceipts(BlockId),
   #[serde(
     rename = "eth_getRawTransactionByHash",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   RawTransactionByHash(H256),
   #[serde(rename = "eth_getRawTransactionByBlockHashAndIndex")]
@@ -93,12 +141,12 @@ pub(super) enum EspaceRequest {
   SubmitHashrate(U256, H256),
   #[serde(
     rename = "eth_getUncleCountByBlockHash",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   UncleCountByHash(H256),
   #[serde(
     rename = "eth_getUncleCountByBlockNumber",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   UncleCountByNumber(BlockNumberOrTag),
   #[serde(rename = "eth_getUncleByBlockHashAndIndex")]
@@ -107,7 +155,7 @@ pub(super) enum EspaceRequest {
   UncleByNumber(BlockNumberOrTag, Index),
   #[serde(
     rename = "web3_sha3",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   Sha3(Bytes),
   #[serde(rename = "rpc_modules")]
@@ -117,6 +165,80 @@ pub(super) enum EspaceRequest {
 impl EspaceRequest {
   pub(super) fn into_operation(self) -> Operation {
     let value = match self {
+      Self::Accounts => {
+        return Operation::on_node(
+          |node| node.signing_accounts(Space::Ethereum),
+          |accounts| Ok(json!(accounts)),
+        );
+      }
+      Self::PersonalSign(message, address) => {
+        return Operation::on_node(
+          move |node| node.sign_message(address.with_evm_space(), &message.0),
+          convert::message_signature,
+        );
+      }
+      Self::SignTypedData(address, data) => {
+        return Operation::on_node(
+          move |node| node.sign_typed_data(address, &data),
+          convert::message_signature,
+        );
+      }
+      Self::SendRawTransaction(raw) => {
+        return Operation::on_node(
+          move |node| node.submit_raw_transaction(&raw.0, Space::Ethereum),
+          convert::transaction_hash,
+        );
+      }
+      Self::SendTransaction(request) => {
+        let request = request.into();
+        return Operation::on_node(
+          move |node| node.submit_transaction_request(request),
+          convert::transaction_hash,
+        );
+      }
+      Self::SignTransaction(request) => {
+        let request = request.into();
+        return Operation::on_node(
+          move |node| node.sign_transaction_request(request),
+          convert::signed_transaction,
+        );
+      }
+      Self::Call(request, block, state, environment) => {
+        let request = request.into();
+        let selector = state_selector(block.unwrap_or_default(), true);
+        let overrides = VirtualExecutionOverrides {
+          state: state.unwrap_or_default().into(),
+          environment: environment.unwrap_or_default().into(),
+        };
+        return Operation::on_node(
+          move |node| node.espace_call(request, selector, overrides),
+          convert::call,
+        );
+      }
+      Self::EstimateGas(request, block, state) => {
+        let request = request.into();
+        let selector = state_selector(block.unwrap_or_default(), true);
+        let overrides = VirtualExecutionOverrides {
+          state: state.unwrap_or_default().into(),
+          ..Default::default()
+        };
+        return Operation::on_node(
+          move |node| node.espace_estimate_gas(request, selector, overrides),
+          convert::estimate,
+        );
+      }
+      Self::CreateAccessList(request, block, state) => {
+        let request = request.into();
+        let selector = state_selector(block.unwrap_or_default(), true);
+        let overrides = VirtualExecutionOverrides {
+          state: state.unwrap_or_default().into(),
+          ..Default::default()
+        };
+        return Operation::on_node(
+          move |node| node.espace_create_access_list(request, selector, overrides),
+          convert::access_list,
+        );
+      }
       Self::Balance(address, block) => {
         let selector = state_selector(block.unwrap_or_default(), true);
         return Operation::on_node(

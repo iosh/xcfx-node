@@ -19,7 +19,7 @@ use super::response::RpcError;
 /// An unknown method returns None without inspecting its parameters.
 /// Unit and tuple variants describe positional signatures; newtype variants use
 /// deserialize_single or deserialize_optional to handle the outer parameter array.
-pub(super) fn deserialize_request<T: DeserializeOwned>(
+pub(in crate::rpc) fn deserialize_request<T: DeserializeOwned>(
   method: &str,
   params: Option<&RawValue>,
 ) -> Result<Option<T>, RpcError> {
@@ -35,7 +35,7 @@ pub(super) fn deserialize_request<T: DeserializeOwned>(
 }
 
 /// Decodes a single positional argument for a Serde newtype variant.
-pub(super) fn deserialize_single<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub(in crate::rpc) fn deserialize_single<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
   D: Deserializer<'de>,
   T: Deserialize<'de>,
@@ -45,7 +45,9 @@ where
 }
 
 /// Accepts an empty array or one parameter; an explicit null element means None.
-pub(super) fn deserialize_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(in crate::rpc) fn deserialize_optional<'de, D, T>(
+  deserializer: D,
+) -> Result<Option<T>, D::Error>
 where
   D: Deserializer<'de>,
   T: Deserialize<'de>,

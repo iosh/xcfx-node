@@ -1,14 +1,14 @@
+//! JSON-RPC response shapes and standard protocol errors.
+
 use serde::Serialize;
 use serde_json::Value;
-
-use crate::node::{NodeError, RequestError};
 
 use super::request::Id;
 
 /// Serialize directly to JSON bytes or text to preserve raw numeric IDs.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(super) enum Response {
+pub(in crate::rpc) enum Response {
   Single(RpcResponse),
   Batch(Vec<RpcResponse>),
 }
@@ -16,7 +16,7 @@ pub(super) enum Response {
 /// A response to one call. Notifications do not produce this value.
 /// Serialize directly to JSON bytes or text to preserve raw numeric IDs.
 #[derive(Serialize)]
-pub(super) struct RpcResponse {
+pub(in crate::rpc) struct RpcResponse {
   jsonrpc: &'static str,
   id: Id,
   #[serde(flatten)]
@@ -32,15 +32,15 @@ enum ResponseResult {
 }
 
 #[derive(Serialize)]
-pub(super) struct RpcError {
-  pub(super) code: i32,
-  pub(super) message: String,
+pub(in crate::rpc) struct RpcError {
+  pub(in crate::rpc) code: i32,
+  pub(in crate::rpc) message: String,
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub(super) data: Option<Value>,
+  pub(in crate::rpc) data: Option<Value>,
 }
 
 impl RpcResponse {
-  pub(super) fn new(id: Id, result: Result<Value, RpcError>) -> Self {
+  pub(in crate::rpc) fn new(id: Id, result: Result<Value, RpcError>) -> Self {
     Self {
       jsonrpc: "2.0",
       id,
@@ -53,7 +53,7 @@ impl RpcResponse {
 }
 
 impl RpcError {
-  pub(super) fn invalid_params() -> Self {
+  pub(in crate::rpc) fn invalid_params() -> Self {
     Self {
       code: -32602,
       message: "Invalid params".into(),
@@ -61,7 +61,7 @@ impl RpcError {
     }
   }
 
-  pub(super) fn method_not_found() -> Self {
+  pub(in crate::rpc) fn method_not_found() -> Self {
     Self {
       code: -32601,
       message: "Method not found".into(),
@@ -69,7 +69,7 @@ impl RpcError {
     }
   }
 
-  pub(super) fn internal() -> Self {
+  pub(in crate::rpc) fn internal() -> Self {
     Self {
       code: -32603,
       message: "Internal error".into(),
@@ -77,7 +77,7 @@ impl RpcError {
     }
   }
 
-  pub(super) fn parse_error() -> Self {
+  pub(in crate::rpc) fn parse_error() -> Self {
     Self {
       code: -32700,
       message: "Parse error".into(),
@@ -85,29 +85,11 @@ impl RpcError {
     }
   }
 
-  pub(super) fn invalid_request() -> Self {
+  pub(in crate::rpc) fn invalid_request() -> Self {
     Self {
       code: -32600,
       message: "Invalid Request".into(),
       data: None,
-    }
-  }
-}
-
-impl From<&RequestError> for RpcError {
-  fn from(error: &RequestError) -> Self {
-    match error {
-      RequestError::Cancelled => Self {
-        code: -32000,
-        message: "Request cancelled; completed changes are not rolled back".into(),
-        data: None,
-      },
-      RequestError::Node(NodeError::Closed) => Self {
-        code: -32000,
-        message: "Node is closed".into(),
-        data: None,
-      },
-      RequestError::Node(_) => Self::internal(),
     }
   }
 }

@@ -11,14 +11,13 @@ use crate::node::{NodeTask, RequestError};
 
 use super::{
   connection::ConnectionCall,
+  core::CoreRequest,
   dev::DevRequest,
   espace::EspaceRequest,
   operation::{
     ConnectionTask, Operation, PendingResponse, ResponseCompletion, ResponseConversion, RpcResult,
   },
-  request::{Call, Id, Request},
-  response::{Response, RpcError, RpcResponse},
-  serde_helpers::deserialize_request,
+  protocol::{Call, Id, Request, Response, RpcError, RpcResponse, deserialize_request},
 };
 
 // Every input position has a slot, including notifications. Identity stays
@@ -248,7 +247,11 @@ fn prepare_method(space: Space, name: &str, raw: Option<&RawValue>) -> Result<Op
     return Ok(request.into_operation());
   }
   match space {
-    Space::Native => Err(RpcError::method_not_found()),
+    Space::Native => {
+      let request =
+        deserialize_request::<CoreRequest>(name, raw)?.ok_or_else(RpcError::method_not_found)?;
+      Ok(request.into_operation())
+    }
     Space::Ethereum => {
       let request =
         deserialize_request::<EspaceRequest>(name, raw)?.ok_or_else(RpcError::method_not_found)?;

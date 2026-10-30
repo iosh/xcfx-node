@@ -28,8 +28,7 @@ use super::{
   },
   dispatch::MessageDispatch,
   operation::{CompletionContext, PendingResponse, ResponseConversion, RpcResult},
-  request::{Id, Request},
-  response::{Response, RpcError, RpcResponse},
+  protocol::{Id, Request, Response, RpcError, RpcResponse},
 };
 
 const INGRESS_CAPACITY: usize = 64;

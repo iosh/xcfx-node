@@ -1,29 +1,31 @@
+//! JSON-RPC envelopes, call identities, and invalid-call recovery.
+
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue;
 
 use super::response::{RpcError, RpcResponse};
 
-pub(super) enum Request {
+pub(in crate::rpc) enum Request {
   Single(Call),
   Batch(Vec<Call>),
 }
 
-pub(super) enum Call {
+pub(in crate::rpc) enum Call {
   Method(MethodCall),
   Invalid { id: Id },
 }
 
 #[derive(Deserialize)]
-pub(super) struct MethodCall {
+pub(in crate::rpc) struct MethodCall {
   #[serde(rename = "jsonrpc")]
   _version: Version,
-  pub(super) method: String,
+  pub(in crate::rpc) method: String,
   // Method lookup precedes parameter validation, including parameter shape.
   #[serde(default, deserialize_with = "present")]
-  pub(super) params: Option<Box<RawValue>>,
+  pub(in crate::rpc) params: Option<Box<RawValue>>,
   /// None denotes a notification; Some(Id::Null) still requires a response.
   #[serde(default, deserialize_with = "present")]
-  pub(super) id: Option<Id>,
+  pub(in crate::rpc) id: Option<Id>,
 }
 
 struct Version;
@@ -41,15 +43,20 @@ impl<'de> Deserialize<'de> for Version {
 
 #[derive(Default, Serialize)]
 #[serde(untagged)]
-pub(super) enum Id {
+pub(in crate::rpc) enum Id {
   #[default]
   Null,
   String(String),
-  Number(Box<RawValue>),
+  Number(NumberId),
 }
 
+/// A numeric ID whose validated JSON spelling survives response serialization.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(in crate::rpc) struct NumberId(Box<RawValue>);
+
 impl Request {
-  pub(super) fn parse(input: &[u8]) -> Result<Self, RpcResponse> {
+  pub(in crate::rpc) fn parse(input: &[u8]) -> Result<Self, RpcResponse> {
     let raw: &RawValue = serde_json::from_slice(input)
       .map_err(|_| RpcResponse::new(Id::Null, Err(RpcError::parse_error())))?;
 
@@ -100,7 +107,7 @@ impl<'de> Deserialize<'de> for Id {
       Some(b'"') => serde_json::from_str(raw.get())
         .map(Self::String)
         .map_err(|_| de::Error::custom("invalid JSON-RPC string id")),
-      Some(b'-' | b'0'..=b'9') => Ok(Self::Number(raw)),
+      Some(b'-' | b'0'..=b'9') => Ok(Self::Number(NumberId(raw))),
       _ => Err(de::Error::custom(
         "JSON-RPC id must be a string, number, or null",
       )),

@@ -9,7 +9,7 @@ use crate::{
   runtime::RuntimeBlockProductionError,
 };
 
-use super::{operation::Operation, response::RpcError, serde_helpers};
+use super::{operation::Operation, protocol, protocol::RpcError};
 
 #[derive(Deserialize)]
 pub(super) enum DevRequest {
@@ -24,14 +24,14 @@ pub(super) enum DevRequest {
   ),
   #[serde(
     rename = "evm_mine",
-    deserialize_with = "serde_helpers::deserialize_optional"
+    deserialize_with = "protocol::deserialize_optional"
   )]
   EvmMine(Option<EvmMineInput>),
   #[serde(
     rename = "xcfx_setAutomine",
     alias = "anvil_setAutomine",
     alias = "evm_setAutomine",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   SetAutomine(bool),
   #[serde(
@@ -44,7 +44,7 @@ pub(super) enum DevRequest {
     rename = "xcfx_setIntervalMining",
     alias = "anvil_setIntervalMining",
     alias = "evm_setIntervalMining",
-    deserialize_with = "serde_helpers::deserialize_single"
+    deserialize_with = "protocol::deserialize_single"
   )]
   SetIntervalMining(NumericU64),
   #[serde(rename = "xcfx_getIntervalMining", alias = "anvil_getIntervalMining")]
