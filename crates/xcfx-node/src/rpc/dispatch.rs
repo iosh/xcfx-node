@@ -7,7 +7,7 @@ use cfx_types::Space;
 use serde_json::{Value, value::RawValue};
 use tokio::sync::oneshot;
 
-use crate::node::{NodeTask, RequestError};
+use crate::node::{NodeTask, Observation as NodeObservation, RequestError};
 
 use super::{
   connection::ConnectionCall,
@@ -108,19 +108,19 @@ impl MessageDispatch {
           tasks.push((index, task));
           call.state = CallState::Pending;
         }
-        Ok(Operation::OnConnection(apply)) => {
+        Ok(Operation::OnConnection { request, apply }) => {
           let (reply, response) = oneshot::channel();
           self
             .observations
             .insert(index, Observation { apply, reply });
           let task: NodeTask<ResponseConversion> = Box::new(move |node| {
-            node.observation_boundary();
+            node.observation_boundary(request);
             Box::new(move || ResponseCompletion::Pending(PendingResponse::Observation(response)))
           });
           tasks.push((index, task));
           call.state = CallState::Pending;
         }
-        Ok(Operation::Immediate(value)) => call.complete(Ok(value)),
+        Ok(Operation::Immediate(result)) => call.complete(result),
         Err(error) => call.complete(Err(error)),
       }
     }
@@ -190,13 +190,17 @@ impl MessageDispatch {
     &mut self,
     index: usize,
     connection: ConnectionCall<'_>,
+    observation: Result<NodeObservation, RpcError>,
     on_panic: impl FnOnce(),
   ) {
     let Observation { apply, reply } = self
       .observations
       .remove(&index)
       .expect("an observation marker identifies its registered operation");
-    let result = catch_unwind(AssertUnwindSafe(|| apply(connection))).unwrap_or_else(|_| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+      observation.and_then(|observation| apply(connection, observation))
+    }))
+    .unwrap_or_else(|_| {
       on_panic();
       Err(RpcError::internal())
     });

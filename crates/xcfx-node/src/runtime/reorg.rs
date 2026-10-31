@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashSet};
 use primitives::transaction::TransactionError;
 
 use super::*;
-use crate::chain::{GraphError, OrderedEpoch};
+use crate::chain::{EpochHistoryView, GraphError, OrderedEpoch};
 use crate::production_environment::ProductionTimeError;
 use crate::transaction_ingress::TransactionValidationContext;
 use crate::transaction_pool::TransactionPoolInsertOutcome;
@@ -30,42 +30,179 @@ pub(crate) struct PoolDrop {
   pub(crate) reason: PoolDropReason,
 }
 
-/// Stable old/new views let adapters derive removed and added query results.
+/// Changed suffixes of two epoch histories sharing the same initial view.
+///
+/// Both suffixes are ordered by increasing epoch height. When applied to
+/// visible prefixes, removal describes visibility loss, not necessarily
+/// removal from the active chain.
+pub(crate) struct EpochHistoryChange {
+  common_ancestor: Arc<EpochView>,
+  removed: Vec<Arc<EpochView>>,
+  added: Vec<Arc<EpochView>>,
+}
+
+impl EpochHistoryChange {
+  fn between(old: &[Arc<EpochView>], new: &[Arc<EpochView>]) -> Self {
+    let shared = old
+      .iter()
+      .zip(new)
+      .take_while(|(left, right)| Arc::ptr_eq(left, right))
+      .count();
+
+    assert!(
+      shared > 0,
+      "epoch history changes must retain their shared initial view",
+    );
+
+    Self {
+      common_ancestor: Arc::clone(&old[shared - 1]),
+      removed: old[shared..].to_vec(),
+      added: new[shared..].to_vec(),
+    }
+  }
+
+  // BeforeAppend is completed only after an append to the same history.
+  // Its old endpoints therefore remain in the unchanged prefix. Visibility
+  // need not advance along with the active history.
+  fn after_append(previous_head: Arc<EpochView>, current: &[Arc<EpochView>]) -> Self {
+    let previous_height = previous_head.epoch_height();
+    let added_from = current.partition_point(|view| view.epoch_height() <= previous_height);
+
+    Self {
+      common_ancestor: previous_head,
+      removed: Vec::new(),
+      added: current[added_from..].to_vec(),
+    }
+  }
+
+  pub(crate) fn common_ancestor(&self) -> &Arc<EpochView> {
+    &self.common_ancestor
+  }
+
+  pub(crate) fn old_head(&self) -> &Arc<EpochView> {
+    self.removed.last().unwrap_or(&self.common_ancestor)
+  }
+
+  pub(crate) fn new_head(&self) -> &Arc<EpochView> {
+    self.added.last().unwrap_or(&self.common_ancestor)
+  }
+
+  pub(crate) fn removed(&self) -> &[Arc<EpochView>] {
+    &self.removed
+  }
+
+  pub(crate) fn added(&self) -> &[Arc<EpochView>] {
+    &self.added
+  }
+}
+
+/// Stable history and visibility changes from one published Runtime transition.
+///
+/// The visible history pins results that become queryable even when their epochs
+/// belong to the unchanged active prefix. These are domain facts; consumers apply
+/// their own reporting cursor and Space-specific notification rules.
 pub(crate) struct ChainChange {
-  pub(crate) reason: ChainChangeReason,
-  pub(crate) old_head: Arc<EpochView>,
-  pub(crate) new_head: Arc<EpochView>,
-  pub(crate) common_ancestor: Arc<EpochView>,
-  pub(crate) removed: Vec<Arc<EpochView>>,
-  pub(crate) added: Vec<Arc<EpochView>>,
-  pub(crate) old_epoch_positions: EpochPositions,
-  pub(crate) new_epoch_positions: EpochPositions,
-  pub(crate) reinserted: Vec<H256>,
-  pub(crate) dropped: Vec<PoolDrop>,
+  reason: ChainChangeReason,
+  history: EpochHistoryChange,
+  visible_history: EpochHistoryChange,
+  old_header_committed: EpochHistoryView,
+  new_header_committed: EpochHistoryView,
+  old_epoch_positions: EpochPositions,
+  new_epoch_positions: EpochPositions,
+  reinserted: Vec<H256>,
+  dropped: Vec<PoolDrop>,
+}
+
+/// Pins only the old endpoints needed across one in-place history append.
+/// It does not retain or copy the unchanged history prefix.
+pub(super) struct BeforeAppend {
+  head: Arc<EpochView>,
+  latest_state: Arc<EpochView>,
+  header_committed: EpochHistoryView,
+  epoch_positions: EpochPositions,
+}
+
+impl BeforeAppend {
+  /// Called after the same Runtime has completed one successful ordinary commit.
+  pub(super) fn finish(self, new: &RuntimeState) -> ChainChange {
+    ChainChange {
+      reason: ChainChangeReason::Advance,
+      history: EpochHistoryChange::after_append(self.head, new.history.views()),
+      visible_history: EpochHistoryChange::after_append(
+        self.latest_state,
+        new.history.latest_state_views(),
+      ),
+      old_header_committed: self.header_committed,
+      new_header_committed: new.history.latest_header_committed_epoch(),
+      old_epoch_positions: self.epoch_positions,
+      new_epoch_positions: new.epoch_positions,
+      reinserted: Vec::new(),
+      dropped: Vec::new(),
+    }
+  }
 }
 
 impl ChainChange {
+  pub(super) fn before_append(old: &RuntimeState) -> BeforeAppend {
+    BeforeAppend {
+      head: Arc::clone(old.history.optimistic_head()),
+      latest_state: Arc::clone(old.history.latest_state_epoch()),
+      header_committed: old.history.latest_header_committed_epoch(),
+      epoch_positions: old.epoch_positions,
+    }
+  }
+
   pub(super) fn between(reason: ChainChangeReason, old: &RuntimeState, new: &RuntimeState) -> Self {
-    let shared = old
-      .history
-      .views()
-      .iter()
-      .zip(new.history.views())
-      .take_while(|(left, right)| Arc::ptr_eq(left, right))
-      .count();
-    assert!(shared > 0, "view changes retain their fixed origin");
     Self {
       reason,
-      old_head: Arc::clone(old.history.optimistic_head()),
-      new_head: Arc::clone(new.history.optimistic_head()),
-      common_ancestor: Arc::clone(&old.history.views()[shared - 1]),
-      removed: old.history.views()[shared..].to_vec(),
-      added: new.history.views()[shared..].to_vec(),
+      history: EpochHistoryChange::between(old.history.views(), new.history.views()),
+      visible_history: EpochHistoryChange::between(
+        old.history.latest_state_views(),
+        new.history.latest_state_views(),
+      ),
+      old_header_committed: old.history.latest_header_committed_epoch(),
+      new_header_committed: new.history.latest_header_committed_epoch(),
       old_epoch_positions: old.epoch_positions,
       new_epoch_positions: new.epoch_positions,
       reinserted: Vec::new(),
       dropped: Vec::new(),
     }
+  }
+
+  pub(crate) fn reason(&self) -> ChainChangeReason {
+    self.reason
+  }
+
+  pub(crate) fn history(&self) -> &EpochHistoryChange {
+    &self.history
+  }
+
+  pub(crate) fn visible_history(&self) -> &EpochHistoryChange {
+    &self.visible_history
+  }
+
+  pub(crate) fn old_header_committed(&self) -> &EpochHistoryView {
+    &self.old_header_committed
+  }
+
+  pub(crate) fn new_header_committed(&self) -> &EpochHistoryView {
+    &self.new_header_committed
+  }
+
+  pub(crate) fn old_epoch_positions(&self) -> EpochPositions {
+    self.old_epoch_positions
+  }
+
+  pub(crate) fn new_epoch_positions(&self) -> EpochPositions {
+    self.new_epoch_positions
+  }
+
+  pub(crate) fn reinserted(&self) -> &[H256] {
+    &self.reinserted
+  }
+
+  pub(crate) fn dropped(&self) -> &[PoolDrop] {
+    &self.dropped
   }
 }
 
@@ -285,12 +422,14 @@ impl NodeRuntime {
       rejected,
     } = self.prepare_history(&graph, pivot)?;
     let current = &self.runtime_state.history;
-    let old_head = Arc::clone(current.optimistic_head());
     let new_head = Arc::clone(history.optimistic_head());
-    let common_ancestor = Arc::clone(&current.views()[shared]);
-    let removed = current.views()[shared + 1..].to_vec();
-    let added = history.views()[shared + 1..].to_vec();
-    let advanced = removed.is_empty() && !added.is_empty();
+    let removed = &current.views()[shared + 1..];
+    let reason = if removed.is_empty() {
+      ChainChangeReason::Advance
+    } else {
+      ChainChangeReason::Reorg
+    };
+    let advanced = removed.is_empty() && shared + 1 < history.views().len();
     let state_overlay = if advanced {
       StateOverlay::empty()
     } else {
@@ -312,23 +451,7 @@ impl NodeRuntime {
     );
 
     let (transaction_pool, reinserted, dropped) =
-      self.reconcile_reorg_pool(&history, &removed, &rejected, effective_state.state())?;
-    let change = ChainChange {
-      reason: if removed.is_empty() {
-        ChainChangeReason::Advance
-      } else {
-        ChainChangeReason::Reorg
-      },
-      old_head,
-      new_head,
-      common_ancestor,
-      removed,
-      added,
-      old_epoch_positions: self.runtime_state.epoch_positions,
-      new_epoch_positions: epoch_positions,
-      reinserted,
-      dropped,
-    };
+      self.reconcile_reorg_pool(&history, removed, &rejected, effective_state.state())?;
 
     let next = RuntimeState {
       history,
@@ -339,6 +462,9 @@ impl NodeRuntime {
       state_overlay,
       effective_state,
     };
+    let mut change = ChainChange::between(reason, &self.runtime_state, &next);
+    change.reinserted = reinserted;
+    change.dropped = dropped;
     self
       .checkpoints
       .retain(|_, checkpoint| next.history.contains_view(&checkpoint.history_head));

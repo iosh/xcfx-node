@@ -1,5 +1,6 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
 mod epoch_positions;
+mod logs;
 mod mining;
 mod pool;
 mod query;
@@ -10,7 +11,7 @@ mod transactions;
 
 use crate::{
   block_producer::RuntimeBlock,
-  chain::{BlockGraph, ChainHistory, EpochHistoryView, EpochView},
+  chain::{BlockGraph, ChainHistory, EpochView},
   chain_spec::ChainSpec,
   execution::{TransactionExecutionDisposition, execute_ordered_epoch},
   fork::ForkClient,
@@ -45,7 +46,7 @@ pub(crate) use query::{
   LocalEspaceTransactionSource, StateQueryError,
 };
 pub(crate) use reorg::PoolDropReason;
-pub(crate) use reorg::{ChainChange, ChainChangeReason};
+pub(crate) use reorg::{ChainChange, ChainChangeReason, ReorgError};
 pub(crate) use simulation::RuntimeSimulationError;
 use std::{
   collections::BTreeMap,
@@ -88,9 +89,6 @@ pub(crate) struct TransactionPoolUpdates {
 /// Facts exposed after one Runtime transition has updated history, indexes, and the pool.
 pub(crate) struct RuntimeCommitOutcome {
   pub(crate) change: ChainChange,
-  pub(crate) optimistic_head: Arc<EpochView>,
-  pub(crate) latest_state_advanced_to: Option<Arc<EpochView>>,
-  pub(crate) latest_header_committed_advanced_to: Option<EpochHistoryView>,
   pub(crate) transaction_pool_updates: TransactionPoolUpdates,
 }
 
@@ -575,10 +573,6 @@ impl NodeRuntime {
       "block gas limit {block_gas_limit} must be within [{gas_lower}, {gas_upper}]",
     );
 
-    let previous_latest_state_height = self.runtime_state.history.latest_state_height();
-    let previous_epoch_positions = self.runtime_state.epoch_positions;
-    let previous_latest_header_committed_height =
-      self.runtime_state.history.latest_header_committed_height();
     let start_block_number = parent.next_epoch_start_block_number();
     let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
@@ -623,6 +617,7 @@ impl NodeRuntime {
       Vec::new(),
       !self.runtime_state.state_overlay.is_empty(),
     ));
+    let before_append = ChainChange::before_append(&self.runtime_state);
 
     self
       .runtime_state
@@ -635,7 +630,7 @@ impl NodeRuntime {
       .append_executed_epoch(Arc::clone(&next_head));
     self.runtime_state.epoch_positions = derive_epoch_positions(
       &self.reset_state.initial_view,
-      Some(previous_epoch_positions),
+      Some(self.runtime_state.epoch_positions),
       self.runtime_state.history.latest_state_height(),
       self.confirmation_depths,
     );
@@ -652,30 +647,8 @@ impl NodeRuntime {
     self.runtime_state.state_overlay = StateOverlay::empty();
     self.runtime_state.effective_state = EffectiveState::from_committed(next_head.state());
 
-    let latest_state_advanced_to = (self.runtime_state.history.latest_state_height()
-      > previous_latest_state_height)
-      .then(|| Arc::clone(self.runtime_state.history.latest_state_epoch()));
-    let latest_header_committed_advanced_to =
-      (self.runtime_state.history.latest_header_committed_height()
-        > previous_latest_header_committed_height)
-        .then(|| self.runtime_state.history.latest_header_committed_epoch());
-
     Ok(RuntimeCommitOutcome {
-      change: ChainChange {
-        reason: ChainChangeReason::Advance,
-        old_head: Arc::clone(&parent),
-        new_head: Arc::clone(&next_head),
-        common_ancestor: parent,
-        removed: Vec::new(),
-        added: vec![Arc::clone(&next_head)],
-        old_epoch_positions: previous_epoch_positions,
-        new_epoch_positions: self.runtime_state.epoch_positions,
-        reinserted: Vec::new(),
-        dropped: Vec::new(),
-      },
-      optimistic_head: next_head,
-      latest_state_advanced_to,
-      latest_header_committed_advanced_to,
+      change: before_append.finish(&self.runtime_state),
       transaction_pool_updates: TransactionPoolUpdates {
         transactions_to_repack,
         transactions_dropped_during_preparation: transactions_to_drop,

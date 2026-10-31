@@ -2,8 +2,10 @@
 
 use std::sync::Arc;
 
-use cfx_rpc_cfx_types::Block;
-use cfx_rpc_eth_types::{Receipt as EthereumReceipt, Transaction as EthereumTransaction};
+use cfx_rpc_cfx_types::{Block, Log as CoreLog};
+use cfx_rpc_eth_types::{
+  Log as EthereumLog, Receipt as EthereumReceipt, Transaction as EthereumTransaction,
+};
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::{StorageKeyWithSpace, block::BlockHeight};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -116,6 +118,49 @@ impl ForkClient {
     let (reply, response) = oneshot::channel();
     self.send(ReadRequest::History { query, reply })?;
     self.receive(response)
+  }
+
+  pub(crate) fn core_block(
+    &self,
+    selector: HistoryBlockId,
+  ) -> Result<Option<Arc<Block>>, ForkReadError> {
+    let HistoryResult::CoreBlock(block) = self.history(HistoryQuery::Block {
+      space: Space::Native,
+      selector,
+      full_transactions: false,
+    })?
+    else {
+      unreachable!("a Core block request must return a Core block");
+    };
+    Ok(block)
+  }
+
+  pub(crate) fn core_logs(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<[CoreLog]>, ForkReadError> {
+    let HistoryResult::CoreLogs(logs) = self.history(HistoryQuery::Logs {
+      space: Space::Native,
+      epoch_height,
+    })?
+    else {
+      unreachable!("a Core log request must return Core logs");
+    };
+    Ok(logs)
+  }
+
+  pub(crate) fn espace_logs(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<[EthereumLog]>, ForkReadError> {
+    let HistoryResult::EthereumLogs(logs) = self.history(HistoryQuery::Logs {
+      space: Space::Ethereum,
+      epoch_height,
+    })?
+    else {
+      unreachable!("an eSpace log request must return eSpace logs");
+    };
+    Ok(logs)
   }
 
   /// Reads a historical eSpace block checked against its Core pivot.

@@ -201,6 +201,14 @@ pub(super) fn prepare_pool_transactions<'pool>(
 }
 
 impl NodeRuntime {
+  pub(crate) fn pool_transactions(&self) -> impl Iterator<Item = &RuntimeTransaction> {
+    self
+      .runtime_state
+      .transaction_pool
+      .transactions()
+      .map(|pooled| pooled.transaction())
+  }
+
   /// Finds the next pool nonce from the effective state.
   ///
   /// Pool presence does not imply balance or sponsorship readiness.

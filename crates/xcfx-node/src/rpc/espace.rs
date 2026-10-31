@@ -1,24 +1,71 @@
-mod convert;
+mod completion;
+pub(super) mod convert;
 mod error;
 mod params;
 
 use alloy_dyn_abi::TypedData;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use cfx_rpc_eth_types::{BlockId, Bytes, Index};
-use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H64, H256, Space, U256};
+use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H64, H128, H256, Space, U256};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
+  logs::PendingTransactionFilter,
   runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector},
   virtual_execution::VirtualExecutionOverrides,
 };
 
-use super::{operation::Operation, protocol};
+use super::{
+  connection::SubscriptionId,
+  logs::{self, EspaceLogFilter},
+  operation::Operation,
+  protocol,
+  subscription::{self, EspaceSubscription},
+};
 use params::{BlockOverrides, EspaceTransactionRequest, StateOverrides};
 
 #[derive(Deserialize)]
 pub(super) enum EspaceRequest {
+  #[serde(
+    rename = "eth_getLogs",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  Logs(EspaceLogFilter),
+  #[serde(
+    rename = "eth_newFilter",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  NewFilter(EspaceLogFilter),
+  #[serde(rename = "eth_newBlockFilter")]
+  NewBlockFilter,
+  #[serde(
+    rename = "eth_newPendingTransactionFilter",
+    deserialize_with = "protocol::deserialize_optional"
+  )]
+  NewPendingTransactionFilter(Option<bool>),
+  #[serde(
+    rename = "eth_getFilterChanges",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  FilterChanges(H128),
+  #[serde(
+    rename = "eth_getFilterLogs",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  FilterLogs(H128),
+  #[serde(
+    rename = "eth_uninstallFilter",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  UninstallFilter(H128),
+  #[serde(rename = "eth_subscribe")]
+  Subscribe(EspaceSubscription),
+  #[serde(
+    rename = "eth_unsubscribe",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  Unsubscribe(SubscriptionId),
   #[serde(rename = "eth_accounts")]
   Accounts,
   #[serde(rename = "personal_sign")]
@@ -31,11 +78,18 @@ pub(super) enum EspaceRequest {
     deserialize_with = "protocol::deserialize_single"
   )]
   SendRawTransaction(Bytes),
+  #[serde(rename = "eth_sendRawTransactionSync")]
+  SendRawTransactionSync(Bytes, #[serde(default)] Option<u64>),
   #[serde(
     rename = "eth_sendTransaction",
     deserialize_with = "protocol::deserialize_single"
   )]
   SendTransaction(EspaceTransactionRequest),
+  #[serde(
+    rename = "eth_sendTransactionSync",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  SendTransactionSync(EspaceTransactionRequest),
   #[serde(
     rename = "eth_signTransaction",
     deserialize_with = "protocol::deserialize_single"
@@ -165,6 +219,35 @@ pub(super) enum EspaceRequest {
 impl EspaceRequest {
   pub(super) fn into_operation(self) -> Operation {
     let value = match self {
+      Self::Logs(filter) => return logs::get_logs(Space::Ethereum, filter.into_input()),
+      Self::NewFilter(filter) => return filter.into_new_filter(),
+      Self::NewBlockFilter => {
+        return Operation::on_node(
+          |node| node.new_block_filter(Space::Ethereum),
+          |id| Ok(json!(id)),
+        );
+      }
+      Self::NewPendingTransactionFilter(full) => {
+        let kind = if full.unwrap_or(false) {
+          PendingTransactionFilter::FullEspace
+        } else {
+          PendingTransactionFilter::Hashes(Space::Ethereum)
+        };
+        return Operation::on_node(
+          move |node| node.new_pending_transaction_filter(kind),
+          |id| Ok(json!(id)),
+        );
+      }
+      Self::FilterChanges(id) => return logs::filter_changes(Space::Ethereum, id),
+      Self::FilterLogs(id) => return logs::filter_logs(Space::Ethereum, id),
+      Self::UninstallFilter(id) => {
+        return Operation::on_node(
+          move |node| node.uninstall_filter(Space::Ethereum, id),
+          |removed| Ok(json!(removed)),
+        );
+      }
+      Self::Subscribe(request) => return request.into_operation(),
+      Self::Unsubscribe(id) => return subscription::unsubscribe(id),
       Self::Accounts => {
         return Operation::on_node(
           |node| node.signing_accounts(Space::Ethereum),
@@ -189,11 +272,24 @@ impl EspaceRequest {
           convert::transaction_hash,
         );
       }
+      Self::SendRawTransactionSync(raw, timeout_ms) => {
+        return Operation::on_node_with_completion(
+          move |node| node.submit_raw_transaction(&raw.0, Space::Ethereum),
+          move |result| completion::transaction_receipt(result, timeout_ms),
+        );
+      }
       Self::SendTransaction(request) => {
         let request = request.into();
         return Operation::on_node(
           move |node| node.submit_transaction_request(request),
           convert::transaction_hash,
+        );
+      }
+      Self::SendTransactionSync(request) => {
+        let request = request.into();
+        return Operation::on_node_with_completion(
+          move |node| node.submit_transaction_request(request),
+          |result| completion::transaction_receipt(result, None),
         );
       }
       Self::SignTransaction(request) => {
@@ -407,7 +503,7 @@ impl EspaceRequest {
         json!({"eth":"1.0", "net":"1.0", "web3":"1.0", "parity":"1.0", "rpc":"1.0", "xcfx":"1.0", "anvil":"1.0", "evm":"1.0", "hardhat":"1.0"})
       }
     };
-    Operation::Immediate(value)
+    Operation::Immediate(Ok(value))
   }
 }
 

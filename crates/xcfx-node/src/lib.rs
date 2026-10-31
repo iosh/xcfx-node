@@ -5,6 +5,7 @@ mod config;
 mod execution;
 mod fork;
 mod genesis;
+mod logs;
 mod mpt;
 mod node;
 mod pos;

@@ -315,6 +315,16 @@ impl ChainHistory {
       .expect("a complete linear history must contain its latest state view")
   }
 
+  /// Retained prefix visible to standard receipt queries, including the fixed
+  /// initial view even when it has no local execution artifacts.
+  pub(crate) fn latest_state_views(&self) -> &[Arc<EpochView>] {
+    let latest_state = self.latest_state_height();
+    let end = self
+      .views
+      .partition_point(|view| view.epoch_height() <= latest_state);
+    &self.views[..end]
+  }
+
   pub(crate) fn latest_header_committed_height(&self) -> BlockHeight {
     self
       .optimistic_height()

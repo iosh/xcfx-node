@@ -1,13 +1,14 @@
 //! Startup, Runtime ownership, and shutdown for local and fork nodes.
 
 mod event;
+mod filter;
 mod lifecycle;
 mod mining;
 mod request;
 mod service;
 mod worker;
 
-pub(crate) use event::NodeEvent;
+pub(crate) use event::{NodeEvent, Observation, ObservationRequest};
 pub(crate) use lifecycle::NodeStatus;
 pub(crate) use mining::{MineRequest, MineTiming, MiningCause, MiningError, MiningOutcome};
 pub(crate) use request::{BatchResult, CallId, Cancellation, MessageId, NodeTask, RequestError};

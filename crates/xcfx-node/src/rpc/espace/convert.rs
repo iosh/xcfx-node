@@ -171,7 +171,7 @@ pub(super) fn block_receipts(
   }
 }
 
-fn local_block(block: &EspaceBlockView, full: bool) -> EthereumBlock {
+pub(in crate::rpc) fn local_header(block: &EspaceBlockView) -> Header {
   let pivot = block.pivot_header();
   let empty = block.transactions().len() == 0;
   let empty_root = keccak_hash::keccak([0x80]);
@@ -192,7 +192,7 @@ fn local_block(block: &EspaceBlockView, full: bool) -> EthereumBlock {
       },
     })
     .sum();
-  let header = Header {
+  Header {
     hash: block.hash(),
     parent_hash: *pivot.parent_hash(),
     uncles_hash: keccak_hash::keccak([0xc0]),
@@ -222,7 +222,15 @@ fn local_block(block: &EspaceBlockView, full: bool) -> EthereumBlock {
     size: size.into(),
     nonce: pivot.nonce().low_u64().to_be_bytes().into(),
     mix_hash: H256::zero(),
-  };
+  }
+}
+
+pub(in crate::rpc) fn pending_transaction(transaction: &RuntimeTransaction) -> RpcTransaction {
+  runtime_transaction(transaction, (None, None, None), (None, None))
+}
+
+fn local_block(block: &EspaceBlockView, full: bool) -> EthereumBlock {
+  let header = local_header(block);
   if full {
     EthereumBlock::from_transactions(
       header,

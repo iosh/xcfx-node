@@ -24,7 +24,7 @@ use super::{
   lifecycle::{Lifecycle, NodeStatus},
   mining::{interval_deadline, run_timer},
   request::{BatchResult, Call, Cancellation, Message, MessageId, NodeTask, RequestError, Work},
-  worker,
+  worker::{self, NodeCall},
 };
 
 // Saturation delays admission without limiting the number of accepted operations.
@@ -150,6 +150,27 @@ pub(crate) struct NodeHandle {
 impl NodeHandle {
   pub(crate) fn status(&self) -> NodeStatus {
     self.lifecycle.status()
+  }
+
+  /// Executes one typed operation through the same queue as batched messages.
+  /// Dropping the future cancels work that has not started; a started operation
+  /// still reaches its normal completion boundary.
+  ///
+  /// # Errors
+  /// Returns admission, cancellation, or instance failures. Domain failures
+  /// remain part of the operation's return type.
+  pub(crate) async fn call<T: Send + 'static>(
+    &self,
+    task: impl FnOnce(NodeCall<'_, '_>) -> T + Send + 'static,
+  ) -> Result<T, RequestError> {
+    let results = self
+      .request(vec![(0, Box::new(task))], Cancellation::default())
+      .execute()
+      .await?;
+    match <[_; 1]>::try_from(results) {
+      Ok([result]) => result,
+      Err(_) => panic!("a single node operation must receive exactly one result"),
+    }
   }
 
   /// Creates a grouped request and its cancellation signals before admission.

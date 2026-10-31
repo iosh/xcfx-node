@@ -3,13 +3,20 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use cfx_types::Space;
-use serde::Serialize;
+use cfx_types::{Space, U64};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::node::{Cancellation, MessageId, NodeError, NodeHandle, RequestError};
+use crate::{
+  node::{Cancellation, MessageId, NodeError, NodeHandle, RequestError},
+  runtime::ChainChange,
+  runtime_transaction::RuntimeTransaction,
+};
 
-use super::service::Command;
+use super::{service::Command, subscription::SubscriptionEvents};
+
+const SUBSCRIPTION_NOTIFICATION_LIMIT: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct ConnectionId(pub(super) u64);
@@ -390,6 +397,12 @@ impl Serialize for SubscriptionId {
   }
 }
 
+impl<'de> Deserialize<'de> for SubscriptionId {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    U64::deserialize(deserializer).map(|value| Self(value.as_u64()))
+  }
+}
+
 struct Notification {
   cause: Option<MessageId>,
   text: String,
@@ -397,7 +410,7 @@ struct Notification {
 
 struct Subscription {
   created_by: MessageId,
-  limit: usize,
+  events: SubscriptionEvents,
   pending: VecDeque<Notification>,
 }
 
@@ -421,10 +434,10 @@ pub(super) struct ConnectionCall<'a> {
 }
 
 impl ConnectionCall<'_> {
-  pub(super) fn subscribe(self, limit: usize) -> Option<SubscriptionId> {
+  pub(super) fn subscribe(self, events: SubscriptionEvents) -> Option<SubscriptionId> {
     self
       .connections
-      .subscribe(self.connection, self.message, limit)
+      .subscribe(self.connection, self.message, events)
   }
 
   pub(super) fn unsubscribe(self, id: SubscriptionId) -> bool {
@@ -508,7 +521,8 @@ impl Connections {
           &output.sender.queue,
           &notifications.pending,
           id,
-          subscription,
+          subscription.created_by,
+          &mut subscription.pending,
         );
       }
     }
@@ -519,7 +533,7 @@ impl Connections {
     &mut self,
     connection: ConnectionId,
     message: MessageId,
-    limit: usize,
+    events: SubscriptionEvents,
   ) -> Option<SubscriptionId> {
     let output = self.outputs.get_mut(&connection)?;
     if output.handle.is_closed() {
@@ -535,7 +549,7 @@ impl Connections {
       id,
       Subscription {
         created_by: message,
-        limit,
+        events,
         pending: VecDeque::new(),
       },
     );
@@ -556,57 +570,93 @@ impl Connections {
     true
   }
 
-  /// Internal waiters observe facts before this notification-only gate. Later
-  /// notifications cannot pass a blocked notification of the same subscription.
-  pub(super) fn notify(
+  pub(super) fn committed(&mut self, change: &ChainChange, cause: Option<MessageId>) {
+    self.project(cause, |events, emit| {
+      events.block_mined(change.history().new_head(), emit) && events.chain_changed(change, emit)
+    });
+  }
+
+  pub(super) fn chain_changed(&mut self, change: &ChainChange, cause: Option<MessageId>) {
+    self.project(cause, |events, emit| events.chain_changed(change, emit));
+  }
+
+  pub(super) fn transaction_inserted(
     &mut self,
-    connection: ConnectionId,
-    id: SubscriptionId,
-    cause: Option<MessageId>,
-    text: String,
+    transaction: &RuntimeTransaction,
+    cause: MessageId,
   ) {
-    let Some(output) = self.outputs.get_mut(&connection) else {
-      return;
-    };
-    let Some(notifications) = output.notifications.as_mut() else {
-      return;
-    };
-    let Some(subscription) = notifications.subscriptions.get_mut(&id) else {
-      return;
-    };
-    // The only concurrent consumer can reduce this count but cannot increase it.
-    let queued = output.sender.queue.notification_count(id);
-    if queued >= subscription.limit || subscription.pending.len() >= subscription.limit - queued {
-      notifications.subscriptions.remove(&id);
-      output.sender.queue.remove_subscription(id);
-      return;
+    self.project(Some(cause), |events, emit| {
+      events.transaction_inserted(transaction, emit)
+    });
+  }
+
+  /// Project directly into each subscription's budget. A slow consumer releases
+  /// its projection and both queued and gated notifications without blocking facts.
+  fn project(
+    &mut self,
+    cause: Option<MessageId>,
+    mut project: impl FnMut(&mut SubscriptionEvents, &mut dyn FnMut(Value) -> bool) -> bool,
+  ) {
+    for output in self.outputs.values_mut() {
+      let Some(notifications) = &mut output.notifications else {
+        continue;
+      };
+      let queue = &output.sender.queue;
+      let method = match output.handle.space {
+        Space::Native => "cfx_subscription",
+        Space::Ethereum => "eth_subscription",
+      };
+      let closed = output.handle.is_closed();
+      notifications.subscriptions.retain(|&id, subscription| {
+        if closed {
+          queue.remove_subscription(id);
+          return false;
+        }
+        let mut emit = |value| {
+          // The concurrent receiver can only decrease the queued count.
+          let queued = queue.notification_count(id);
+          if queued >= SUBSCRIPTION_NOTIFICATION_LIMIT
+            || subscription.pending.len() >= SUBSCRIPTION_NOTIFICATION_LIMIT - queued
+          {
+            queue.remove_subscription(id);
+            return false;
+          }
+          let text = serde_json::to_string(&json!({
+            "jsonrpc": "2.0", "method": method,
+            "params": { "subscription": id, "result": value },
+          }))
+          .expect("subscription results contain serializable JSON values");
+          subscription.pending.push_back(Notification { cause, text });
+          Self::flush(
+            queue,
+            &notifications.pending,
+            id,
+            subscription.created_by,
+            &mut subscription.pending,
+          );
+          true
+        };
+        project(&mut subscription.events, &mut emit)
+      });
     }
-    subscription.pending.push_back(Notification { cause, text });
-    Self::flush(
-      &output.sender.queue,
-      &notifications.pending,
-      id,
-      subscription,
-    );
   }
 
   fn flush(
     queue: &OutboundQueue,
     pending: &HashSet<MessageId>,
     id: SubscriptionId,
-    subscription: &mut Subscription,
+    created_by: MessageId,
+    notifications: &mut VecDeque<Notification>,
   ) {
     // Facts from another request or connection must also wait for installation's reply.
-    if pending.contains(&subscription.created_by) {
+    if pending.contains(&created_by) {
       return;
     }
-    while subscription
-      .pending
+    while notifications
       .front()
       .is_some_and(|item| item.cause.is_none_or(|id| !pending.contains(&id)))
     {
-      let item = subscription
-        .pending
+      let item = notifications
         .pop_front()
         .expect("the subscription queue is nonempty");
       if !queue.push(Outbound::Notification {

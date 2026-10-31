@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin};
 use serde_json::Value;
 use tokio::sync::{oneshot, watch};
 
-use crate::node::{NodeCall, NodeHandle, NodeTask};
+use crate::node::{NodeCall, NodeHandle, NodeTask, Observation, ObservationRequest};
 
 use super::{connection::ConnectionCall, protocol::RpcError};
 
@@ -11,12 +11,16 @@ pub(super) type RpcResult = Result<Value, RpcError>;
 
 pub(super) enum Operation {
   /// Only results independent of execution or connection observation order.
-  Immediate(Value),
+  Immediate(RpcResult),
   OnNode(NodeTask<ResponseConversion>),
-  OnConnection(ConnectionTask),
+  OnConnection {
+    request: ObservationRequest,
+    apply: ConnectionTask,
+  },
 }
 
-pub(super) type ConnectionTask = Box<dyn FnOnce(ConnectionCall<'_>) -> RpcResult + Send>;
+pub(super) type ConnectionTask =
+  Box<dyn FnOnce(ConnectionCall<'_>, Observation) -> RpcResult + Send>;
 
 /// Owns a node result and its conversion, which runs only on IO. A successful
 /// operation can require further waiting; an execution error can finish directly.
@@ -93,8 +97,12 @@ impl Operation {
   }
 
   pub(super) fn on_connection(
-    execute: impl FnOnce(ConnectionCall<'_>) -> RpcResult + Send + 'static,
+    request: ObservationRequest,
+    execute: impl FnOnce(ConnectionCall<'_>, Observation) -> RpcResult + Send + 'static,
   ) -> Self {
-    Self::OnConnection(Box::new(execute))
+    Self::OnConnection {
+      request,
+      apply: Box::new(execute),
+    }
   }
 }

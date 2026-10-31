@@ -6,9 +6,11 @@ mod dev;
 mod dispatch;
 mod error;
 mod espace;
+mod logs;
 mod operation;
 mod protocol;
 mod service;
+mod subscription;
 
 pub(crate) use connection::{Connection, ConnectionHandle, RequestHandle};
 pub(crate) use service::RpcService;

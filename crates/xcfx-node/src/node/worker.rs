@@ -13,8 +13,8 @@ use cfx_rpc_cfx_types::{
   address::{UnexpectedRpcAddressNetwork, check_rpc_address_network},
 };
 use cfx_rpc_eth_types::{Receipt as EthereumReceipt, Transaction as EthereumTransaction};
-use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256};
-use primitives::BlockNumber;
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H128, H256, Space, U256};
+use primitives::{BlockNumber, log_entry::LocalizedLogEntry};
 use thiserror::Error;
 use tokio::{
   runtime::Handle,
@@ -25,13 +25,14 @@ use crate::{
   chain::{EspaceBlockView, EspaceTransactionView, MinedBlockView, TransactionReceiptView},
   config::{MiningMode, NodeConfig},
   fork::ForkReadError,
+  logs::{FilterChanges, LogFilterInput, LogQueryError, PendingTransactionFilter, network},
   production_environment::BlockTimestamp,
   rpc_client::EthereumBlock,
   runtime::{
-    AccountPoolTransactions, EpochSelector, EspaceBlockSelector, EspaceBlockSource,
-    EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,
-    LocalEspaceTransactionSource, RuntimeCommitOutcome, RuntimeSimulationError,
-    RuntimeTransactionError, StateQueryError,
+    AccountPoolTransactions, ChainChange, CheckpointId, EpochSelector, EspaceBlockSelector,
+    EspaceBlockSource, EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector,
+    EspaceTransactionSource, LocalEspaceTransactionSource, ReorgError, RuntimeCommitOutcome,
+    RuntimeSimulationError, RuntimeTransactionError, StateQueryError,
   },
   runtime_transaction::RuntimeTransaction,
   signing::MessageSigningError,
@@ -41,7 +42,8 @@ use crate::{
 };
 
 use super::{
-  Node, NodeError, NodeEvent, NodeStartError,
+  Node, NodeError, NodeEvent, NodeStartError, Observation, ObservationRequest,
+  filter::Filters,
   lifecycle::{Lifecycle, NodeStatus},
   mining::{
     InvalidMiningInterval, MineRequest, MiningCause, MiningError, MiningOutcome, MiningScheduler,
@@ -60,6 +62,7 @@ pub(super) fn run(
   lifecycle: Arc<Lifecycle>,
 ) -> Result<(), NodeError> {
   let mode = config.mining;
+  let filter_idle_timeout = config.filter_idle_timeout;
   let startup = catch_unwind(AssertUnwindSafe(|| Node::start(io.clone(), config)));
   let mut node = match startup {
     Ok(Ok(node)) => node,
@@ -94,6 +97,7 @@ pub(super) fn run(
       events: &events,
       lifecycle: &lifecycle,
       io: &io,
+      filters: Filters::new(filter_idle_timeout),
     };
     if worker.lifecycle.mark_ready() {
       worker.scheduler.publish_schedule();
@@ -140,16 +144,26 @@ pub(super) struct Worker<'a> {
   events: &'a mpsc::UnboundedSender<NodeEvent>,
   lifecycle: &'a Lifecycle,
   io: &'a Handle,
+  filters: Filters,
 }
 
 impl Worker<'_> {
   fn run(&mut self) {
     loop {
       let work = self.io.block_on(async {
-        tokio::select! {
-          biased;
-          _ = self.lifecycle.stopped() => None,
-          work = self.requests.recv() => work,
+        loop {
+          let expiry = self.filters.next_expiration();
+          tokio::select! {
+            biased;
+            _ = self.lifecycle.stopped() => break None,
+            _ = async {
+              match expiry {
+                Some(expiry) => tokio::time::sleep_until(expiry.into()).await,
+                None => std::future::pending::<()>().await,
+              }
+            } => self.filters.evict(),
+            work = self.requests.recv() => break work,
+          }
         }
       });
       // All synchronous Runtime calls run after leaving the async context.
@@ -258,7 +272,7 @@ impl Worker<'_> {
       }
       match self.mine_block(request.timing.for_block(index)) {
         Ok(outcome) => {
-          hashes.push(outcome.optimistic_head.state().epoch_id);
+          hashes.push(outcome.change.history().new_head().state().epoch_id);
           self.committed(MiningCause::Manual(id), outcome);
         }
         Err(reason) => return MiningOutcome::Interrupted { hashes, reason },
@@ -320,6 +334,7 @@ impl Worker<'_> {
       }
       match catch_unwind(AssertUnwindSafe(|| mining.next())) {
         Ok(Some(Ok(outcome))) => {
+          self.filters.chain_changed(&outcome.change);
           let _ = self.events.send(NodeEvent::Committed {
             cause,
             outcome: Arc::new(outcome),
@@ -365,11 +380,37 @@ impl Worker<'_> {
     }
   }
 
-  fn committed(&self, cause: MiningCause, outcome: RuntimeCommitOutcome) {
+  fn committed(&mut self, cause: MiningCause, outcome: RuntimeCommitOutcome) {
+    self.filters.chain_changed(&outcome.change);
     let _ = self.events.send(NodeEvent::Committed {
       cause,
       outcome: Arc::new(outcome),
     });
+  }
+
+  fn transaction_inserted(&mut self, call: CallId, transaction: RuntimeTransaction) {
+    self.filters.transaction_inserted(&transaction);
+    let _ = self
+      .events
+      .send(NodeEvent::TransactionInserted { call, transaction });
+  }
+
+  fn history_changed(
+    &mut self,
+    call: CallId,
+    change: ChainChange,
+    inserted: Vec<RuntimeTransaction>,
+  ) -> Arc<ChainChange> {
+    self.filters.chain_changed(&change);
+    let change = Arc::new(change);
+    let _ = self.events.send(NodeEvent::HistoryChanged {
+      call,
+      change: Arc::clone(&change),
+    });
+    for transaction in inserted {
+      self.transaction_inserted(call, transaction);
+    }
+    change
   }
 
   fn mining_failed(&self, cause: MiningCause, error: MiningError) {
@@ -468,11 +509,129 @@ impl NodeCall<'_, '_> {
   }
   /// Orders one connection observation change against this thread's facts.
   /// The IO consumer applies it before processing any subsequent fact.
-  pub(crate) fn observation_boundary(self) {
-    let _ = self
+  pub(crate) fn observation_boundary(self, request: ObservationRequest) {
+    let runtime = self.worker.node.runtime();
+    let result = match request {
+      ObservationRequest::Chain => Ok(Observation::Chain {
+        network: network(runtime.network_id()),
+        mined_epoch: runtime.epoch_height(EpochSelector::LatestMined),
+        visible_epoch: runtime.epoch_height(EpochSelector::LatestState),
+      }),
+      ObservationRequest::Logs(input) => {
+        runtime
+          .prepare_log_filter(input)
+          .map(|filter| Observation::Logs {
+            network: network(runtime.network_id()),
+            filter: (*filter).clone(),
+            visible_epoch: runtime.epoch_height(EpochSelector::LatestState),
+          })
+      }
+    };
+    let _ = self.worker.events.send(NodeEvent::Observation {
+      call: self.id,
+      result,
+    });
+  }
+
+  pub(crate) fn logs(
+    self,
+    input: LogFilterInput,
+  ) -> Result<(Network, Vec<LocalizedLogEntry>), LogQueryError> {
+    let runtime = self.worker.node.runtime();
+    Ok((network(runtime.network_id()), runtime.query_logs(input)?))
+  }
+
+  pub(crate) fn new_log_filter(self, input: LogFilterInput) -> Result<H128, LogQueryError> {
+    self
       .worker
-      .events
-      .send(NodeEvent::Observation { call: self.id });
+      .filters
+      .new_logs(self.worker.node.runtime(), input)
+  }
+
+  pub(crate) fn new_block_filter(self, space: Space) -> H128 {
+    self
+      .worker
+      .filters
+      .new_blocks(self.worker.node.runtime(), space)
+  }
+
+  pub(crate) fn new_pending_transaction_filter(self, kind: PendingTransactionFilter) -> H128 {
+    self.worker.filters.new_pending(kind)
+  }
+
+  pub(crate) fn filter_changes(
+    self,
+    space: Space,
+    id: H128,
+  ) -> Result<(Network, FilterChanges), LogQueryError> {
+    let runtime = self.worker.node.runtime();
+    Ok((
+      network(runtime.network_id()),
+      self.worker.filters.changes(runtime, space, id)?,
+    ))
+  }
+
+  pub(crate) fn filter_logs(
+    self,
+    space: Space,
+    id: H128,
+  ) -> Result<(Network, Vec<LocalizedLogEntry>), LogQueryError> {
+    let runtime = self.worker.node.runtime();
+    Ok((
+      network(runtime.network_id()),
+      self.worker.filters.logs(runtime, space, id)?,
+    ))
+  }
+
+  pub(crate) fn uninstall_filter(self, space: Space, id: H128) -> bool {
+    self.worker.filters.uninstall(space, id)
+  }
+
+  pub(crate) fn create_checkpoint(self) -> CheckpointId {
+    self.worker.node.runtime_mut().create_checkpoint()
+  }
+
+  pub(crate) fn revert_to_checkpoint(self, id: CheckpointId) -> Option<Arc<ChainChange>> {
+    let old = self
+      .worker
+      .node
+      .runtime()
+      .pool_transactions()
+      .map(|tx| tx.hash())
+      .collect::<std::collections::HashSet<_>>();
+    let change = self.worker.node.runtime_mut().revert_to_checkpoint(id)?;
+    let inserted = self
+      .worker
+      .node
+      .runtime()
+      .pool_transactions()
+      .filter(|tx| !old.contains(&tx.hash()))
+      .cloned()
+      .collect();
+    Some(self.worker.history_changed(self.id, change, inserted))
+  }
+
+  pub(crate) fn reset(self) -> Arc<ChainChange> {
+    let change = self.worker.node.runtime_mut().reset();
+    self.worker.history_changed(self.id, change, Vec::new())
+  }
+
+  pub(crate) fn switch_pivot(self, pivot: H256) -> Result<Arc<ChainChange>, ReorgError> {
+    let change = self.worker.node.runtime_mut().switch_pivot(pivot)?;
+    let inserted = change
+      .reinserted()
+      .iter()
+      .map(|hash| {
+        self
+          .worker
+          .node
+          .runtime()
+          .pool_transaction_by_hash(*hash)
+          .expect("a reinserted transaction remains in the published pool")
+          .clone()
+      })
+      .collect();
+    Ok(self.worker.history_changed(self.id, change, inserted))
   }
 
   pub(crate) fn espace_chain_id(self) -> u32 {
@@ -672,7 +831,15 @@ impl NodeCall<'_, '_> {
       .node
       .runtime_mut()
       .submit_raw_transaction(raw, space)?;
+    let transaction = self
+      .worker
+      .node
+      .runtime()
+      .pool_transaction_by_hash(hash)
+      .expect("successful admission retains the accepted transaction")
+      .clone();
     *self.auto_mine = true;
+    self.worker.transaction_inserted(self.id, transaction);
     Ok(hash)
   }
 
@@ -685,7 +852,15 @@ impl NodeCall<'_, '_> {
       .node
       .runtime_mut()
       .submit_transaction_request(request)?;
+    let transaction = self
+      .worker
+      .node
+      .runtime()
+      .pool_transaction_by_hash(hash)
+      .expect("successful admission retains the accepted transaction")
+      .clone();
     *self.auto_mine = true;
+    self.worker.transaction_inserted(self.id, transaction);
     Ok(hash)
   }
 

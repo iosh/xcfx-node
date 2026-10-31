@@ -266,16 +266,28 @@ impl Dispatcher {
     diagnostic: &watch::Sender<Option<Arc<MiningDiagnostic>>>,
   ) {
     match event {
-      NodeEvent::Committed { cause: _, outcome } => {
+      NodeEvent::Committed { cause, outcome } => {
         self.changes.send_replace(());
-        // Notification projection consumes the same ordered facts. Its output
-        // budget must never retain or block this internal wakeup stream.
-        drop(outcome);
+        let message = match cause {
+          MiningCause::Manual(call) => Some(call.message),
+          MiningCause::Automatic(message) => Some(message),
+          MiningCause::Interval => None,
+        };
+        self.connections.committed(&outcome.change, message);
+      }
+      NodeEvent::HistoryChanged { call, change } => {
+        self.changes.send_replace(());
+        self.connections.chain_changed(&change, Some(call.message));
+      }
+      NodeEvent::TransactionInserted { call, transaction } => {
+        self
+          .connections
+          .transaction_inserted(&transaction, call.message);
       }
       NodeEvent::MiningFailed { cause, error } => {
         diagnostic.send_replace(Some(Arc::new(MiningDiagnostic { cause, error })));
       }
-      NodeEvent::Observation { call } => {
+      NodeEvent::Observation { call, result } => {
         let applied = catch_unwind(AssertUnwindSafe(|| {
           let active = self
             .pending
@@ -284,9 +296,11 @@ impl Dispatcher {
           let connection = self
             .connections
             .observation(active.request.connection().id, call.message);
-          active
-            .dispatch
-            .observe(call.index, connection, || self.node.fail_io_service(None));
+          let result = result
+            .map_err(|error| super::logs::query_error(active.request.connection().space, error));
+          active.dispatch.observe(call.index, connection, result, || {
+            self.node.fail_io_service(None)
+          });
         }));
         if applied.is_err() {
           self.node.fail_io_service(None);

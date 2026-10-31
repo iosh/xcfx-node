@@ -4,7 +4,7 @@
 //! resolves and validates the Core-specific position within that boundary.
 
 use cfx_rpc_cfx_types::{Block, BlockTransactions, Log, Receipt, Transaction};
-use cfx_types::{H256, Space};
+use cfx_types::{H256, Space, U256};
 use primitives::{TransactionStatus, block::BlockHeight};
 
 use super::{ForkReadError, ForkRpc, HistoryBlockId};
@@ -149,12 +149,29 @@ impl ForkRpc {
     let hashes = self.load_block_hashes(epoch_height, pivot.hash).await?;
     let mut logs = Vec::new();
     for chunk in hashes.chunks(MAX_CORE_LOG_BLOCK_HASHES) {
+      let mut previous: Option<(usize, U256)> = None;
       for log in self.rpc.cfx_getLogs(chunk.to_vec()).await? {
-        if log.epoch_number != Some(epoch_height.into())
-          || !log.block_hash.is_some_and(|hash| chunk.contains(&hash))
-        {
+        if log.epoch_number != Some(epoch_height.into()) {
           return Err(ForkReadError::Inconsistent("Core log position"));
         }
+        let block_index = log
+          .block_hash
+          .and_then(|hash| chunk.iter().position(|expected| *expected == hash))
+          .ok_or(ForkReadError::Inconsistent("Core log position"))?;
+        let log_index = log
+          .log_index
+          .ok_or(ForkReadError::Unavailable("Core log index"))?;
+        // This request has no address or topic predicate. Every nonempty block
+        // starts at zero, and its logs must be consecutive and in execution order.
+        let expected_index = match previous {
+          Some((block, index)) if block == block_index => index.checked_add(U256::one()),
+          Some((block, _)) if block > block_index => None,
+          _ => Some(U256::zero()),
+        };
+        if expected_index != Some(log_index) {
+          return Err(ForkReadError::Inconsistent("Core log order"));
+        }
+        previous = Some((block_index, log_index));
         logs.push(log);
       }
     }
