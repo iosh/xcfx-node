@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::{
   config::MiningMode,
   node::{MineRequest, MineTiming, MiningError, MiningOutcome},
-  runtime::RuntimeBlockProductionError,
+  runtime::{BlockPreparationError, RuntimeBlockProductionError},
 };
 
 use super::{operation::Operation, protocol, protocol::RpcError};
@@ -118,9 +118,10 @@ fn mining_result(outcome: MiningOutcome) -> Result<(), RpcError> {
 fn mining_error(error: &MiningError) -> RpcError {
   match error {
     MiningError::Request(error) => RpcError::from(error),
-    MiningError::Interval(_) | MiningError::Production(RuntimeBlockProductionError::Time(_)) => {
-      RpcError::invalid_params()
-    }
+    MiningError::Interval(_)
+    | MiningError::Production(RuntimeBlockProductionError::Preparation(
+      BlockPreparationError::Time(_),
+    )) => RpcError::invalid_params(),
     MiningError::Production(_) => RpcError {
       code: -32000,
       message: "Block production failed".into(),

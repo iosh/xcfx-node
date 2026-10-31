@@ -1,6 +1,6 @@
 mod response;
 
-pub(crate) use response::EthereumBlock;
+pub(crate) use response::{EthereumBlock, EthereumFeeHistoryResponse};
 
 use std::time::Duration;
 
@@ -198,6 +198,22 @@ impl ConfluxRpcClient {
       .espace
       .client()
       .request("eth_getBalance", (address, block))
+      .await
+  }
+
+  pub(crate) async fn eth_feeHistory(
+    &self,
+    block_count: U64,
+    newest_block: cfx_rpc_eth_types::BlockId,
+    reward_percentiles: &[f64],
+  ) -> TransportResult<EthereumFeeHistoryResponse> {
+    self
+      .espace
+      .client()
+      .request(
+        "eth_feeHistory",
+        (block_count, newest_block, reward_percentiles),
+      )
       .await
   }
 

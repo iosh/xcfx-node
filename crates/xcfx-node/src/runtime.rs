@@ -1,5 +1,6 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
 mod epoch_positions;
+mod fees;
 mod logs;
 mod mining;
 mod pool;
@@ -38,8 +39,12 @@ use cfx_types::{Address, AddressWithSpace, H256, U256};
 use cfxkey::KeyPair;
 use epoch_positions::{ConfirmationDepths, derive_epoch_positions};
 pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositions};
-pub(crate) use mining::{AutoMining, RuntimeBlockProductionError};
-pub(crate) use pool::{AccountPoolTransactions, PoolTransactionStatus, QueuedReason};
+pub(crate) use fees::FeeQueryError;
+pub(crate) use mining::{AutoMining, BlockPreparationError, RuntimeBlockProductionError};
+pub(crate) use pool::{
+  AccountPoolTransactions, PoolContent, PoolQueryScope, PoolTransactionCounts,
+  PoolTransactionStatus, QueuedReason,
+};
 pub(crate) use query::{
   EpochSelector, EspaceBlockSelector, EspaceBlockSource, EspaceReceiptSource,
   EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,

@@ -1,6 +1,6 @@
 //! Synchronous access to the fork's remote state and history.
 
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use cfx_rpc_cfx_types::{Block, Log as CoreLog};
 use cfx_rpc_eth_types::{
@@ -10,7 +10,11 @@ use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
 use primitives::{StorageKeyWithSpace, block::BlockHeight};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::{execution::ExecutionCommitment, rpc_client::EthereumBlock};
+use crate::{
+  execution::ExecutionCommitment,
+  fee_history::{FeeHistoryRange, RewardPercentiles},
+  rpc_client::EthereumBlock,
+};
 
 use super::{
   EspaceStateQuery, ForkBase, ForkEpochReceipts, ForkReadError, HistoryBlockId, HistoryQuery,
@@ -178,6 +182,25 @@ impl ForkClient {
       unreachable!("an eSpace block request must return an eSpace block");
     };
     Ok(block)
+  }
+
+  /// Reads one contiguous remote fee-history segment without its next-block price.
+  pub(crate) fn espace_fee_history(
+    &self,
+    block_count: NonZeroU64,
+    newest_height: BlockHeight,
+    reward_percentiles: &RewardPercentiles,
+  ) -> Result<Arc<FeeHistoryRange>, ForkReadError> {
+    let HistoryResult::EthereumFeeHistory(history) =
+      self.history(HistoryQuery::EspaceFeeHistory {
+        block_count,
+        newest_height,
+        reward_percentiles: reward_percentiles.clone(),
+      })?
+    else {
+      unreachable!("an eSpace fee history request must return eSpace fee history");
+    };
+    Ok(history)
   }
 
   /// Reads a mined transaction from the fixed prefix, excluding remote pending entries.

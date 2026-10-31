@@ -6,7 +6,7 @@
 mod core;
 mod espace;
 
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use cfx_rpc_cfx_types::{Block, Log, Receipt, Transaction};
 use cfx_rpc_eth_types::{
@@ -15,7 +15,10 @@ use cfx_rpc_eth_types::{
 use cfx_types::{Address, H256, Space, U256};
 use primitives::{BlockNumber, block::BlockHeight};
 
-use crate::rpc_client::EthereumBlock;
+use crate::{
+  fee_history::{FeeHistoryRange, RewardPercentiles},
+  rpc_client::EthereumBlock,
+};
 
 use super::{ForkReadError, rpc::ForkRpc};
 
@@ -36,8 +39,13 @@ pub(super) enum EspaceStateQuery {
   Storage { address: Address, position: H256 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HistoryQuery {
+  EspaceFeeHistory {
+    block_count: NonZeroU64,
+    newest_height: BlockHeight,
+    reward_percentiles: RewardPercentiles,
+  },
   EpochByHash {
     hash: H256,
     require_pivot: bool,
@@ -75,6 +83,7 @@ pub(super) enum HistoryQuery {
 /// Results shared by callers waiting for the same history request.
 #[derive(Clone)]
 pub(super) enum HistoryResult {
+  EthereumFeeHistory(Arc<FeeHistoryRange>),
   EpochHeight(Option<BlockHeight>),
   EspaceQuantity(U256),
   EspaceCode(Arc<Vec<u8>>),
@@ -95,6 +104,13 @@ impl ForkRpc {
     // Numeric requests outside the prefix do not depend on remote availability.
     // Hash requests need a remote lookup before their position can be checked.
     match query {
+      HistoryQuery::EspaceFeeHistory { newest_height, .. }
+        if newest_height > self.base.epoch_height =>
+      {
+        return Err(ForkReadError::Unavailable(
+          "fee history outside the fixed prefix",
+        ));
+      }
       HistoryQuery::EspaceState { epoch_height, .. } if epoch_height > self.base.epoch_height => {
         return Err(ForkReadError::Unavailable(
           "historical state outside the fixed prefix",
@@ -149,6 +165,15 @@ impl ForkRpc {
 
   async fn read_history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
     Ok(match query {
+      HistoryQuery::EspaceFeeHistory {
+        block_count,
+        newest_height,
+        reward_percentiles,
+      } => HistoryResult::EthereumFeeHistory(Arc::new(
+        self
+          .read_espace_fee_history(block_count, newest_height, &reward_percentiles)
+          .await?,
+      )),
       HistoryQuery::EpochByHash {
         hash,
         require_pivot,

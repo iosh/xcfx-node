@@ -3,7 +3,7 @@
 //! eSpace block numbers are epoch heights, and block hashes identify Core
 //! pivots. The parent module owns the surrounding fork-base checks.
 
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use cfx_rpc_eth_types::{
   BlockId, Log as EthereumLog, Receipt as EthereumReceipt, Transaction as EthereumTransaction,
@@ -11,11 +11,73 @@ use cfx_rpc_eth_types::{
 use cfx_types::{BigEndianHash, H256, U256};
 use primitives::block::BlockHeight;
 
-use crate::rpc_client::EthereumBlock;
+use crate::{
+  fee_history::{FeeHistoryBlock, FeeHistoryRange, RewardPercentiles},
+  rpc_client::EthereumBlock,
+};
 
 use super::{EspaceStateQuery, ForkReadError, ForkRpc, HistoryBlockId, HistoryResult};
 
 impl ForkRpc {
+  /// Keeps only rows within the fixed prefix; the response's trailing price may belong
+  /// to a remote future block and is never used to price the local branch.
+  pub(super) async fn read_espace_fee_history(
+    &self,
+    block_count: NonZeroU64,
+    newest_height: BlockHeight,
+    reward_percentiles: &RewardPercentiles,
+  ) -> Result<FeeHistoryRange, ForkReadError> {
+    let pivot_hash = if newest_height == self.base.epoch_height {
+      self.base.pivot_hash
+    } else {
+      self.load_historical_pivot(newest_height).await?.hash
+    };
+
+    let response = self
+      .rpc
+      .eth_feeHistory(
+        block_count.get().into(),
+        BlockId::Hash {
+          hash: pivot_hash,
+          require_canonical: Some(true),
+        },
+        reward_percentiles.as_slice(),
+      )
+      .await?;
+    let oldest_height = response.oldest_block.as_u64();
+    let requested_oldest = newest_height.saturating_sub(block_count.get() - 1);
+    if oldest_height < requested_oldest || oldest_height > newest_height {
+      return Err(ForkReadError::Inconsistent("fee history range"));
+    }
+    let count = usize::try_from(newest_height - oldest_height + 1)
+      .expect("a bounded fee history request must fit the host index range");
+    if response.base_fee_per_gas.len() != count + 1
+      || response.gas_used_ratio.len() != count
+      || response.reward.len() != count
+      || response
+        .gas_used_ratio
+        .iter()
+        .any(|ratio| !ratio.is_finite() || *ratio < 0.0)
+      || response
+        .reward
+        .iter()
+        .any(|rewards| rewards.len() != reward_percentiles.as_slice().len())
+    {
+      return Err(ForkReadError::Inconsistent("fee history columns"));
+    }
+    let blocks = response
+      .base_fee_per_gas
+      .into_iter()
+      .take(count)
+      .zip(response.gas_used_ratio)
+      .zip(response.reward)
+      .map(|((base_fee, gas_used_ratio), rewards)| {
+        FeeHistoryBlock::new(base_fee, gas_used_ratio, rewards)
+      })
+      .collect();
+    Ok(FeeHistoryRange::new(oldest_height, blocks))
+  }
+
   pub(super) async fn read_history_epoch(
     &self,
     hash: H256,

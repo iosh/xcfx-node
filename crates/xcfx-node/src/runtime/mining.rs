@@ -2,7 +2,7 @@
 
 use std::{iter::FusedIterator, sync::Arc};
 
-use cfx_types::{H256, U256};
+use cfx_types::{H256, SpaceMap, U256};
 use primitives::BlockNumber;
 use thiserror::Error;
 
@@ -24,19 +24,29 @@ use super::{
   NodeRuntime, RuntimeCommitOutcome, open_state_version, pool::prepare_pool_transactions,
 };
 
+/// Failures while preparing candidate inputs, before block construction or execution.
 #[derive(Debug, Error)]
-pub(crate) enum RuntimeBlockProductionError {
+pub(crate) enum BlockPreparationError {
   #[error(transparent)]
   State(#[from] cfx_statedb::Error),
 
   #[error(transparent)]
   Time(#[from] ProductionTimeError),
 
-  #[error(transparent)]
-  Fork(#[from] ForkReadError),
-
   #[error("local execution cannot advance {0} beyond the supported integer range")]
   PositionExhausted(&'static str),
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum RuntimeBlockProductionError {
+  #[error(transparent)]
+  Preparation(#[from] BlockPreparationError),
+
+  #[error(transparent)]
+  State(#[from] cfx_statedb::Error),
+
+  #[error(transparent)]
+  Fork(#[from] ForkReadError),
 }
 
 pub(super) struct PreparedBlock {
@@ -59,6 +69,19 @@ pub(crate) struct AutoMining<'a> {
 }
 
 impl NodeRuntime {
+  /// Prices the default next block from the same preparation used by mining.
+  /// The deletion plan, transactions, and prepared controls are discarded without execution.
+  pub(super) fn next_block_base_price(&self) -> Result<SpaceMap<U256>, BlockPreparationError> {
+    let inputs = self.prepare_block_inputs(
+      &self.runtime_state.history,
+      self.runtime_state.effective_state.state(),
+      &self.runtime_state.transaction_pool,
+      &self.runtime_state.production_environment,
+      1,
+    )?;
+    Ok(*inputs.selection.into_block_selection().base_price())
+  }
+
   /// Commits one block using candidate-local time input. On failure, pending
   /// controls and logical time are unchanged.
   pub(crate) fn produce_and_commit_block(
@@ -68,7 +91,8 @@ impl NodeRuntime {
     let environment = self
       .runtime_state
       .production_environment
-      .for_block(timestamp, self.optimistic_head_timestamp())?;
+      .for_block(timestamp, self.optimistic_head_timestamp())
+      .map_err(BlockPreparationError::from)?;
     let prepared = self.prepare_block(
       &self.runtime_state.history,
       self.runtime_state.effective_state.state(),
@@ -130,22 +154,19 @@ impl NodeRuntime {
     pool: &TransactionPool,
     environment: &ProductionEnvironment,
     execution_block_count: usize,
-  ) -> Result<BlockInputs, RuntimeBlockProductionError> {
+  ) -> Result<BlockInputs, BlockPreparationError> {
     let parent = Arc::clone(history.optimistic_head());
     let parent_block = parent.execution_parent();
 
-    let epoch_height =
-      parent_block
-        .height
-        .checked_add(1)
-        .ok_or(RuntimeBlockProductionError::PositionExhausted(
-          "epoch height",
-        ))?;
+    let epoch_height = parent_block
+      .height
+      .checked_add(1)
+      .ok_or(BlockPreparationError::PositionExhausted("epoch height"))?;
     let block_number = parent
       .pivot_block_number()
       .checked_add(execution_block_count as u64)
       .filter(|number| *number < BlockNumber::MAX)
-      .ok_or(RuntimeBlockProductionError::PositionExhausted(
+      .ok_or(BlockPreparationError::PositionExhausted(
         "Core block number",
       ))?;
 

@@ -3,6 +3,7 @@ mod chain;
 mod chain_spec;
 mod config;
 mod execution;
+mod fee_history;
 mod fork;
 mod genesis;
 mod logs;

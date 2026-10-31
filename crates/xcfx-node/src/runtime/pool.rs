@@ -3,7 +3,7 @@
 use cfx_executor::{state::State, transaction_validation::PackingCheckResult};
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
 use cfx_statedb::Result as StateResult;
-use cfx_types::{AddressSpaceUtil, AddressWithSpace, H256, U256, U512};
+use cfx_types::{AddressSpaceUtil, AddressWithSpace, H256, Space, U256, U512};
 use primitives::{Action, Transaction};
 
 use crate::{
@@ -20,7 +20,6 @@ use super::NodeRuntime;
 pub(crate) enum PoolTransactionStatus {
   Pending,
   Queued(QueuedReason),
-  Stale,
 }
 
 /// The first condition preventing an account's nonce sequence from advancing.
@@ -35,6 +34,42 @@ pub(crate) enum QueuedReason {
     required: U512,
     available: U256,
   },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PoolQueryScope {
+  Space(Space),
+  Account(AddressWithSpace),
+}
+
+/// Counts derived from one state version and the retained pool.
+#[derive(Default)]
+pub(crate) struct PoolTransactionCounts {
+  pending: usize,
+  queued: usize,
+}
+
+impl PoolTransactionCounts {
+  pub(crate) fn pending(&self) -> usize {
+    self.pending
+  }
+
+  pub(crate) fn queued(&self) -> usize {
+    self.queued
+  }
+}
+
+/// Owned transaction handles classified before the Runtime can change.
+#[derive(Default)]
+pub(crate) struct PoolContent {
+  pending: Vec<RuntimeTransaction>,
+  queued: Vec<RuntimeTransaction>,
+}
+
+impl PoolContent {
+  pub(crate) fn into_parts(self) -> (Vec<RuntimeTransaction>, Vec<RuntimeTransaction>) {
+    (self.pending, self.queued)
+  }
 }
 
 /// Account transactions captured under one Runtime state and pool view.
@@ -89,9 +124,15 @@ impl<'state, 'db> AccountTransactionReadiness<'state, 'db> {
     transaction: &RuntimeTransaction,
   ) -> StateResult<PoolTransactionStatus> {
     let nonce = *transaction.nonce();
-    if nonce < self.state_nonce {
-      return Ok(PoolTransactionStatus::Stale);
-    }
+    // Admission and joint pool reconciliation exclude stale retained entries;
+    // block preparation removes stale candidates before reaching this scan.
+    assert!(
+      nonce >= self.state_nonce,
+      "classified transaction {:?} has nonce {nonce} below state nonce {} for {:?}",
+      transaction.hash(),
+      self.state_nonce,
+      self.address,
+    );
     if let Some(reason) = self.queued_reason {
       return Ok(PoolTransactionStatus::Queued(reason));
     }
@@ -201,6 +242,66 @@ pub(super) fn prepare_pool_transactions<'pool>(
 }
 
 impl NodeRuntime {
+  /// Classifies retained transactions under the effective state without copying them.
+  /// A blocked account still contributes every remaining transaction to the queued count.
+  ///
+  /// # Errors
+  /// Propagates the state reads required for nonce and cumulative sender-cost readiness.
+  pub(crate) fn pool_transaction_counts(&self, space: Space) -> StateResult<PoolTransactionCounts> {
+    let mut counts = PoolTransactionCounts::default();
+    self.visit_pool_transactions(PoolQueryScope::Space(space), |_, status| match status {
+      PoolTransactionStatus::Pending => counts.pending += 1,
+      PoolTransactionStatus::Queued(_) => counts.queued += 1,
+    })?;
+    Ok(counts)
+  }
+
+  /// Captures complete pending and queued sets using the same classification as counts.
+  /// Account scope reads only that account and Space. The pool is never pruned by a query.
+  ///
+  /// # Errors
+  /// Propagates the state reads required for nonce and cumulative sender-cost readiness.
+  pub(crate) fn pool_content(&self, scope: PoolQueryScope) -> StateResult<PoolContent> {
+    let mut content = PoolContent::default();
+    self.visit_pool_transactions(scope, |transaction, status| match status {
+      PoolTransactionStatus::Pending => content.pending.push(transaction.clone()),
+      PoolTransactionStatus::Queued(_) => content.queued.push(transaction.clone()),
+    })?;
+    Ok(content)
+  }
+
+  fn visit_pool_transactions(
+    &self,
+    scope: PoolQueryScope,
+    mut visit: impl FnMut(&RuntimeTransaction, PoolTransactionStatus),
+  ) -> StateResult<()> {
+    let pool = &self.runtime_state.transaction_pool;
+    let mut transactions: Box<dyn Iterator<Item = &PoolTransaction> + '_> = match scope {
+      PoolQueryScope::Space(space) => Box::new(
+        pool
+          .transactions()
+          .filter(move |pooled| pooled.transaction().space() == space),
+      ),
+      PoolQueryScope::Account(address) => Box::new(pool.transactions_by_account(address)),
+    };
+    let Some(first) = transactions.next() else {
+      return Ok(());
+    };
+
+    let state = self.open_effective_state_for_reading()?;
+    let mut readiness =
+      AccountTransactionReadiness::new(&state, first.transaction().sender_with_space())?;
+    for pooled in std::iter::once(first).chain(transactions) {
+      let transaction = pooled.transaction();
+      let address = transaction.sender_with_space();
+      if address != readiness.address {
+        readiness = AccountTransactionReadiness::new(&state, address)?;
+      }
+      visit(transaction, readiness.check_transaction(transaction)?);
+    }
+    Ok(())
+  }
+
   pub(crate) fn pool_transactions(&self) -> impl Iterator<Item = &RuntimeTransaction> {
     self
       .runtime_state
@@ -250,21 +351,15 @@ impl NodeRuntime {
     limit: usize,
   ) -> StateResult<AccountPoolTransactions> {
     let pool = &self.runtime_state.transaction_pool;
-    if pool
-      .transactions_in_nonce_range(address, start_nonce.unwrap_or_default()..=U256::max_value())
-      .next()
-      .is_none()
-    {
-      return Ok(AccountPoolTransactions::default());
-    }
-
-    let state = self.open_effective_state_for_reading()?;
-    let mut readiness = AccountTransactionReadiness::new(&state, address)?;
-    let start_nonce = start_nonce.unwrap_or(readiness.state_nonce);
-    let mut candidates = pool.transactions_in_nonce_range(address, start_nonce..=U256::max_value());
+    // Admission and reconciliation keep retained nonces at or above the effective state nonce.
+    let mut candidates = pool
+      .transactions_in_nonce_range(address, start_nonce.unwrap_or_default()..=U256::max_value());
     let Some(first) = candidates.next() else {
       return Ok(AccountPoolTransactions::default());
     };
+
+    let state = self.open_effective_state_for_reading()?;
+    let mut readiness = AccountTransactionReadiness::new(&state, address)?;
     let first_nonce = *first.transaction().nonce();
     for pooled in pool
       .transactions_in_nonce_range(address, readiness.state_nonce..=first_nonce)

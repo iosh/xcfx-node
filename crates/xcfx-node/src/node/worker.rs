@@ -24,6 +24,7 @@ use tokio::{
 use crate::{
   chain::{EspaceBlockView, EspaceTransactionView, MinedBlockView, TransactionReceiptView},
   config::{MiningMode, NodeConfig},
+  fee_history::{FeeHistory, RewardPercentiles},
   fork::ForkReadError,
   logs::{FilterChanges, LogFilterInput, LogQueryError, PendingTransactionFilter, network},
   production_environment::BlockTimestamp,
@@ -31,7 +32,8 @@ use crate::{
   runtime::{
     AccountPoolTransactions, ChainChange, CheckpointId, EpochSelector, EspaceBlockSelector,
     EspaceBlockSource, EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector,
-    EspaceTransactionSource, LocalEspaceTransactionSource, ReorgError, RuntimeCommitOutcome,
+    EspaceTransactionSource, FeeQueryError, LocalEspaceTransactionSource, PoolContent,
+    PoolQueryScope, PoolTransactionCounts, ReorgError, RuntimeCommitOutcome,
     RuntimeSimulationError, RuntimeTransactionError, StateQueryError,
   },
   runtime_transaction::RuntimeTransaction,
@@ -638,6 +640,27 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().espace_chain_id()
   }
 
+  pub(crate) fn suggested_gas_price(self, space: Space) -> U256 {
+    self.worker.node.runtime().suggested_gas_price(space)
+  }
+
+  pub(crate) fn espace_fee_history(
+    self,
+    block_count: u64,
+    newest_block: EspaceBlockSelector,
+    reward_percentiles: RewardPercentiles,
+  ) -> Result<FeeHistory, FeeQueryError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .espace_fee_history(block_count, newest_block, &reward_percentiles)
+  }
+
+  pub(crate) fn espace_max_priority_fee_per_gas(self) -> Result<U256, FeeQueryError> {
+    self.worker.node.runtime().espace_max_priority_fee_per_gas()
+  }
+
   pub(crate) fn epoch_height(self, epoch: EpochSelector) -> u64 {
     self.worker.node.runtime().epoch_height(epoch)
   }
@@ -782,6 +805,17 @@ impl NodeCall<'_, '_> {
       .runtime()
       .pool_transaction_by_hash(hash)
       .cloned()
+  }
+
+  pub(crate) fn pool_transaction_counts(
+    self,
+    space: Space,
+  ) -> cfx_statedb::Result<PoolTransactionCounts> {
+    self.worker.node.runtime().pool_transaction_counts(space)
+  }
+
+  pub(crate) fn pool_content(self, scope: PoolQueryScope) -> cfx_statedb::Result<PoolContent> {
+    self.worker.node.runtime().pool_content(scope)
   }
 
   /// Captures owned pool results before automatic mining or another message can run.

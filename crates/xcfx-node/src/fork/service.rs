@@ -134,13 +134,13 @@ impl ForkService {
         let should_start_rpc = register_waiter(
           &mut self.pending.history,
           &mut self.pending.waiter_count,
-          query,
+          query.clone(),
           reply,
         );
         if should_start_rpc {
           let rpc = Arc::clone(&self.rpc);
           self.reads.spawn(async move {
-            let result = rpc.history(query).await;
+            let result = rpc.history(query.clone()).await;
             CompletedRead::History { query, result }
           });
         }

@@ -4,6 +4,16 @@ use cfx_rpc_eth_types::{Bytes, Header, Log, Receipt, Transaction};
 use cfx_types::{Bloom, H64, H160, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
+/// Unvalidated fee-history columns received from the eSpace endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EthereumFeeHistoryResponse {
+  pub(crate) oldest_block: U64,
+  pub(crate) base_fee_per_gas: Vec<U256>,
+  pub(crate) gas_used_ratio: Vec<f64>,
+  pub(crate) reward: Vec<Vec<U256>>,
+}
+
 // Upstream BlockTransactions is not exported, so the block envelope is local.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct EthereumBlock {

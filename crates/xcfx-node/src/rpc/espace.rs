@@ -1,18 +1,20 @@
 mod completion;
 pub(super) mod convert;
 mod error;
+mod fees;
 mod params;
+mod pool;
 
 use alloy_dyn_abi::TypedData;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use cfx_rpc_eth_types::{BlockId, Bytes, Index};
-use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H64, H128, H256, Space, U256};
+use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H64, H128, H256, Space, U64, U256};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
   logs::PendingTransactionFilter,
-  runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector},
+  runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector, PoolQueryScope},
   virtual_execution::VirtualExecutionOverrides,
 };
 
@@ -27,6 +29,29 @@ use params::{BlockOverrides, EspaceTransactionRequest, StateOverrides};
 
 #[derive(Deserialize)]
 pub(super) enum EspaceRequest {
+  #[serde(rename = "txpool_status")]
+  PoolStatus,
+  #[serde(rename = "txpool_content")]
+  PoolContent,
+  #[serde(
+    rename = "txpool_contentFrom",
+    deserialize_with = "protocol::deserialize_single"
+  )]
+  PoolContentFrom(Address),
+  #[serde(rename = "txpool_inspect")]
+  PoolInspect,
+  #[serde(rename = "eth_getAccountPendingTransactions")]
+  AccountPendingTransactions(
+    Address,
+    #[serde(default)] Option<U256>,
+    #[serde(default)] Option<U64>,
+  ),
+  #[serde(rename = "eth_gasPrice")]
+  GasPrice,
+  #[serde(rename = "eth_feeHistory")]
+  FeeHistory(U64, BlockId, #[serde(default)] Option<Vec<f64>>),
+  #[serde(rename = "eth_maxPriorityFeePerGas")]
+  MaxPriorityFeePerGas,
   #[serde(
     rename = "eth_getLogs",
     deserialize_with = "protocol::deserialize_single"
@@ -219,6 +244,54 @@ pub(super) enum EspaceRequest {
 impl EspaceRequest {
   pub(super) fn into_operation(self) -> Operation {
     let value = match self {
+      Self::FeeHistory(count, newest, percentiles) => {
+        return fees::history(count, newest, percentiles);
+      }
+      Self::MaxPriorityFeePerGas => {
+        return Operation::on_node(
+          |node| node.espace_max_priority_fee_per_gas(),
+          fees::priority_fee,
+        );
+      }
+      Self::PoolStatus => {
+        return Operation::on_node(
+          |node| node.pool_transaction_counts(Space::Ethereum),
+          pool::status,
+        );
+      }
+      Self::PoolContent => {
+        return Operation::on_node(
+          |node| node.pool_content(PoolQueryScope::Space(Space::Ethereum)),
+          pool::content,
+        );
+      }
+      Self::PoolContentFrom(address) => {
+        return Operation::on_node(
+          move |node| node.pool_content(PoolQueryScope::Account(address.with_evm_space())),
+          pool::content_from,
+        );
+      }
+      Self::PoolInspect => {
+        return Operation::on_node(
+          |node| node.pool_content(PoolQueryScope::Space(Space::Ethereum)),
+          pool::inspect,
+        );
+      }
+      Self::AccountPendingTransactions(address, start_nonce, limit) => {
+        let limit = limit.map_or(usize::MAX, |limit| {
+          usize::try_from(limit.as_u64()).unwrap_or(usize::MAX)
+        });
+        return Operation::on_node(
+          move |node| node.pool_account_transactions(address.with_evm_space(), start_nonce, limit),
+          pool::account_transactions,
+        );
+      }
+      Self::GasPrice => {
+        return Operation::on_node(
+          |node| node.suggested_gas_price(Space::Ethereum),
+          |price| Ok(json!(price)),
+        );
+      }
       Self::Logs(filter) => return logs::get_logs(Space::Ethereum, filter.into_input()),
       Self::NewFilter(filter) => return filter.into_new_filter(),
       Self::NewBlockFilter => {
@@ -500,7 +573,7 @@ impl EspaceRequest {
       Self::ProtocolVersion => json!("0x41"),
       Self::Coinbase => json!("0x0000000000000000000000000000000000000000"),
       Self::Modules => {
-        json!({"eth":"1.0", "net":"1.0", "web3":"1.0", "parity":"1.0", "rpc":"1.0", "xcfx":"1.0", "anvil":"1.0", "evm":"1.0", "hardhat":"1.0"})
+        json!({"eth":"1.0", "net":"1.0", "web3":"1.0", "parity":"1.0", "rpc":"1.0", "txpool":"1.0", "xcfx":"1.0", "anvil":"1.0", "evm":"1.0", "hardhat":"1.0"})
       }
     };
     Operation::Immediate(Ok(value))
