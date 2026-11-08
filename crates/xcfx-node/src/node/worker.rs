@@ -471,6 +471,14 @@ fn capture_espace_transaction(
 }
 
 #[derive(Debug, Error)]
+pub(crate) enum CoreStateQueryError {
+  #[error("{0}")]
+  Network(UnexpectedRpcAddressNetwork),
+  #[error(transparent)]
+  Query(#[from] StateQueryError),
+}
+
+#[derive(Debug, Error)]
 pub(crate) enum NativeNonceError {
   #[error("{0}")]
   Network(UnexpectedRpcAddressNetwork),
@@ -663,6 +671,73 @@ impl NodeCall<'_, '_> {
 
   pub(crate) fn epoch_height(self, epoch: EpochSelector) -> u64 {
     self.worker.node.runtime().epoch_height(epoch)
+  }
+
+  pub(crate) fn core_epoch_number(self, epoch: EpochSelector) -> Option<u64> {
+    self.worker.node.runtime().core_epoch_number(epoch)
+  }
+
+  pub(crate) fn core_balance_at(
+    self,
+    address: RpcAddress,
+    selector: StateSelector,
+  ) -> Result<U256, CoreStateQueryError> {
+    let address = self
+      .native_address(address)
+      .map_err(CoreStateQueryError::Network)?;
+    Ok(
+      self
+        .worker
+        .node
+        .runtime()
+        .core_balance_at(address, selector)?,
+    )
+  }
+
+  pub(crate) fn core_nonce_at(
+    self,
+    address: RpcAddress,
+    selector: StateSelector,
+  ) -> Result<U256, CoreStateQueryError> {
+    let address = self
+      .native_address(address)
+      .map_err(CoreStateQueryError::Network)?;
+    Ok(
+      self
+        .worker
+        .node
+        .runtime()
+        .core_nonce_at(address, selector)?,
+    )
+  }
+
+  pub(crate) fn core_code_at(
+    self,
+    address: RpcAddress,
+    selector: StateSelector,
+  ) -> Result<Arc<Vec<u8>>, CoreStateQueryError> {
+    let address = self
+      .native_address(address)
+      .map_err(CoreStateQueryError::Network)?;
+    Ok(self.worker.node.runtime().core_code_at(address, selector)?)
+  }
+
+  pub(crate) fn core_storage_at(
+    self,
+    address: RpcAddress,
+    position: H256,
+    selector: StateSelector,
+  ) -> Result<Option<H256>, CoreStateQueryError> {
+    let address = self
+      .native_address(address)
+      .map_err(CoreStateQueryError::Network)?;
+    Ok(
+      self
+        .worker
+        .node
+        .runtime()
+        .core_storage_at(address, position, selector)?,
+    )
   }
 
   pub(crate) fn espace_balance_at(
@@ -894,16 +969,27 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().sign_transaction_request(request)
   }
 
-  pub(crate) fn native_pending_nonce(self, address: RpcAddress) -> Result<U256, NativeNonceError> {
-    let runtime = self.worker.node.runtime();
-    let network = match runtime.network_id() {
+  fn native_address(&self, address: RpcAddress) -> Result<Address, UnexpectedRpcAddressNetwork> {
+    let network = match self.worker.node.runtime().network_id() {
       1 => Network::Test,
       1029 => Network::Main,
       id => Network::Id(id),
     };
-    check_rpc_address_network(Some(address.network), &network)
+    check_rpc_address_network(Some(address.network), &network)?;
+    Ok(address.hex_address)
+  }
+
+  pub(crate) fn native_pending_nonce(self, address: RpcAddress) -> Result<U256, NativeNonceError> {
+    let address = self
+      .native_address(address)
       .map_err(NativeNonceError::Network)?;
-    Ok(runtime.pending_nonce(address.hex_address.with_native_space())?)
+    Ok(
+      self
+        .worker
+        .node
+        .runtime()
+        .pending_nonce(address.with_native_space())?,
+    )
   }
 
   pub(crate) fn espace_call(

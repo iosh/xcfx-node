@@ -1,20 +1,39 @@
-use cfx_rpc_cfx_types::RpcAddress;
-use cfx_types::{H128, Space};
+mod query;
+
+use cfx_rpc_cfx_types::{BlockHashOrEpochNumber, EpochNumber, RpcAddress};
+use cfx_types::{BigEndianHash, H128, H256, Space, U256};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{logs::PendingTransactionFilter, node::NativeNonceError};
+use crate::logs::PendingTransactionFilter;
 
 use super::{
   connection::SubscriptionId,
   logs::{self, CoreLogFilter},
   operation::Operation,
-  protocol::{self, RpcError},
+  protocol,
   subscription::{self, CoreSubscription},
 };
 
 #[derive(Deserialize)]
 pub(super) enum CoreRequest {
+  #[serde(
+    rename = "cfx_epochNumber",
+    deserialize_with = "protocol::deserialize_optional"
+  )]
+  EpochNumber(Option<EpochNumber>),
+  #[serde(rename = "cfx_getBalance")]
+  Balance(RpcAddress, #[serde(default)] Option<BlockHashOrEpochNumber>),
+  #[serde(rename = "cfx_getNextNonce")]
+  Nonce(RpcAddress, #[serde(default)] Option<BlockHashOrEpochNumber>),
+  #[serde(rename = "cfx_getCode")]
+  Code(RpcAddress, #[serde(default)] Option<BlockHashOrEpochNumber>),
+  #[serde(rename = "cfx_getStorageAt")]
+  Storage(
+    RpcAddress,
+    U256,
+    #[serde(default)] Option<BlockHashOrEpochNumber>,
+  ),
   #[serde(
     rename = "cfx_getLogs",
     deserialize_with = "protocol::deserialize_single"
@@ -55,12 +74,42 @@ pub(super) enum CoreRequest {
     rename = "txpool_nextNonce",
     deserialize_with = "protocol::deserialize_single"
   )]
-  NextNonce(RpcAddress),
+  PendingNonce(RpcAddress),
 }
 
 impl CoreRequest {
   pub(super) fn into_operation(self) -> Operation {
     match self {
+      Self::EpochNumber(epoch) => query::epoch_number(epoch),
+      Self::Balance(address, selector) => {
+        let selector = query::state_selector(selector);
+        Operation::on_node(
+          move |node| node.core_balance_at(address, selector),
+          query::state,
+        )
+      }
+      Self::Nonce(address, selector) => {
+        let selector = query::state_selector(selector);
+        Operation::on_node(
+          move |node| node.core_nonce_at(address, selector),
+          query::state,
+        )
+      }
+      Self::Code(address, selector) => {
+        let selector = query::state_selector(selector);
+        Operation::on_node(
+          move |node| node.core_code_at(address, selector),
+          query::code,
+        )
+      }
+      Self::Storage(address, position, selector) => {
+        let selector = query::state_selector(selector);
+        let position = H256::from_uint(&position);
+        Operation::on_node(
+          move |node| node.core_storage_at(address, position, selector),
+          query::state,
+        )
+      }
       Self::Logs(filter) => logs::get_logs(Space::Native, filter.into_input()),
       Self::NewFilter(filter) => logs::new_filter(Space::Native, filter.into_input()),
       Self::NewBlockFilter => Operation::on_node(
@@ -79,24 +128,9 @@ impl CoreRequest {
       ),
       Self::Subscribe(request) => request.into_operation(),
       Self::Unsubscribe(id) => subscription::unsubscribe(id),
-      Self::NextNonce(address) => Operation::on_node(
+      Self::PendingNonce(address) => Operation::on_node(
         move |node| node.native_pending_nonce(address),
-        |result| {
-          result
-            .map(|nonce| json!(nonce))
-            .map_err(|error| match error {
-              NativeNonceError::Network(error) => RpcError {
-                code: -32602,
-                message: error.to_string(),
-                data: None,
-              },
-              NativeNonceError::State(_) => RpcError {
-                code: -32016,
-                message: "State query failed".into(),
-                data: None,
-              },
-            })
-        },
+        query::pending_nonce,
       ),
     }
   }

@@ -1,5 +1,6 @@
 //! Read-only access to retained history, state versions, and instance metadata.
 
+mod core;
 mod espace;
 
 pub(crate) use espace::{
