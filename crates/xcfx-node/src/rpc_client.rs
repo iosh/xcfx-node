@@ -9,9 +9,8 @@ use alloy_rpc_client::{ClientBuilder, RpcClient};
 use alloy_transport::{TransportResult, layers::RetryBackoffLayer};
 
 use cfx_rpc_cfx_types::{
-  Account, Block, BlockHashOrEpochNumber, Bytes, EpochNumber, Log, PoSEconomics, Receipt,
-  RpcAddress, SponsorInfo, Status, StorageCollateralInfo, TokenSupplyInfo, Transaction,
-  VoteParamsInfo,
+  Account, Block, Bytes, EpochNumber, Log, PoSEconomics, Receipt, RpcAddress, SponsorInfo, Status,
+  StorageCollateralInfo, TokenSupplyInfo, Transaction, TransactionRequest, VoteParamsInfo,
 };
 
 use cfx_types::{Address, H256, U64, U256};
@@ -19,6 +18,23 @@ use primitives::{DepositInfo, VoteStakeInfo};
 use serde::{Deserialize, Serialize};
 
 use response::EthereumReceiptResponse;
+
+/// A selected Core pivot in the standard object form accepted by state RPCs.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PivotSelector {
+  block_hash: H256,
+  require_pivot: bool,
+}
+
+impl PivotSelector {
+  fn new(block_hash: H256) -> Self {
+    Self {
+      block_hash,
+      require_pivot: true,
+    }
+  }
+}
 
 /// HTTP timeout and retry policy shared by the Core and eSpace endpoints.
 #[derive(Debug)]
@@ -118,12 +134,15 @@ impl ConfluxRpcClient {
 
   pub(crate) async fn cfx_getEpochReceipts(
     &self,
-    epoch: BlockHashOrEpochNumber,
+    pivot_hash: H256,
     include_espace: bool,
   ) -> TransportResult<Option<Vec<Vec<Receipt>>>> {
     self
       .core
-      .request("cfx_getEpochReceipts", (epoch, include_espace))
+      .request(
+        "cfx_getEpochReceipts",
+        (PivotSelector::new(pivot_hash), include_espace),
+      )
       .await
   }
 
@@ -335,6 +354,18 @@ impl ConfluxRpcClient {
     self.core.request_noparams("cfx_getStatus").await
   }
 
+  /// Executes against the selected remote state without publishing changes.
+  pub(crate) async fn cfx_call(
+    &self,
+    request: &TransactionRequest,
+    pivot_hash: H256,
+  ) -> TransportResult<Bytes> {
+    self
+      .core
+      .request("cfx_call", (request, PivotSelector::new(pivot_hash)))
+      .await
+  }
+
   /// Returns the epoch's pivot block with transaction hashes.
   pub(crate) async fn cfx_getBlockByEpochNumber(
     &self,
@@ -349,9 +380,12 @@ impl ConfluxRpcClient {
   pub(crate) async fn cfx_getBalance(
     &self,
     address: RpcAddress,
-    block: BlockHashOrEpochNumber,
+    pivot_hash: H256,
   ) -> TransportResult<U256> {
-    self.core.request("cfx_getBalance", (address, block)).await
+    self
+      .core
+      .request("cfx_getBalance", (address, PivotSelector::new(pivot_hash)))
+      .await
   }
 
   pub(crate) async fn cfx_getAdmin(
@@ -360,6 +394,20 @@ impl ConfluxRpcClient {
     epoch: EpochNumber,
   ) -> TransportResult<Option<RpcAddress>> {
     self.core.request("cfx_getAdmin", (address, epoch)).await
+  }
+
+  pub(crate) async fn cfx_getNextNonce(
+    &self,
+    address: RpcAddress,
+    pivot_hash: H256,
+  ) -> TransportResult<U256> {
+    self
+      .core
+      .request(
+        "cfx_getNextNonce",
+        (address, PivotSelector::new(pivot_hash)),
+      )
+      .await
   }
 
   pub(crate) async fn cfx_getAccount(
@@ -395,20 +443,26 @@ impl ConfluxRpcClient {
   pub(crate) async fn cfx_getCode(
     &self,
     address: RpcAddress,
-    block: BlockHashOrEpochNumber,
+    pivot_hash: H256,
   ) -> TransportResult<Bytes> {
-    self.core.request("cfx_getCode", (address, block)).await
+    self
+      .core
+      .request("cfx_getCode", (address, PivotSelector::new(pivot_hash)))
+      .await
   }
 
   pub(crate) async fn cfx_getStorageAt(
     &self,
     address: RpcAddress,
     slot: U256,
-    block: BlockHashOrEpochNumber,
+    pivot_hash: H256,
   ) -> TransportResult<Option<H256>> {
     self
       .core
-      .request("cfx_getStorageAt", (address, slot, block))
+      .request(
+        "cfx_getStorageAt",
+        (address, slot, PivotSelector::new(pivot_hash)),
+      )
       .await
   }
 

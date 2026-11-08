@@ -2,10 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cfx_rpc_eth_types::{
-  AccountOverride as ExecutorAccountOverride, AccountStateOverrideMode,
-  StateOverride as ExecutorStateOverride,
-};
+use cfx_rpc_eth_types::{AccountOverride, AccountStateOverrideMode, StateOverride};
 use cfx_types::{Address, H256, Space, U64, U256, address_util::AddressUtil};
 use cfx_vm_types::Env;
 use primitives::BlockNumber;
@@ -31,8 +28,8 @@ pub(crate) struct VirtualAccountOverride {
 
 /// State overrides for the single Space selected by the transaction.
 ///
-/// This type keeps the product input independent from the RPC type currently
-/// required by `cfx-executor`.
+/// Keeps product input independent from the override representation accepted
+/// by `xcfx_state::State`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct VirtualStateOverrides {
   accounts: BTreeMap<Address, VirtualAccountOverride>,
@@ -43,11 +40,11 @@ impl VirtualStateOverrides {
     Self { accounts }
   }
 
-  pub(super) fn into_executor_overrides(
+  pub(super) fn into_state_overrides(
     self,
     space: Space,
-  ) -> Result<ExecutorStateOverride, VirtualExecutionError> {
-    let mut overrides = ExecutorStateOverride::with_capacity(self.accounts.len());
+  ) -> Result<StateOverride, VirtualExecutionError> {
+    let mut overrides = StateOverride::with_capacity(self.accounts.len());
 
     for (address, account) in self.accounts {
       if space == Space::Native && !address.is_genesis_valid_address() {
@@ -66,7 +63,7 @@ impl VirtualStateOverrides {
 
       overrides.insert(
         address,
-        ExecutorAccountOverride {
+        AccountOverride {
           balance: account.balance,
           nonce: account.nonce.map(U64::from),
           code: account.code.map(Into::into),

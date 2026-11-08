@@ -7,12 +7,14 @@ use primitives::transaction::TransactionError;
 use serde_json::Value;
 
 use crate::{
-  fork::ForkReadError,
   rpc::protocol::RpcError,
-  runtime::{EspaceStateQueryError, RuntimeSimulationError, RuntimeTransactionError},
+  runtime::{RuntimeSimulationError, RuntimeTransactionError, StateSelectionError},
   state::balance::BalanceChangeError,
   virtual_execution::{SimulationFailure, VirtualExecutionError},
 };
+
+pub(super) use crate::rpc::error::{fork_error, state_error};
+use crate::rpc::error::{processing_error, state_selection_error};
 
 pub(super) fn invalid_params(error: impl std::fmt::Display) -> RpcError {
   RpcError {
@@ -55,12 +57,12 @@ pub(super) fn transaction_error(error: RuntimeTransactionError) -> RpcError {
 
 pub(super) fn simulation_error(error: RuntimeSimulationError) -> RpcError {
   match error {
-    RuntimeSimulationError::Selection(EspaceStateQueryError::Unavailable(error)) => RpcError {
+    RuntimeSimulationError::Selection(StateSelectionError::Unavailable(error)) => RpcError {
       code: -32602,
       message: error.to_string(),
       data: None,
     },
-    RuntimeSimulationError::Selection(error) => state_error(error),
+    RuntimeSimulationError::Selection(error) => state_selection_error(error),
     RuntimeSimulationError::Simulation(error) => virtual_execution_error(error),
   }
 }
@@ -138,36 +140,5 @@ pub(super) fn execution_error(error: SimulationFailure) -> RpcError {
       message: error.to_string(),
       data: None,
     },
-  }
-}
-
-pub(super) fn state_error(error: EspaceStateQueryError) -> RpcError {
-  match error {
-    EspaceStateQueryError::Unavailable(_) | EspaceStateQueryError::UnknownBlock(_) => {
-      RpcError::invalid_params()
-    }
-    EspaceStateQueryError::Fork(error) => fork_error(error),
-    EspaceStateQueryError::State(_) => processing_error("State query failed"),
-  }
-}
-
-pub(super) fn fork_error(error: ForkReadError) -> RpcError {
-  match error {
-    ForkReadError::Closed => RpcError {
-      code: -32000,
-      message: "Node is closed".into(),
-      data: None,
-    },
-    ForkReadError::ServiceStopped => RpcError::internal(),
-    _ => processing_error("Remote query failed"),
-  }
-}
-
-fn processing_error(message: &str) -> RpcError {
-  // Conflux maps state/storage processing failures to EXCEPTION_ERROR.
-  RpcError {
-    code: -32016,
-    message: message.into(),
-    data: None,
   }
 }

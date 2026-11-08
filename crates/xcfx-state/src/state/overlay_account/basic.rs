@@ -1,7 +1,8 @@
+use crate::database::CodeEntry;
 use cfx_bytes::Bytes;
 use cfx_types::{Address, AddressWithSpace, H256, U256};
 use keccak_hash::{keccak, KECCAK_EMPTY};
-use primitives::{storage::STORAGE_LAYOUT_REGULAR_V0, CodeInfo, CODE_PREFIX_7702};
+use primitives::{storage::STORAGE_LAYOUT_REGULAR_V0, CODE_PREFIX_7702};
 use std::sync::Arc;
 
 use super::OverlayAccount;
@@ -52,19 +53,13 @@ impl OverlayAccount {
 
   pub fn init_code(&mut self, code: Bytes, owner: Address, transaction_hash: H256) {
     self.code_hash = keccak(&code);
-    self.code = Some(CodeInfo {
-      code: Arc::new(code),
-      owner,
-    });
+    self.code = Some(CodeEntry::new(Arc::new(code), owner));
     self.create_transaction_hash = Some(transaction_hash);
   }
 
   pub fn override_code(&mut self, code: Bytes, owner: Address) {
     self.code_hash = keccak(&code);
-    self.code = Some(CodeInfo {
-      code: Arc::new(code),
-      owner,
-    });
+    self.code = Some(CodeEntry::new(Arc::new(code), owner));
   }
 
   pub fn set_authorization(&mut self, address: &Address) {
@@ -76,10 +71,7 @@ impl OverlayAccount {
       let mut code = CODE_PREFIX_7702.to_vec();
       code.extend_from_slice(&address[..]);
       self.code_hash = keccak(&code);
-      self.code = Some(CodeInfo {
-        code: Arc::new(code),
-        owner: Address::zero(),
-      });
+      self.code = Some(CodeEntry::new(Arc::new(code), Address::zero()));
       self.storage_layout_change = Some(STORAGE_LAYOUT_REGULAR_V0);
     } else {
       self.code_hash = KECCAK_EMPTY;

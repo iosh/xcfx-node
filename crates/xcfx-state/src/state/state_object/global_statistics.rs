@@ -3,9 +3,9 @@ use cfx_parameters::genesis::{
   genesis_contract_address_four_year, genesis_contract_address_two_year,
 };
 use cfx_statedb::{global_params::*, Result as DbResult};
-use cfx_types::{Address, AddressSpaceUtil, U256};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, U256};
 
-impl State {
+impl State<'_> {
   pub fn total_issued_tokens(&self) -> U256 {
     self.global_stat.get::<TotalIssued>()
   }
@@ -64,12 +64,32 @@ impl State {
       self.global_stat.refr::<TotalPosStaking>().saturating_sub(v)
   }
 
+  // Protocol statistics do not participate in transaction access tracking.
+  // A backend may know a balance without a complete account representation.
+  fn balance_without_touch(&self, address: &AddressWithSpace) -> DbResult<U256> {
+    if let Some(entry) = self.cache.read().get(address) {
+      return Ok(
+        entry
+          .account()
+          .map_or_else(U256::zero, |account| *account.balance()),
+      );
+    }
+    if let Some(entry) = self.committed_cache.get(address) {
+      return Ok(
+        entry
+          .account()
+          .map_or_else(U256::zero, |account| *account.balance()),
+      );
+    }
+    self.db.get_account_balance(address)
+  }
+
   pub fn total_circulating_tokens(&self) -> DbResult<U256> {
     Ok(
       self.total_issued_tokens()
-        - self.balance(&Address::zero().with_native_space())?
-        - self.balance(&genesis_contract_address_four_year())?
-        - self.balance(&genesis_contract_address_two_year())?,
+        - self.balance_without_touch(&Address::zero().with_native_space())?
+        - self.balance_without_touch(&genesis_contract_address_four_year())?
+        - self.balance_without_touch(&genesis_contract_address_two_year())?,
     )
   }
 

@@ -8,12 +8,12 @@ use crate::{
   },
 };
 
-use super::{EspaceStateQueryError, EspaceStateSelector, NodeRuntime};
+use super::{NodeRuntime, StateSelectionError, StateSelector};
 
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeSimulationError {
   #[error(transparent)]
-  Selection(#[from] EspaceStateQueryError),
+  Selection(#[from] StateSelectionError),
   #[error(transparent)]
   Simulation(#[from] VirtualExecutionError),
 }
@@ -22,11 +22,11 @@ impl NodeRuntime {
   fn espace_simulation(
     &self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<Simulation<'_>, RuntimeSimulationError> {
     let request = SimulationRequest::new(request)?;
-    let view = self.espace_epoch_for_simulation(selector)?;
+    let view = self.epoch_for_simulation(selector)?;
     Ok(Simulation::new(
       self.chain_spec.machine().as_ref(),
       view,
@@ -38,7 +38,7 @@ impl NodeRuntime {
   pub(crate) fn espace_call(
     &self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<Vec<u8>, RuntimeSimulationError> {
     Ok(
@@ -51,7 +51,7 @@ impl NodeRuntime {
   pub(crate) fn espace_estimate_gas(
     &self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<TransactionEstimate, RuntimeSimulationError> {
     Ok(
@@ -64,7 +64,7 @@ impl NodeRuntime {
   pub(crate) fn espace_create_access_list(
     &self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<AccessListResult, RuntimeSimulationError> {
     Ok(

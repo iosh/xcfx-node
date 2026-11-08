@@ -5,7 +5,7 @@ use cfx_types::U256;
 use cfx_parameters::staking::INTEREST_RATE_PER_BLOCK_SCALE;
 use cfx_statedb::global_params::*;
 
-impl State {
+impl State<'_> {
   /// Calculate the secondary reward for the next block number.
   pub fn bump_block_number_accumulate_interest(&mut self) {
     assert!(self.no_checkpoint());

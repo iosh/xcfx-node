@@ -6,7 +6,7 @@ use cfx_rpc_cfx_types::{Block, Log as CoreLog};
 use cfx_rpc_eth_types::{
   Log as EthereumLog, Receipt as EthereumReceipt, Transaction as EthereumTransaction,
 };
-use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, Space, U256};
 use primitives::{StorageKeyWithSpace, block::BlockHeight};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -17,8 +17,8 @@ use crate::{
 };
 
 use super::{
-  EspaceStateQuery, ForkBase, ForkEpochReceipts, ForkReadError, HistoryBlockId, HistoryQuery,
-  HistoryResult, rpc::StateKey,
+  CoreStateQuery, EspaceStateQuery, ForkBase, ForkEpochReceipts, ForkReadError, HistoryBlockId,
+  HistoryQuery, HistoryResult, StateValue, rpc::StateKey,
 };
 
 pub(super) type Reply<T> = oneshot::Sender<Result<T, ForkReadError>>;
@@ -63,12 +63,23 @@ impl ForkClient {
   pub(crate) fn state_value(
     &self,
     key: StorageKeyWithSpace<'_>,
-  ) -> Result<Option<Box<[u8]>>, ForkReadError> {
+  ) -> Result<Option<StateValue>, ForkReadError> {
     let key = StateKey::try_from(key)?;
     let (reply, response) = oneshot::channel();
     self.send(ReadRequest::StateValue { key, reply })?;
-    let value = self.receive(response)?;
-    Ok(value.map(|value| Box::<[u8]>::from(value.as_ref())))
+    self.receive(response)
+  }
+
+  pub(crate) fn storage_points_initialized(
+    &self,
+    address: &Address,
+  ) -> Result<bool, ForkReadError> {
+    let (reply, response) = oneshot::channel();
+    self.send(ReadRequest::StoragePointsInitialization {
+      address: *address,
+      reply,
+    })?;
+    self.receive(response)
   }
 
   pub(crate) fn pivot(&self, epoch: BlockHeight) -> Result<Arc<Block>, ForkReadError> {
@@ -276,6 +287,72 @@ impl ForkClient {
     Ok(height)
   }
 
+  /// Reads a Core balance without reconstructing unrelated account metadata.
+  pub(crate) fn core_balance_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    if epoch_height == self.base.epoch_height {
+      return self.balance(&address.with_native_space());
+    }
+    let HistoryResult::CoreQuantity(value) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Balance(address),
+    })?
+    else {
+      unreachable!("a Core balance query must return a quantity");
+    };
+    Ok(value)
+  }
+
+  pub(crate) fn core_nonce_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(value) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Nonce(address),
+    })?
+    else {
+      unreachable!("a Core nonce query must return a quantity");
+    };
+    Ok(value)
+  }
+
+  pub(crate) fn core_code_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<Vec<u8>>, ForkReadError> {
+    let HistoryResult::CoreCode(value) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Code(address),
+    })?
+    else {
+      unreachable!("a Core code query must return bytes");
+    };
+    Ok(value)
+  }
+
+  /// Preserves the Core RPC distinction between an absent slot and a stored word.
+  pub(crate) fn core_storage_at(
+    &self,
+    address: Address,
+    position: H256,
+    epoch_height: BlockHeight,
+  ) -> Result<Option<H256>, ForkReadError> {
+    let HistoryResult::CoreStorage(value) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Storage { address, position },
+    })?
+    else {
+      unreachable!("a Core storage query must return an optional word");
+    };
+    Ok(value)
+  }
+
   pub(crate) fn espace_balance_at(
     &self,
     address: Address,
@@ -376,7 +453,11 @@ pub(super) enum ReadRequest {
   },
   StateValue {
     key: StateKey,
-    reply: Reply<Option<Arc<[u8]>>>,
+    reply: Reply<Option<StateValue>>,
+  },
+  StoragePointsInitialization {
+    address: Address,
+    reply: Reply<bool>,
   },
   Pivot {
     epoch: BlockHeight,

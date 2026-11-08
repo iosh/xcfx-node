@@ -105,24 +105,4 @@ impl<T: CheckpointLayerTrait> LazyDiscardedVec<T> {
       .entry(key)
       .or_insert_with(|| value(last_layer_id));
   }
-
-  #[cfg(test)]
-  fn undiscarded_len(&self) -> usize {
-    self.bundle_start_indices.len()
-  }
-
-  #[cfg(test)]
-  pub fn len(&self) -> usize {
-    self.undiscarded_len()
-  }
-
-  #[cfg(test)]
-  pub fn elements_from_index(&self, undiscard_element_index: usize) -> impl Iterator<Item = &T> {
-    let element_index = if undiscard_element_index < self.undiscarded_len() {
-      self.bundle_start_indices[undiscard_element_index]
-    } else {
-      self.total_len()
-    };
-    self.inner_vec.iter().skip(element_index)
-  }
 }

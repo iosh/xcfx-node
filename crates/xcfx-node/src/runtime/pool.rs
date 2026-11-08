@@ -1,6 +1,8 @@
 //! Pool queries and block candidates evaluated under one Runtime state version.
 
-use cfx_executor::{state::State, transaction_validation::PackingCheckResult};
+use cfx_executor::transaction_validation::PackingCheckResult;
+use xcfx_state::State;
+
 use cfx_parameters::staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT;
 use cfx_statedb::Result as StateResult;
 use cfx_types::{AddressSpaceUtil, AddressWithSpace, H256, Space, U256, U512};

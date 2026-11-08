@@ -1,6 +1,7 @@
 use super::OverlayAccount;
+use crate::database::Database;
 use cfx_bytes::Bytes;
-use cfx_statedb::{Error as DbErrorKind, Result as DbResult, StateDbExt, StateDbGeneric};
+use cfx_statedb::{Error as DbErrorKind, Result as DbResult};
 use cfx_types::Address;
 use keccak_hash::KECCAK_EMPTY;
 use primitives::{DepositList, VoteStakeList};
@@ -19,7 +20,7 @@ impl OverlayAccount {
   }
 
   /// Load lazily maintained code
-  pub fn cache_code(&mut self, db: &StateDbGeneric) -> DbResult<()> {
+  pub fn cache_code(&mut self, db: &dyn Database) -> DbResult<()> {
     trace!(
       "OverlayAccount::cache_code: ic={}; self.code_hash={:?}, self.code_cache={:?}",
       self.is_code_loaded(),
@@ -49,7 +50,7 @@ impl OverlayAccount {
     &mut self,
     cache_deposit_list: bool,
     cache_vote_list: bool,
-    db: &StateDbGeneric,
+    db: &dyn Database,
   ) -> DbResult<()> {
     self.address.assert_native();
     if cache_deposit_list && self.deposit_list.is_none() {
@@ -122,9 +123,9 @@ impl OverlayAccount {
   /// To prevent panics from reading ext fields without loading from the DB,
   /// these method are restricted to be visible only within the `state`
   /// module.
-  pub(in crate::state) fn code_owner(&self) -> Address {
+  pub(in crate::state) fn code_owner(&self) -> Option<Address> {
     if self.code_hash == KECCAK_EMPTY {
-      Address::zero()
+      None
     } else {
       self.code.as_ref().expect(NOT_LOADED_ERR).owner
     }

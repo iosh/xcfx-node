@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cfx_executor::{
-  observer::{OpcodeTracer, SetAuthTracer},
-  state::State,
-};
+use cfx_executor::observer::{OpcodeTracer, SetAuthTracer};
+use xcfx_state::State;
+
 use cfx_parity_trace_types::{SetAuth, SetAuthOutcome};
 use cfx_types::{Address, AddressSpaceUtil, H256, u256_to_address_be, u256_to_h256_be};
 use cfx_vm_interpreter::instructions::Instruction;

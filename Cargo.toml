@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/xcfx-node", "crates/xcfx-node-napi"]
+members = ["crates/xcfx-node", "crates/xcfx-node-napi", "crates/xcfx-state"]
 resolver = "3"
 
 [workspace.package]
@@ -11,6 +11,9 @@ repository = "https://github.com/iosh/xcfx-node"
 
 
 [workspace.dependencies]
+xcfx-state = { path = "crates/xcfx-state" }
+cfx-bytes = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
+cfx-util-macros = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 alloy-dyn-abi = { version = "1.6.0", default-features = false, features = ["std", "eip712"] }
 alloy-provider = { version = "2.4.1", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-rpc-client = { version = "2.4.1", default-features = false, features = ["reqwest"] }
@@ -22,6 +25,7 @@ cfx-addr = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfxkey = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-executor = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-internal-common = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
+cfx-math = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-mpt = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-parameters = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
 cfx-parity-trace-types = { git = "https://github.com/iosh/conflux-rust", branch = "v3.1.0" }
@@ -45,6 +49,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 imbl = "7.0.1"
 tokio = { version = "1.53.1", features = ["rt", "net", "sync", "time", "macros"] }
 thiserror = "2"
+log = "0.4"
 rlp = "0.6"
 keccak-hash = "0.12"
 typemap = { package = "typemap-ors", version = "1.0" }

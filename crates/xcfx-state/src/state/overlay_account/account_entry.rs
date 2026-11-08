@@ -1,3 +1,4 @@
+use crate::account::Account;
 // Copyright 2019 Conflux Foundation. All rights reserved.
 // Conflux is free software and distributed under GNU General Public License.
 // See http://www.gnu.org/licenses/
@@ -7,7 +8,6 @@ use std::ops::{Deref, DerefMut};
 use super::OverlayAccount;
 
 #[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
 pub struct AccountEntryWithWarm {
   pub warm: bool,
   pub entry: AccountEntry,
@@ -30,7 +30,6 @@ impl DerefMut for AccountEntryWithWarm {
 /// Entry object in cache and checkpoint layers, adding additional markers
 /// like dirty bits to the `OverlayAccount` structure.
 #[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
 pub enum AccountEntry {
   /// Represents an account that is confirmed to be absent from the database.
   DbAbsent,
@@ -41,7 +40,7 @@ pub enum AccountEntry {
 
 use cfx_parameters::genesis::GENESIS_ACCOUNT_ADDRESS;
 use cfx_types::AddressWithSpace;
-use primitives::Account;
+
 use AccountEntry::*;
 
 impl AccountEntry {

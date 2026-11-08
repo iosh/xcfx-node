@@ -4,6 +4,12 @@ pub(crate) mod balance;
 pub(crate) mod delta_mpt;
 pub(crate) mod fork_state;
 pub(crate) mod mpt_state;
+mod query;
 pub(crate) mod snapshot_mpt;
 pub(crate) mod state_proof;
 pub(crate) mod state_version;
+
+pub(crate) use query::StateReadError;
+
+#[cfg(test)]
+pub(crate) mod execution_tests;

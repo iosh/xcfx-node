@@ -5,6 +5,13 @@ mod client;
 mod history;
 mod rpc;
 mod service;
+mod state_value;
+mod storage_points;
+
+#[cfg(test)]
+pub(crate) mod tests;
+
+pub(crate) use state_value::StateValue;
 
 pub(crate) use cache::ForkCacheConfig;
 pub(crate) use client::ForkClient;
@@ -12,7 +19,7 @@ pub(crate) use history::HistoryBlockId;
 pub(crate) use rpc::ForkRpc;
 pub(crate) use service::ForkReadTask;
 
-use history::{EspaceStateQuery, HistoryQuery, HistoryResult};
+use history::{CoreStateQuery, EspaceStateQuery, HistoryQuery, HistoryResult};
 use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use alloy_provider::Provider;

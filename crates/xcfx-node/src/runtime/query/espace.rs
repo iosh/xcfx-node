@@ -1,42 +1,22 @@
-//! eSpace query positions and pool/local/fixed-prefix source selection.
+//! eSpace block and transaction sources, plus reads from shared state positions.
 
 use std::sync::Arc;
 
-use cfx_executor::state::State;
 use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H256, Space, U256};
-use primitives::block::BlockHeight;
-use thiserror::Error;
+use xcfx_state::State;
 
 use crate::{
-  chain::{EpochView, EspaceBlockView, EspaceTransactionView},
-  fork::{ForkClient, ForkReadError, HistoryBlockId},
+  chain::{EspaceBlockView, EspaceTransactionView},
+  fork::{ForkClient, HistoryBlockId},
   runtime_transaction::RuntimeTransaction,
 };
 
-use super::{EpochSelector, NodeRuntime, StateUnavailable};
+use super::{EpochSelector, NodeRuntime, StateQueryError, StateSelector, StateSource};
 
 #[derive(Clone, Copy)]
 pub(crate) enum EspaceBlockSelector {
   Epoch(EpochSelector),
   Hash(H256),
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum EspaceStateSelector {
-  Epoch(EpochSelector),
-  Hash { hash: H256, require_pivot: bool },
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum EspaceStateQueryError {
-  #[error(transparent)]
-  Unavailable(#[from] StateUnavailable),
-  #[error("unknown or inapplicable state block {0:?}")]
-  UnknownBlock(H256),
-  #[error(transparent)]
-  State(#[from] cfx_statedb::Error),
-  #[error(transparent)]
-  Fork(#[from] ForkReadError),
 }
 
 /// Remote sources borrow the Runtime until NodeCall completes the read.
@@ -57,14 +37,6 @@ pub(crate) enum LocalEspaceTransactionSource<'a> {
 pub(crate) enum EspaceTransactionSource<'a> {
   Local(LocalEspaceTransactionSource<'a>),
   Fork { client: &'a ForkClient, hash: H256 },
-}
-
-enum EspaceStateSource<'a> {
-  Local(&'a EpochView),
-  Fork {
-    client: &'a ForkClient,
-    epoch_height: BlockHeight,
-  },
 }
 
 impl NodeRuntime {
@@ -161,83 +133,19 @@ impl NodeRuntime {
       .map(LocalEspaceTransactionSource::Mined)
   }
 
-  fn espace_state_source(
-    &self,
-    selector: EspaceStateSelector,
-  ) -> Result<EspaceStateSource<'_>, EspaceStateQueryError> {
-    let epoch = self.espace_epoch_selector(selector)?;
-    let height = self.epoch_height(epoch);
-    if let Some(client) = self.reset_state.initial_view.fork_client()
-      && height < client.base().epoch_height
-    {
-      return Ok(EspaceStateSource::Fork {
-        client,
-        epoch_height: height,
-      });
-    }
-    Ok(EspaceStateSource::Local(self.epoch_for_state(epoch)?))
-  }
-
-  fn espace_epoch_selector(
-    &self,
-    selector: EspaceStateSelector,
-  ) -> Result<EpochSelector, EspaceStateQueryError> {
-    Ok(match selector {
-      EspaceStateSelector::Epoch(epoch) => epoch,
-      EspaceStateSelector::Hash {
-        hash,
-        require_pivot,
-      } => EpochSelector::Number(self.espace_state_epoch_by_hash(hash, require_pivot)?),
-    })
-  }
-
-  /// Simulation requires an executable local version, including the funded Fork Base.
-  /// The earlier remote scalar-query prefix cannot supply this execution state.
-  pub(in crate::runtime) fn espace_epoch_for_simulation(
-    &self,
-    selector: EspaceStateSelector,
-  ) -> Result<&EpochView, EspaceStateQueryError> {
-    Ok(self.epoch_for_state(self.espace_epoch_selector(selector)?)?)
-  }
-
-  fn espace_state_epoch_by_hash(
-    &self,
-    hash: H256,
-    require_pivot: bool,
-  ) -> Result<BlockHeight, EspaceStateQueryError> {
-    let initial = &self.reset_state.initial_view;
-    if hash == initial.state().epoch_id {
-      return Ok(initial.epoch_height());
-    }
-    if let Some(block) = self.runtime_state.history.mined_block_by_hash(&hash) {
-      if require_pivot && block.epoch_id() != hash {
-        return Err(EspaceStateQueryError::UnknownBlock(hash));
-      }
-      return Ok(block.epoch_height());
-    }
-    if self.runtime_state.graph.block(&hash).is_some() {
-      return Err(EspaceStateQueryError::UnknownBlock(hash));
-    }
-    if let Some(client) = initial.fork_client()
-      && let Some(height) = client.history_epoch_by_hash(hash, require_pivot)?
-    {
-      return Ok(height);
-    }
-    Err(EspaceStateQueryError::UnknownBlock(hash))
-  }
-
   /// Local state begins at the funded Fork Base; earlier fields use its fixed remote prefix.
   /// State selection preserves numeric visibility and the existing stable-tag rules.
   pub(crate) fn espace_balance_at(
     &self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<U256, EspaceStateQueryError> {
-    match self.espace_state_source(selector)? {
-      EspaceStateSource::Local(epoch) => {
-        Ok(State::new(epoch.state().version.open_database())?.balance(&address.with_evm_space())?)
-      }
-      EspaceStateSource::Fork {
+    selector: StateSelector,
+  ) -> Result<U256, StateQueryError> {
+    match self.state_source(selector)? {
+      StateSource::Local(epoch) => Ok(
+        State::from_database(epoch.state().version.open_database())?
+          .balance(&address.with_evm_space())?,
+      ),
+      StateSource::Fork {
         client,
         epoch_height,
       } => Ok(client.espace_balance_at(address, epoch_height)?),
@@ -247,38 +155,36 @@ impl NodeRuntime {
   pub(crate) fn espace_nonce_at(
     &self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<U256, EspaceStateQueryError> {
-    match self.espace_state_source(selector)? {
-      EspaceStateSource::Local(epoch) => {
-        Ok(State::new(epoch.state().version.open_database())?.nonce(&address.with_evm_space())?)
-      }
-      EspaceStateSource::Fork {
+    selector: StateSelector,
+  ) -> Result<U256, StateQueryError> {
+    match self.state_source(selector)? {
+      StateSource::Local(epoch) => Ok(
+        State::from_database(epoch.state().version.open_database())?
+          .nonce(&address.with_evm_space())?,
+      ),
+      StateSource::Fork {
         client,
         epoch_height,
       } => Ok(client.espace_nonce_at(address, epoch_height)?),
     }
   }
 
-  pub(crate) fn espace_pending_nonce(
-    &self,
-    address: Address,
-  ) -> Result<U256, EspaceStateQueryError> {
-    Ok(self.pending_nonce(address.with_evm_space())?)
+  pub(crate) fn espace_pending_nonce(&self, address: Address) -> cfx_statedb::Result<U256> {
+    self.pending_nonce(address.with_evm_space())
   }
 
   pub(crate) fn espace_code_at(
     &self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<Arc<Vec<u8>>, EspaceStateQueryError> {
-    match self.espace_state_source(selector)? {
-      EspaceStateSource::Local(epoch) => Ok(
-        State::new(epoch.state().version.open_database())?
+    selector: StateSelector,
+  ) -> Result<Arc<Vec<u8>>, StateQueryError> {
+    match self.state_source(selector)? {
+      StateSource::Local(epoch) => Ok(
+        State::from_database(epoch.state().version.open_database())?
           .code(&address.with_evm_space())?
           .unwrap_or_default(),
       ),
-      EspaceStateSource::Fork {
+      StateSource::Fork {
         client,
         epoch_height,
       } => Ok(client.espace_code_at(address, epoch_height)?),
@@ -289,15 +195,15 @@ impl NodeRuntime {
     &self,
     address: Address,
     position: H256,
-    selector: EspaceStateSelector,
-  ) -> Result<H256, EspaceStateQueryError> {
-    match self.espace_state_source(selector)? {
-      EspaceStateSource::Local(epoch) => {
-        let value = State::new(epoch.state().version.open_database())?
+    selector: StateSelector,
+  ) -> Result<H256, StateQueryError> {
+    match self.state_source(selector)? {
+      StateSource::Local(epoch) => {
+        let value = State::from_database(epoch.state().version.open_database())?
           .storage_at(&address.with_evm_space(), position.as_bytes())?;
         Ok(H256::from_uint(&value))
       }
-      EspaceStateSource::Fork {
+      StateSource::Fork {
         client,
         epoch_height,
       } => Ok(client.espace_storage_at(address, position, epoch_height)?),

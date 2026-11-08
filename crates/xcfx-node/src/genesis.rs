@@ -6,8 +6,11 @@ use cfx_executor::{
   executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
   internal_contract::{initialize_internal_contract_accounts, make_staking_events},
   machine::Machine,
-  state::{State, initialize_cip107, initialize_cip137, initialize_or_update_dao_voted_params},
 };
+use xcfx_state::{
+  State, initialize_cip107, initialize_cip137, initialize_or_update_dao_voted_params,
+};
+
 use cfx_parameters::{
   consensus::{GENESIS_GAS_LIMIT, ONE_CFX_IN_DRIP},
   consensus_internal::{GENESIS_TOKEN_COUNT_IN_CFX, TWO_YEAR_UNLOCK_TOKEN_COUNT_IN_CFX},
@@ -19,7 +22,6 @@ use cfx_parameters::{
   },
   staking::POS_VOTE_PRICE,
 };
-use cfx_statedb::StateDb;
 use cfx_types::{
   Address, AddressSpaceUtil, AddressWithSpace, CreateContractAddressType, H256, Space, SpaceMap,
   U256, cal_contract_address_with_space,
@@ -157,7 +159,7 @@ fn execute_genesis_inner(
 ) -> Result<ExecutedGenesis, GenesisError> {
   let parent = Arc::new(StateVersion::genesis_parent());
   let mut candidate = StateCandidate::new(parent);
-  let mut state = State::new(StateDb::new(&mut candidate))?;
+  let mut state = candidate.open_state()?;
 
   initialize_internal_contract_accounts(
     &mut state,
@@ -478,8 +480,9 @@ mod tests {
   use cfx_executor::{
     internal_contract::{block_hash_slot, epoch_hash_slot},
     machine::Machine,
-    state::State,
   };
+  use xcfx_state::State;
+
   use cfx_parameters::{
     consensus::{GENESIS_GAS_LIMIT, NEXT_HARDFORK_HEADER_CUSTOM_FIRST_ELEMENT, ONE_CFX_IN_DRIP},
     consensus_internal::INITIAL_1559_CORE_BASE_PRICE,
@@ -671,7 +674,8 @@ mod tests {
     )
   }
   fn open_committed_state(version: &Arc<StateVersion>) -> State<'static> {
-    State::new(version.open_database()).expect("a committed Genesis state must be readable")
+    State::from_database(version.open_database())
+      .expect("a committed Genesis state must be readable")
   }
 
   #[test]

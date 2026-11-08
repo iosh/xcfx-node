@@ -1,18 +1,19 @@
 use super::State;
+use crate::database::Database;
 use crate::state::overlay_account::AccountEntry;
 use cfx_rpc_eth_types::StateOverride;
-use cfx_statedb::{Result as DbResult, StateDbExt, StateDbGeneric as StateDb};
+use cfx_statedb::Result as DbResult;
 use cfx_types::{AddressWithSpace, Space};
 
 /// Apply the state override to the state object, only used for rpc call eg
 /// eth_call, eth_estimateGas etc.
-impl State {
-  pub fn new_with_override(
-    db: StateDb,
+impl<'db> State<'db> {
+  pub fn from_database_with_override(
+    db: Box<dyn Database + 'db>,
     state_override: &StateOverride,
     space: Space,
   ) -> DbResult<Self> {
-    let mut state = Self::new(db)?;
+    let mut state = Self::from_database(db)?;
     state.apply_override(state_override, space)?;
     Ok(state)
   }

@@ -10,7 +10,7 @@ pub struct SavedState {
   global_stat: GlobalStat,
 }
 
-impl State {
+impl State<'_> {
   pub fn save(&mut self) -> SavedState {
     self.commit_cache(false);
     let committed_cache = self

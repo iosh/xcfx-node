@@ -2,9 +2,11 @@
 //! provides interfaces for reading and writing account data. It also handles
 //! the logic for loading extension fields of an account.
 
+use crate::database::Database;
+
 use super::{AccountEntry, OverlayAccount, RequireFields, State};
 use crate::{state::overlay_account::AccountEntryWithWarm, unwrap_or_return};
-use cfx_statedb::{Error as DbErrorKind, Result as DbResult, StateDb, StateDbExt};
+use cfx_statedb::{Error as DbErrorKind, Result as DbResult};
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, U256};
 use parking_lot::{
   MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLockReadGuard, RwLockWriteGuard,
@@ -17,7 +19,7 @@ use std::collections::{
 pub type AccountReadGuard<'a> = MappedRwLockReadGuard<'a, OverlayAccount>;
 pub type AccountWriteGuard<'a> = MappedRwLockWriteGuard<'a, OverlayAccount>;
 
-impl State {
+impl State<'_> {
   /// A convenience function of `read_account_ext_lock`
   pub(super) fn read_account_lock(
     &self,
@@ -47,7 +49,7 @@ impl State {
     let account_entry = Self::fetch_account_mut(
       &mut cache,
       &self.committed_cache,
-      &self.db,
+      &*self.db,
       address,
       require,
     )?;
@@ -96,7 +98,7 @@ impl State {
 
     // Load the account and insert to cache
     let mut account_entry = AccountEntry::new_loaded(self.db.get_account(address)?);
-    Self::load_account_ext_fields(require, &mut account_entry, &self.db)?;
+    Self::load_account_ext_fields(require, &mut account_entry, &*self.db)?;
 
     // The prefetch phase's warm bit is not important because it will soon
     // be written from the cache to the committed cache, which does not
@@ -109,7 +111,7 @@ impl State {
   }
 }
 
-impl State {
+impl State<'_> {
   /// A convenience function of `write_account_ext_lock`
   pub fn write_account_lock(&self, address: &AddressWithSpace) -> DbResult<AccountWriteGuard<'_>> {
     self.write_account_ext_lock(address, RequireFields::None)
@@ -175,7 +177,7 @@ impl State {
     let account_entry = Self::fetch_account_mut(
       &mut cache,
       &self.committed_cache,
-      &self.db,
+      &*self.db,
       address,
       require,
     )?;
@@ -199,13 +201,13 @@ impl State {
   }
 }
 
-impl State {
+impl State<'_> {
   /// Retrieves data using a read-through caching strategy and automatically
   /// loads extension fields as required.
   fn fetch_account_mut<'a>(
     cache: &'a mut HashMap<AddressWithSpace, AccountEntryWithWarm>,
     committed_cache: &'a HashMap<AddressWithSpace, AccountEntry>,
-    db: &StateDb,
+    db: &dyn Database,
     address: &AddressWithSpace,
     require: RequireFields,
   ) -> DbResult<&'a mut AccountEntryWithWarm> {
@@ -233,7 +235,7 @@ impl State {
   fn load_account_ext_fields(
     require: RequireFields,
     account_entry: &mut AccountEntry,
-    db: &StateDb,
+    db: &dyn Database,
   ) -> DbResult<()> {
     let account = unwrap_or_return!(account_entry.account_mut(), Ok(()));
 

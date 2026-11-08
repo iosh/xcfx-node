@@ -1,8 +1,9 @@
+use crate::database::Database;
 use cfx_internal_common::debug::ComputeEpochDebugRecord;
 use cfx_statedb::{
   for_all_global_param_keys,
   global_params::{self, GlobalParamKey, TOTAL_GLOBAL_PARAMS},
-  Result as DbResult, StateDbExt, StateDbGeneric as StateDb,
+  Result as DbResult,
 };
 use cfx_types::U256;
 
@@ -41,13 +42,13 @@ impl GlobalStat {
   }
 
   /// Get loaded global statistic variables from the database.
-  pub fn loaded(db: &StateDb) -> DbResult<Self> {
+  pub fn loaded(db: &dyn Database) -> DbResult<Self> {
     let mut ans = Default::default();
     fn load_value<T: GlobalParamKey>(
       ans: &mut [U256; TOTAL_GLOBAL_PARAMS],
-      db: &StateDb,
+      db: &dyn Database,
     ) -> DbResult<()> {
-      let loaded = db.get_global_param::<T>()?;
+      let loaded = db.get_global_param(T::STORAGE_KEY)?.unwrap_or_default();
       ans[T::ID] = T::into_vm_value(loaded);
       Ok(())
     }
@@ -60,11 +61,13 @@ impl GlobalStat {
 
   /// Assert the global statistic variables have never been inited in the
   /// database.
-  pub fn assert_non_inited(db: &StateDb) -> DbResult<()> {
+  pub fn assert_non_inited(db: &dyn Database) -> DbResult<()> {
     // If db is not initialized, all the loaded value should be zero.
-    fn assert_zero_global_params<T: GlobalParamKey>(db: &StateDb) -> DbResult<()> {
+    fn assert_zero_global_params<T: GlobalParamKey>(db: &dyn Database) -> DbResult<()> {
       assert!(
-        db.get_global_param::<T>()?.is_zero(),
+        db.get_global_param(T::STORAGE_KEY)?
+          .unwrap_or_default()
+          .is_zero(),
         "{:x?} is non-zero when db is un-init",
         T::STORAGE_KEY
       );
@@ -72,7 +75,7 @@ impl GlobalStat {
     }
     use global_params::*;
     for_all_global_param_keys! {
-        assert_zero_global_params::<Key>(&db)?;
+        assert_zero_global_params::<Key>(db)?;
     }
     Ok(())
   }
@@ -80,16 +83,16 @@ impl GlobalStat {
   /// Commit the in-memory global statistic variables to the database.
   pub fn commit(
     &self,
-    db: &mut StateDb,
+    db: &mut dyn Database,
     mut debug_record: Option<&mut ComputeEpochDebugRecord>,
   ) -> DbResult<()> {
     fn commit_param<T: GlobalParamKey>(
       ans: &[U256; TOTAL_GLOBAL_PARAMS],
-      db: &mut StateDb,
+      db: &mut dyn Database,
       debug_record: Option<&mut ComputeEpochDebugRecord>,
     ) -> DbResult<()> {
       let value = T::from_vm_value(ans[T::ID]);
-      db.set_global_param::<T>(&value, debug_record)?;
+      db.set_global_param(T::STORAGE_KEY, &value, debug_record)?;
       Ok(())
     }
     use global_params::*;

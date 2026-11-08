@@ -2,10 +2,9 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use cfx_executor::state::State;
-use cfx_statedb::StateDb;
 use cfx_types::{AddressWithSpace, Space, U256, address_util::AddressUtil};
 use thiserror::Error;
+use xcfx_state::State;
 
 use crate::state::{
   balance::{BalanceChangeError, burn_balance, mint_balance},
@@ -216,7 +215,7 @@ impl StateOverlay {
     }
 
     let mut candidate = StateCandidate::new(Arc::clone(&committed_base.version));
-    let mut state = State::new(StateDb::new(&mut candidate))?;
+    let mut state = candidate.open_state()?;
 
     for control in &self.controls {
       apply_control(&mut state, control)?;

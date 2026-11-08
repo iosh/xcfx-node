@@ -5,10 +5,9 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use cfx_executor::state::State;
-use cfx_statedb::StateDb;
 use cfx_types::{AddressWithSpace, Space, U256};
 use thiserror::Error;
+use xcfx_state::State;
 
 use super::state_version::{StateCandidate, StateVersion};
 
@@ -151,7 +150,7 @@ pub(crate) fn prepare_initial_balances(
   }
 
   let mut candidate = StateCandidate::new(parent);
-  let mut state = State::new(StateDb::new(&mut candidate))?;
+  let mut state = candidate.open_state()?;
   let mut balances = Vec::with_capacity(allocations.len());
   for (address, target) in allocations {
     balances.push((address, state.balance(&address)?, target));

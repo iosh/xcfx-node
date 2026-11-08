@@ -1,4 +1,6 @@
 //! Coordinates execution, state controls, transaction pool updates, and recovery.
+
+use xcfx_state::AccountNonce;
 mod epoch_positions;
 mod fees;
 mod logs;
@@ -33,7 +35,6 @@ use crate::{
     AccountKey, TransactionPool, TransactionPoolCheckpoint, TransactionPoolPolicy,
   },
 };
-use cfx_executor::state::State;
 use cfx_statedb::{Result as StateResult, global_params::TOTAL_GLOBAL_PARAMS};
 use cfx_types::{Address, AddressWithSpace, H256, U256};
 use cfxkey::KeyPair;
@@ -47,8 +48,8 @@ pub(crate) use pool::{
 };
 pub(crate) use query::{
   EpochSelector, EspaceBlockSelector, EspaceBlockSource, EspaceReceiptSource,
-  EspaceStateQueryError, EspaceStateSelector, EspaceTransactionSource,
-  LocalEspaceTransactionSource, StateQueryError,
+  EspaceTransactionSource, LocalEspaceTransactionSource, StateQueryError, StateSelectionError,
+  StateSelector,
 };
 pub(crate) use reorg::PoolDropReason;
 pub(crate) use reorg::{ChainChange, ChainChangeReason, ReorgError};
@@ -62,8 +63,7 @@ use std::{
 };
 use thiserror::Error;
 pub(crate) use transactions::RuntimeTransactionError;
-
-use primitives::Account;
+use xcfx_state::State;
 
 static NEXT_RUNTIME_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -88,7 +88,7 @@ pub(crate) struct CheckpointId {
 pub(crate) struct TransactionPoolUpdates {
   pub(crate) transactions_to_repack: Vec<RuntimeTransaction>,
   pub(crate) transactions_dropped_during_preparation: Vec<RuntimeTransaction>,
-  pub(crate) modified_accounts: Vec<Account>,
+  pub(crate) account_nonces: Vec<AccountNonce>,
 }
 
 /// Facts exposed after one Runtime transition has updated history, indexes, and the pool.
@@ -98,7 +98,7 @@ pub(crate) struct RuntimeCommitOutcome {
 }
 
 fn open_state_version(version: &Arc<StateVersion>) -> StateResult<State<'static>> {
-  State::new(version.open_database())
+  State::from_database(version.open_database())
 }
 
 /// The state currently used by Runtime consumers.
@@ -581,7 +581,7 @@ impl NodeRuntime {
     let start_block_number = parent.next_epoch_start_block_number();
     let execution_state = Arc::clone(self.runtime_state.effective_state.state());
 
-    let (executed, modified_accounts) = execute_ordered_epoch(
+    let (executed, account_nonces) = execute_ordered_epoch(
       self.chain_spec.machine().as_ref(),
       &parent_block,
       parent.state(),
@@ -613,7 +613,12 @@ impl NodeRuntime {
     let pool_reconciliation = self
       .runtime_state
       .transaction_pool
-      .prepare_reconciliation(transaction_hashes_to_remove, &modified_accounts);
+      .prepare_nonce_reconciliation(
+        transaction_hashes_to_remove,
+        account_nonces
+          .iter()
+          .map(|update| ((update.address.address, update.address.space), update.nonce)),
+      );
 
     let graph_block = executed.pivot_block().clone();
     let next_head = Arc::new(EpochView::from_executed_epoch(
@@ -657,7 +662,7 @@ impl NodeRuntime {
       transaction_pool_updates: TransactionPoolUpdates {
         transactions_to_repack,
         transactions_dropped_during_preparation: transactions_to_drop,
-        modified_accounts,
+        account_nonces,
       },
     })
   }

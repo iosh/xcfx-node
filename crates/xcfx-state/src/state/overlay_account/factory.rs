@@ -1,9 +1,12 @@
+use crate::account::Account;
+use crate::account::SponsorInfo;
+use crate::account::StoragePointsState;
 use std::sync::Arc;
 
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, Space, U256};
 use keccak_hash::KECCAK_EMPTY;
 use parking_lot::lock_api::RwLock;
-use primitives::{Account, SponsorInfo, StorageLayout};
+use primitives::StorageLayout;
 
 use super::{checkpoints::WriteCheckpointLayer, OverlayAccount};
 
@@ -88,7 +91,7 @@ impl OverlayAccount {
   ) -> Self {
     let sponsor_info = if cip107 && address.space == Space::Native {
       SponsorInfo {
-        storage_points: Some(Default::default()),
+        storage_points: StoragePointsState::Initialized(Default::default()),
         ..Default::default()
       }
     } else {
@@ -105,25 +108,6 @@ impl OverlayAccount {
       pending_db_clear,
       ..Default::default()
     }
-  }
-
-  /// Create an OverlayAccount of contract account when the account doesn't
-  /// exist before.
-  #[cfg(test)]
-  pub fn new_contract(
-    address: &AddressWithSpace,
-    balance: U256,
-    pending_db_clear: bool,
-    storage_layout: Option<StorageLayout>,
-  ) -> Self {
-    Self::new_contract_with_admin(
-      &address,
-      balance,
-      &Address::zero(),
-      pending_db_clear,
-      storage_layout,
-      false,
-    )
   }
 
   /// This function replicates the behavior of the auto-derived `Clone`
@@ -251,7 +235,6 @@ impl OverlayAccount {
     account.accumulated_interest_return = self.accumulated_interest_return;
     account.admin = self.admin;
     account.sponsor_info = self.sponsor_info.clone();
-    account.set_address(self.address);
     account
   }
 }

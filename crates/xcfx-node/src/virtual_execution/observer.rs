@@ -11,8 +11,9 @@ use cfx_executor::{
     SetAuthTracer, StorageTracer, TracerTrait,
   },
   stack::FrameResult,
-  state::State,
 };
+use xcfx_state::State;
+
 use cfx_parity_trace_types::SetAuth;
 use cfx_types::{Address, Space, U256};
 use cfx_vm_types::{ActionParams, InterpreterInfo};

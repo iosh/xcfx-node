@@ -5,7 +5,7 @@ use std::{
 
 use crate::runtime_transaction::RuntimeTransaction;
 use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
-use primitives::{Account, transaction::TransactionError};
+use primitives::transaction::TransactionError;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TransactionKey {
@@ -307,19 +307,6 @@ impl TransactionPool {
       "pool primary index must contain the indexed transaction",
     );
     Some(entry.transaction)
-  }
-
-  pub(crate) fn prepare_reconciliation(
-    &self,
-    transactions_to_remove: impl IntoIterator<Item = H256>,
-    modified_accounts: &[Account],
-  ) -> TransactionPoolReconciliation {
-    let account_nonces = modified_accounts.iter().map(|account| {
-      let address = account.address();
-      ((address.address, address.space), account.nonce)
-    });
-
-    self.prepare_nonce_reconciliation(transactions_to_remove, account_nonces)
   }
 
   pub(crate) fn prepare_nonce_reconciliation(

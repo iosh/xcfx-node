@@ -94,11 +94,6 @@ impl OverlayAccount {
     self.accumulated_interest_return += *interest;
   }
 
-  #[cfg(test)]
-  pub fn accumulated_interest_return(&self) -> &U256 {
-    &self.accumulated_interest_return
-  }
-
   pub fn vote_lock(&mut self, amount: U256, unlock_block_number: u64) {
     self.address.assert_native();
     assert!(self.vote_stake_list.is_some());

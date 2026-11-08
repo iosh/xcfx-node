@@ -1,3 +1,5 @@
+use crate::database::StorageEntry;
+use crate::database::WriteCacheItem;
 use std::{
   collections::{hash_map, HashMap},
   fmt::Debug,
@@ -5,7 +7,6 @@ use std::{
 };
 
 use cfx_types::U256;
-use primitives::{storage::WriteCacheItem, StorageValue};
 
 use crate::{
   state::checkpoints::CheckpointEntry::{self, Recorded, Unchanged},
@@ -54,23 +55,10 @@ impl<K: Hash + Clone + Eq, T: Clone> WriteCheckpointLayer<K, T> {
       .entry(key)
       .or_insert(CheckpointEntry::from_cache(old_value));
   }
-
-  #[cfg(test)]
-  pub fn get_state_cp_id(&self) -> usize {
-    self.state_checkpoint_id
-  }
-
-  #[cfg(test)]
-  pub fn get<Q: ?Sized + Hash + Eq>(&self, key: &Q) -> Option<CheckpointEntry<T>>
-  where
-    K: std::borrow::Borrow<Q>,
-  {
-    self.storage_write.get(key).cloned()
-  }
 }
 
 impl OverlayAccount {
-  pub(super) fn insert_storage_write_cache(&mut self, key: Vec<u8>, value: StorageValue) {
+  pub(super) fn insert_storage_write_cache(&mut self, key: Vec<u8>, value: StorageEntry) {
     let old_value = self
       .storage_write_cache
       .write()
@@ -115,14 +103,5 @@ impl OverlayAccount {
         &mut self.transient_storage_cache.write(),
       )
     };
-  }
-}
-
-impl OverlayAccount {
-  #[cfg(test)]
-  pub fn eq_write_cache(&self, other: &Self) -> bool {
-    use std::sync::Arc;
-
-    Arc::ptr_eq(&self.storage_write_cache, &other.storage_write_cache)
   }
 }

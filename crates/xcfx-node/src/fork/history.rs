@@ -32,6 +32,14 @@ pub(crate) enum HistoryBlockId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum CoreStateQuery {
+  Balance(Address),
+  Nonce(Address),
+  Code(Address),
+  Storage { address: Address, position: H256 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum EspaceStateQuery {
   Balance(Address),
   Nonce(Address),
@@ -41,6 +49,10 @@ pub(super) enum EspaceStateQuery {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HistoryQuery {
+  CoreState {
+    epoch_height: BlockHeight,
+    query: CoreStateQuery,
+  },
   EspaceFeeHistory {
     block_count: NonZeroU64,
     newest_height: BlockHeight,
@@ -83,6 +95,9 @@ pub(super) enum HistoryQuery {
 /// Results shared by callers waiting for the same history request.
 #[derive(Clone)]
 pub(super) enum HistoryResult {
+  CoreQuantity(U256),
+  CoreCode(Arc<Vec<u8>>),
+  CoreStorage(Option<H256>),
   EthereumFeeHistory(Arc<FeeHistoryRange>),
   EpochHeight(Option<BlockHeight>),
   EspaceQuantity(U256),
@@ -111,7 +126,10 @@ impl ForkRpc {
           "fee history outside the fixed prefix",
         ));
       }
-      HistoryQuery::EspaceState { epoch_height, .. } if epoch_height > self.base.epoch_height => {
+      HistoryQuery::CoreState { epoch_height, .. }
+      | HistoryQuery::EspaceState { epoch_height, .. }
+        if epoch_height > self.base.epoch_height =>
+      {
         return Err(ForkReadError::Unavailable(
           "historical state outside the fixed prefix",
         ));
@@ -163,8 +181,40 @@ impl ForkRpc {
     Ok(result)
   }
 
+  async fn read_history_epoch(
+    &self,
+    hash: H256,
+    require_pivot: bool,
+  ) -> Result<Option<BlockHeight>, ForkReadError> {
+    let Some(metadata) = self.rpc.cfx_getBlockByHash(hash).await? else {
+      return Ok(None);
+    };
+    if metadata.hash != hash {
+      return Err(ForkReadError::Inconsistent("state block hash"));
+    }
+    let Some(epoch) = metadata.epoch_number else {
+      return Ok(None);
+    };
+    if epoch > self.base.epoch_height.into() {
+      return Ok(None);
+    }
+    let height = epoch.as_u64();
+    let pivot = self.load_historical_pivot(height).await?;
+    if require_pivot && pivot.hash != hash {
+      return Ok(None);
+    }
+    if pivot.hash != hash {
+      self.load_block_at_pivot(height, pivot.hash, hash).await?;
+    }
+    Ok(Some(height))
+  }
+
   async fn read_history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
     Ok(match query {
+      HistoryQuery::CoreState {
+        epoch_height,
+        query,
+      } => self.read_core_state(epoch_height, query).await?,
       HistoryQuery::EspaceFeeHistory {
         block_count,
         newest_height,

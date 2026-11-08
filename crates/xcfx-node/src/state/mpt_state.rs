@@ -6,12 +6,13 @@ use std::{
 };
 
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
-use cfx_statedb::StateDb;
-use cfx_storage_types::{MptKeyValue, Result as StorageResult, StateStorage};
+use cfx_statedb::StateStorage;
+use cfx_storage_types::{MptKeyValue, Result as StorageResult};
 use primitives::{
   DeltaMptKeyPadding, EpochId, MERKLE_NULL_NODE, MptValue, NULL_EPOCH, SkipInputCheck, StateRoot,
   StorageKey, StorageKeyWithSpace,
 };
+use xcfx_state::database::MptDatabase;
 
 use super::{
   delta_mpt::{CurrentDeltaCandidate, DeltaMptVersion},
@@ -85,9 +86,9 @@ impl MptStateVersion {
   /// Opens an owned, isolated database for reads or temporary execution.
   ///
   /// To retain a resulting version, keep a `MptStateCandidate` and borrow it through
-  /// `StateDb::new` instead. Opening does not read state or modify this version.
-  pub(crate) fn open_database(self: &Arc<Self>) -> StateDb<'static> {
-    StateDb::from_owned(Box::new(MptStateCandidate::new(Arc::clone(self))))
+  /// `MptDatabase::new` instead. Opening does not read state or modify this version.
+  pub(crate) fn open_database(self: &Arc<Self>) -> MptDatabase<MptStateCandidate> {
+    MptDatabase::new(MptStateCandidate::new(Arc::clone(self)))
   }
 
   /// Rotates the three Conflux state layers at a snapshot boundary.
@@ -947,7 +948,7 @@ mod tests {
 mod storage_tests {
   use std::{collections::BTreeMap, sync::Arc};
 
-  use cfx_storage_types::StateStorage;
+  use cfx_statedb::StateStorage;
   use primitives::{DeltaMptKeyPadding, EpochId, StorageKey, StorageKeyWithSpace};
 
   use crate::state::{

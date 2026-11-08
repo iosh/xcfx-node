@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use cfx_executor::{machine::Machine, state::State};
+use cfx_executor::machine::Machine;
+use xcfx_state::State;
+
 use cfx_parameters::{
   consensus::{ONE_CFX_IN_DRIP, TRANSACTION_DEFAULT_EPOCH_BOUND},
   internal_contract_addresses::SYSTEM_STORAGE_ADDRESS,
@@ -172,15 +174,15 @@ impl<'a> Simulation<'a> {
       state: state_overrides,
       environment,
     } = overrides;
-    let executor_overrides = state_overrides.into_executor_overrides(sender.space)?;
-    let mut state = if executor_overrides.is_empty() {
-      State::new(version.open_database())?
+    let state_overrides = state_overrides.into_state_overrides(sender.space)?;
+    let mut state = if state_overrides.is_empty() {
+      State::from_database(version.open_database())?
     } else {
-      State::new_with_override(version.open_database(), &executor_overrides, sender.space)?
+      State::from_database_with_override(version.open_database(), &state_overrides, sender.space)?
     };
 
     // An explicit Core override takes precedence over the initial BLOCKHASH slots.
-    let system_storage_override = executor_overrides
+    let system_storage_override = state_overrides
       .get(&SYSTEM_STORAGE_ADDRESS)
       .filter(|_| sender.space == Space::Native)
       .map(|account| &account.state);

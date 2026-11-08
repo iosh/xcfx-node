@@ -1,17 +1,20 @@
 //! Executes an ordered epoch against an isolated state candidate.
-use std::{borrow::Cow, sync::Arc};
 
-use primitives::{Account, Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
+use std::{borrow::Cow, sync::Arc};
+use xcfx_state::AccountNonce;
+
+use primitives::{Block, BlockHeaderBuilder, BlockNumber, BlockReceipts};
 
 use cfx_executor::{
   epoch_execution::{before_block_execution, before_epoch_execution},
   executive::{ExecutionOutcome, ExecutiveContext, TransactOptions},
   internal_contract::{block_hash_slot, epoch_hash_slot},
   machine::Machine,
-  state::State,
 };
+use xcfx_state::State;
+
 use cfx_parameters::consensus::TRANSACTION_DEFAULT_EPOCH_BOUND;
-use cfx_statedb::{Result as StateResult, StateDb};
+use cfx_statedb::Result as StateResult;
 use cfx_types::{H256, U256};
 use cfx_vm_types::{Env, Spec};
 use rlp::Encodable;
@@ -202,7 +205,7 @@ pub(crate) fn execute_ordered_epoch(
   parent_pos_context: &PosContext,
   start_block_number: BlockNumber,
   ordered_blocks: Vec<RuntimeBlock>,
-) -> StateResult<(ExecutedEpoch, Vec<Account>)> {
+) -> StateResult<(ExecutedEpoch, Vec<AccountNonce>)> {
   let pivot = ordered_blocks
     .last()
     .expect("an ordered epoch contains its pivot");
@@ -228,7 +231,7 @@ pub(crate) fn execute_ordered_epoch(
   let epoch_timestamp = pivot.header().timestamp();
   let epoch_id = pivot.hash();
   let mut candidate = StateCandidate::new(Arc::clone(execution_state));
-  let mut state = State::new(StateDb::new(&mut candidate))?;
+  let mut state = candidate.open_state()?;
 
   for (slot, hash) in genesis_hash_storage_entries(machine, parent_block, &parent_state.version) {
     state.set_system_storage(slot.into(), hash)?;
@@ -311,7 +314,7 @@ pub(crate) fn execute_ordered_epoch(
     });
   }
 
-  let modified_accounts = state.apply_changes_to_storage(None)?;
+  let account_nonces = state.apply_changes_to_storage(None)?;
   drop(state);
   let version = Arc::new(candidate.into_version());
   let block_receipts = executed_blocks
@@ -333,7 +336,7 @@ pub(crate) fn execute_ordered_epoch(
       commitment,
       pos_context: parent_pos_context.clone(),
     },
-    modified_accounts,
+    account_nonces,
   ))
 }
 

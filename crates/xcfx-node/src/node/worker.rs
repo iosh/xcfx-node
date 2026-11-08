@@ -31,10 +31,10 @@ use crate::{
   rpc_client::EthereumBlock,
   runtime::{
     AccountPoolTransactions, ChainChange, CheckpointId, EpochSelector, EspaceBlockSelector,
-    EspaceBlockSource, EspaceReceiptSource, EspaceStateQueryError, EspaceStateSelector,
-    EspaceTransactionSource, FeeQueryError, LocalEspaceTransactionSource, PoolContent,
-    PoolQueryScope, PoolTransactionCounts, ReorgError, RuntimeCommitOutcome,
-    RuntimeSimulationError, RuntimeTransactionError, StateQueryError,
+    EspaceBlockSource, EspaceReceiptSource, EspaceTransactionSource, FeeQueryError,
+    LocalEspaceTransactionSource, PoolContent, PoolQueryScope, PoolTransactionCounts, ReorgError,
+    RuntimeCommitOutcome, RuntimeSimulationError, RuntimeTransactionError, StateQueryError,
+    StateSelector,
   },
   runtime_transaction::RuntimeTransaction,
   signing::MessageSigningError,
@@ -665,19 +665,11 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().epoch_height(epoch)
   }
 
-  pub(crate) fn balance_at(
-    self,
-    address: AddressWithSpace,
-    epoch: EpochSelector,
-  ) -> Result<U256, StateQueryError> {
-    self.worker.node.runtime().balance_at(address, epoch)
-  }
-
   pub(crate) fn espace_balance_at(
     self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<U256, EspaceStateQueryError> {
+    selector: StateSelector,
+  ) -> Result<U256, StateQueryError> {
     self
       .worker
       .node
@@ -688,8 +680,8 @@ impl NodeCall<'_, '_> {
   pub(crate) fn espace_nonce_at(
     self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<U256, EspaceStateQueryError> {
+    selector: StateSelector,
+  ) -> Result<U256, StateQueryError> {
     self
       .worker
       .node
@@ -697,18 +689,15 @@ impl NodeCall<'_, '_> {
       .espace_nonce_at(address, selector)
   }
 
-  pub(crate) fn espace_pending_nonce(
-    self,
-    address: Address,
-  ) -> Result<U256, EspaceStateQueryError> {
+  pub(crate) fn espace_pending_nonce(self, address: Address) -> cfx_statedb::Result<U256> {
     self.worker.node.runtime().espace_pending_nonce(address)
   }
 
   pub(crate) fn espace_code_at(
     self,
     address: Address,
-    selector: EspaceStateSelector,
-  ) -> Result<Arc<Vec<u8>>, EspaceStateQueryError> {
+    selector: StateSelector,
+  ) -> Result<Arc<Vec<u8>>, StateQueryError> {
     self.worker.node.runtime().espace_code_at(address, selector)
   }
 
@@ -716,8 +705,8 @@ impl NodeCall<'_, '_> {
     self,
     address: Address,
     position: H256,
-    selector: EspaceStateSelector,
-  ) -> Result<H256, EspaceStateQueryError> {
+    selector: StateSelector,
+  ) -> Result<H256, StateQueryError> {
     self
       .worker
       .node
@@ -920,7 +909,7 @@ impl NodeCall<'_, '_> {
   pub(crate) fn espace_call(
     self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<Vec<u8>, RuntimeSimulationError> {
     self
@@ -933,7 +922,7 @@ impl NodeCall<'_, '_> {
   pub(crate) fn espace_estimate_gas(
     self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<TransactionEstimate, RuntimeSimulationError> {
     self
@@ -946,7 +935,7 @@ impl NodeCall<'_, '_> {
   pub(crate) fn espace_create_access_list(
     self,
     request: TransactionRequest,
-    selector: EspaceStateSelector,
+    selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<AccessListResult, RuntimeSimulationError> {
     self

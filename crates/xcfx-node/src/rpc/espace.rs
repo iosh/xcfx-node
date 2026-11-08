@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
   logs::PendingTransactionFilter,
-  runtime::{EpochSelector, EspaceBlockSelector, EspaceStateSelector, PoolQueryScope},
+  runtime::{EpochSelector, EspaceBlockSelector, PoolQueryScope, StateSelector},
   virtual_execution::VirtualExecutionOverrides,
 };
 
@@ -608,16 +608,16 @@ fn epoch_selector(block: BlockId) -> EpochSelector {
   }
 }
 
-fn state_selector(block: BlockId, require_pivot: bool) -> EspaceStateSelector {
+fn state_selector(block: BlockId, require_pivot: bool) -> StateSelector {
   match block {
     BlockId::Hash {
       hash,
       require_canonical,
-    } => EspaceStateSelector::Hash {
+    } => StateSelector::Hash {
       hash,
       require_pivot: require_pivot || require_canonical.unwrap_or(true),
     },
-    block => EspaceStateSelector::Epoch(epoch_selector(block)),
+    block => StateSelector::Epoch(epoch_selector(block)),
   }
 }
 

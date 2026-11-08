@@ -3,15 +3,13 @@
 mod espace;
 
 pub(crate) use espace::{
-  EspaceBlockSelector, EspaceBlockSource, EspaceStateQueryError, EspaceStateSelector,
-  EspaceTransactionSource, LocalEspaceTransactionSource,
+  EspaceBlockSelector, EspaceBlockSource, EspaceTransactionSource, LocalEspaceTransactionSource,
 };
 
 use std::sync::Arc;
 
-use cfx_executor::state::State;
 use cfx_parameters::rpc::GAS_PRICE_DEFAULT_VALUE;
-use cfx_types::{Address, AddressWithSpace, H256, Space, U256};
+use cfx_types::{Address, H256, Space, U256};
 use primitives::{BlockNumber, block::BlockHeight};
 use thiserror::Error;
 
@@ -21,8 +19,8 @@ use crate::{
     TransactionReceiptView,
   },
   chain_spec::ChainSpec,
-  fork::{ForkBase, ForkClient},
-  state::state_version::StateVersion,
+  fork::{ForkBase, ForkClient, ForkReadError},
+  state::{StateReadError, state_version::StateVersion},
 };
 
 use super::{EpochPositions, NodeRuntime};
@@ -38,6 +36,12 @@ pub(crate) enum EpochSelector {
   Checkpoint,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum StateSelector {
+  Epoch(EpochSelector),
+  Hash { hash: H256, require_pivot: bool },
+}
+
 #[derive(Debug, Error)]
 #[error("state at epoch {epoch_height} is unavailable")]
 pub(crate) struct StateUnavailable {
@@ -45,11 +49,40 @@ pub(crate) struct StateUnavailable {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum StateQueryError {
+pub(crate) enum StateSelectionError {
   #[error(transparent)]
   Unavailable(#[from] StateUnavailable),
+  #[error("unknown or inapplicable state block {0:?}")]
+  UnknownBlock(H256),
+  #[error(transparent)]
+  Fork(#[from] ForkReadError),
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum StateQueryError {
+  #[error(transparent)]
+  Selection(#[from] StateSelectionError),
   #[error(transparent)]
   State(#[from] cfx_statedb::Error),
+  #[error(transparent)]
+  Fork(#[from] ForkReadError),
+}
+
+impl From<StateReadError> for StateQueryError {
+  fn from(error: StateReadError) -> Self {
+    match error {
+      StateReadError::State(error) => Self::State(error),
+      StateReadError::Fork(error) => Self::Fork(error),
+    }
+  }
+}
+
+enum StateSource<'a> {
+  Local(&'a EpochView),
+  Fork {
+    client: &'a ForkClient,
+    epoch_height: BlockHeight,
+  },
 }
 
 /// A receipt source selected under the current pool and history. A remote
@@ -249,21 +282,66 @@ impl NodeRuntime {
     Ok(Arc::clone(&epoch.state().version))
   }
 
-  /// Reads an account balance from the selected committed state.
-  ///
-  /// Uncached Fork reads may block and require the instance's read service.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the selected state is unavailable or reading it fails.
-  pub(crate) fn balance_at(
+  fn state_source(&self, selector: StateSelector) -> Result<StateSource<'_>, StateSelectionError> {
+    let epoch = self.state_epoch_selector(selector)?;
+    let height = self.epoch_height(epoch);
+    if let Some(client) = self.reset_state.initial_view.fork_client()
+      && height < client.base().epoch_height
+    {
+      return Ok(StateSource::Fork {
+        client,
+        epoch_height: height,
+      });
+    }
+    Ok(StateSource::Local(self.epoch_for_state(epoch)?))
+  }
+
+  fn state_epoch_selector(
     &self,
-    address: AddressWithSpace,
-    selector: EpochSelector,
-  ) -> Result<U256, StateQueryError> {
-    let version = self.state_at(selector)?;
-    let state = State::new(version.open_database())?;
-    Ok(state.balance(&address)?)
+    selector: StateSelector,
+  ) -> Result<EpochSelector, StateSelectionError> {
+    Ok(match selector {
+      StateSelector::Epoch(epoch) => epoch,
+      StateSelector::Hash {
+        hash,
+        require_pivot,
+      } => EpochSelector::Number(self.state_epoch_by_hash(hash, require_pivot)?),
+    })
+  }
+
+  /// Simulation requires an executable local version, including the funded Fork Base.
+  /// The earlier remote scalar-query prefix cannot supply this execution state.
+  pub(in crate::runtime) fn epoch_for_simulation(
+    &self,
+    selector: StateSelector,
+  ) -> Result<&EpochView, StateSelectionError> {
+    Ok(self.epoch_for_state(self.state_epoch_selector(selector)?)?)
+  }
+
+  fn state_epoch_by_hash(
+    &self,
+    hash: H256,
+    require_pivot: bool,
+  ) -> Result<BlockHeight, StateSelectionError> {
+    let initial = &self.reset_state.initial_view;
+    if hash == initial.state().epoch_id {
+      return Ok(initial.epoch_height());
+    }
+    if let Some(block) = self.runtime_state.history.mined_block_by_hash(&hash) {
+      if require_pivot && block.epoch_id() != hash {
+        return Err(StateSelectionError::UnknownBlock(hash));
+      }
+      return Ok(block.epoch_height());
+    }
+    if self.runtime_state.graph.block(&hash).is_some() {
+      return Err(StateSelectionError::UnknownBlock(hash));
+    }
+    if let Some(client) = initial.fork_client()
+      && let Some(height) = client.history_epoch_by_hash(hash, require_pivot)?
+    {
+      return Ok(height);
+    }
+    Err(StateSelectionError::UnknownBlock(hash))
   }
 
   pub(super) fn epoch_for_state(

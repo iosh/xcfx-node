@@ -19,8 +19,9 @@ use cfx_executor::{
     TransactOptions, TransactSettings, TxDropError,
   },
   machine::Machine,
-  state::State,
 };
+use xcfx_state::State;
+
 use cfx_types::{Address, U256, U512};
 use cfx_vm_types::{Env, Spec};
 use primitives::{AccessList, SignedTransaction, transaction::TransactionError};

@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+xcfx-state.workspace = true
 alloy-dyn-abi.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client.workspace = true
@@ -39,6 +40,7 @@ serde_json.workspace = true
 solidity-abi.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+log.workspace = true
 diem-crypto.workspace = true
 diem-types.workspace = true
 pow-types.workspace = true
@@ -47,5 +49,7 @@ keccak-hash.workspace = true
 typemap.workspace = true
 
 [dev-dependencies]
+alloy-json-rpc = { version = "2.4.1", default-features = false }
 hex-literal = "1"
 rand = "0.8"
+tower-service = "0.3"

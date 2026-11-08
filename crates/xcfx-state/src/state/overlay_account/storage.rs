@@ -1,143 +1,130 @@
 use super::Substate;
+use crate::database::Database;
+use crate::database::StorageEntry;
+use crate::database::StorageOwner;
+use crate::database::WriteCacheItem;
+use cfx_types::address_util::AddressUtil;
 
-#[cfg(test)]
-use super::StorageLayout;
 use cfx_parameters::{
   internal_contract_addresses::SYSTEM_STORAGE_ADDRESS, staking::COLLATERAL_UNITS_PER_STORAGE_KEY,
 };
-use cfx_statedb::{Result as DbResult, StateDbExt, StateDbGeneric};
+use cfx_statedb::Result as DbResult;
 use cfx_types::{Address, Space, U256};
 
-use primitives::{
-  storage::WriteCacheItem, SkipInputCheck, StorageKey, StorageKeyWithSpace, StorageValue,
-};
 use std::collections::{hash_map::Entry::*, HashSet};
 
 use super::OverlayAccount;
-
-#[cfg(test)]
-use super::super::checkpoints::CheckpointEntry;
 
 impl OverlayAccount {
   pub fn set_storage(
     &mut self,
     key: Vec<u8>,
     value: U256,
-    old_value: StorageValue,
-    owner: Address,
+    old_value: StorageEntry,
+    payer: Address,
     substate: &mut Substate,
-  ) -> DbResult<()> {
-    // Refund the collateral of old value
-    if let Some(old_owner) = old_value.owner {
-      substate.record_storage_release(&old_owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
-    }
-
-    // Settle the collateral of new value
-    let new_owner = if self.should_have_owner(&key) && !value.is_zero() {
-      substate.record_storage_occupy(&owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
-      Some(owner)
+  ) {
+    let owner = if self.should_have_owner(&key) && !value.is_zero() {
+      if self.original_storage_entry_at(&key).owner == StorageOwner::Unknown {
+        StorageOwner::Unknown
+      } else {
+        StorageOwner::Address(payer)
+      }
     } else {
-      None
+      StorageOwner::None
     };
-
-    self.insert_storage_write_cache(
-      key,
-      StorageValue {
-        owner: new_owner,
-        value,
-      },
-    );
-    Ok(())
+    if let Some(address) = old_value.refundable_owner() {
+      substate.record_storage_release(&address, COLLATERAL_UNITS_PER_STORAGE_KEY);
+    }
+    if let StorageOwner::Address(address) = owner {
+      substate.record_storage_occupy(&address, COLLATERAL_UNITS_PER_STORAGE_KEY);
+    }
+    self.insert_storage_write_cache(key, StorageEntry::with_owner(value, owner));
   }
 
-  #[cfg(test)]
-  pub fn set_storage_simple(&mut self, key: Vec<u8>, value: U256) {
-    self.insert_storage_write_cache(key, StorageValue { owner: None, value });
+  fn original_storage_entry_at(&self, key: &[u8]) -> StorageEntry {
+    if let Some(entry) = self.storage_committed_cache.read().get(key) {
+      return *entry;
+    }
+    if self.fresh_storage() && !self.storage_overrided {
+      return StorageEntry::default();
+    }
+    if let Some(entry) = self.storage_read_cache.read().get(key) {
+      return *entry;
+    }
+    if self.storage_overrided {
+      return StorageEntry::default();
+    }
+    panic!("storage must be read before recording its first transaction write")
   }
 
   pub fn delete_storage_range(
     &mut self,
-    db_deletion_log: impl Iterator<Item = (Vec<u8>, Box<[u8]>)>,
+    db: &mut dyn Database,
     key_prefix: &[u8],
     substate: &mut Substate,
   ) -> DbResult<()> {
     assert_eq!(self.address.space, Space::Native);
     let delete_all = key_prefix.is_empty();
-
-    // Its strong count should be 1 and will not cause memory copy,
-    // unless in test and gas estimation.
     assert!(self.storage_write_checkpoint.is_none());
     let write_cache = &mut self.storage_write_cache.write();
     let commit_cache = &mut self.storage_committed_cache.write();
-
     let mut read_keys = HashSet::new();
-    // Must have no checkpoint in range deletion
-    for (k, item) in write_cache.iter_mut() {
-      let WriteCacheItem::Write(v) = item else {
-        read_keys.insert(k.clone());
+    for (key, item) in write_cache.iter_mut() {
+      let WriteCacheItem::Write(entry) = item else {
+        read_keys.insert(key.clone());
         continue;
       };
-      if k.starts_with(key_prefix) && !v.value.is_zero() {
-        if let Some(old_owner) = v.owner {
-          substate.record_storage_release(&old_owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
-        };
-        *v = StorageValue::default();
+      if key.starts_with(key_prefix) && !entry.value.is_zero() {
+        if let Some(owner) = entry.refundable_owner() {
+          substate.record_storage_release(&owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
+        }
+        *entry = StorageEntry::default();
       }
     }
-
-    for k in read_keys {
-      write_cache.remove(&k);
+    for key in read_keys {
+      write_cache.remove(&key);
     }
-
-    for (k, v) in commit_cache.iter_mut() {
-      if write_cache.get(k).is_some() {
+    for (key, entry) in commit_cache.iter() {
+      if write_cache.contains_key(key) {
         continue;
       }
-      if k.starts_with(key_prefix) && !v.value.is_zero() {
-        if let Some(old_owner) = v.owner {
-          substate.record_storage_release(&old_owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
-        };
-        write_cache.insert(k.clone(), WriteCacheItem::Write(StorageValue::default()));
+      if key.starts_with(key_prefix) && !entry.value.is_zero() {
+        if let Some(owner) = entry.refundable_owner() {
+          substate.record_storage_release(&owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
+        }
+        write_cache.insert(key.clone(), WriteCacheItem::Write(StorageEntry::default()));
       }
     }
-
     let read_cache = self.storage_read_cache.read();
-    for (key, raw_value) in db_deletion_log
-      .into_iter()
-      .filter_map(|(k, v)| Some((decode_storage_key(&k)?, v)))
-    {
-      match write_cache.entry(key.clone()) {
-        Vacant(entry) => {
-          // Propogate the db changes to cache
-          // However, if all keys are removed, we don't update
-          // cache since it will be cleared later.
-          if !delete_all {
-            entry.insert(WriteCacheItem::Write(StorageValue::default()));
-          }
-
-          if !delete_all && !read_cache.contains_key(&key) {
-            // Backward compatible with an existing bug
-            // When remove whitelist entries, if the entry does not
-            // appear in the cache, the collateral is not refunded
-            // correctly.
-            continue;
+    // A newly created ordinary contract has no inherited storage to enumerate.
+    // Builtins and overrides do not establish that same lifecycle fact.
+    if !(self.is_newly_created_contract && !self.address.address.is_builtin_address()) {
+      db.visit_storage(&self.address, key_prefix, &mut |key, load| {
+        match write_cache.entry(key.to_vec()) {
+          Occupied(_) => return Ok(()),
+          Vacant(entry) => {
+            if !delete_all {
+              entry.insert(WriteCacheItem::Write(StorageEntry::default()));
+            }
+            // Preserve the protocol's legacy whitelist refund behavior.
+            if !delete_all && !read_cache.contains_key(key) {
+              return Ok(());
+            }
           }
         }
-        Occupied(_) => {
-          // The key has been modified in cache, and the db holds
-          // a deprecated version.
-          // So we do nothing here.
-          continue;
+        let entry = load()?;
+        assert!(
+          !entry.value.is_zero(),
+          "persisted storage enumeration contains a zero entry"
+        );
+        if let Some(owner) = entry.refundable_owner() {
+          substate.record_storage_release(&owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
         }
-      }
-      // Decode owner
-      let StorageValue { owner, value } = rlp::decode::<StorageValue>(&raw_value)?;
-      assert!(!value.is_zero());
-      let owner = owner.unwrap_or(self.address.address);
-      substate.record_storage_release(&owner, COLLATERAL_UNITS_PER_STORAGE_KEY);
+        Ok(())
+      })?;
     }
-    std::mem::drop(read_cache);
-
+    drop(read_cache);
     if delete_all {
       write_cache.clear();
       self.storage_read_cache.write().clear();
@@ -146,7 +133,7 @@ impl OverlayAccount {
     Ok(())
   }
 
-  fn cached_entry_at(&self, key: &[u8]) -> Option<StorageValue> {
+  fn cached_entry_at(&self, key: &[u8]) -> Option<StorageEntry> {
     if let Some(WriteCacheItem::Write(entry)) = self.storage_write_cache.read().get(key) {
       return Some(*entry);
     }
@@ -159,62 +146,10 @@ impl OverlayAccount {
     None
   }
 
-  #[cfg(test)]
-  pub fn cached_value_at_cache(&self, key: &[u8]) -> Option<U256> {
-    self.cached_entry_at(key).map(|e| e.value)
-  }
-
-  #[cfg(test)]
-  fn cached_entry_at_checkpoint(
-    &self,
-    key: &[u8],
-    state_checkpoint_id: usize,
-  ) -> Option<CheckpointEntry<StorageValue>> {
-    use CheckpointEntry::*;
-    if self.storage_write_checkpoint.is_none() {
-      return None;
-    }
-    if self
-      .storage_write_checkpoint
-      .as_ref()
-      .unwrap()
-      .read()
-      .get_state_cp_id()
-      < state_checkpoint_id
-    {
-      return None;
-    }
-    let res = self
-      .storage_write_checkpoint
-      .as_ref()
-      .unwrap()
-      .read()
-      .get(key)?;
-    Some(match res {
-      Unchanged => Unchanged,
-      Recorded(WriteCacheItem::Read) => Unchanged,
-      Recorded(WriteCacheItem::Write(v)) => Recorded(v),
-    })
-  }
-
-  #[cfg(test)]
-  pub fn cached_value_at_checkpoint(
-    &self,
-    key: &[u8],
-    state_checkpoint_id: usize,
-  ) -> Option<CheckpointEntry<U256>> {
-    self
-      .cached_entry_at_checkpoint(key, state_checkpoint_id)
-      .map(|e: CheckpointEntry<StorageValue>| match e {
-        CheckpointEntry::Unchanged => CheckpointEntry::Unchanged,
-        CheckpointEntry::Recorded(sv) => CheckpointEntry::Recorded(sv.value),
-      })
-  }
-
   // If a contract is removed, and then some one transfer balance to it,
   // `storage_at` will return incorrect value. But this case should never
   // happens.
-  pub fn storage_at(&self, db: &StateDbGeneric, key: &[u8]) -> DbResult<U256> {
+  pub fn storage_at(&self, db: &dyn Database, key: &[u8]) -> DbResult<U256> {
     Ok(self.storage_entry_at(db, key)?.value)
   }
 
@@ -237,12 +172,12 @@ impl OverlayAccount {
   // If a contract is removed, and then some one transfer balance to it,
   // `storage_at` will return incorrect value. But this case should never
   // happens.
-  pub fn storage_entry_at(&self, db: &StateDbGeneric, key: &[u8]) -> DbResult<StorageValue> {
+  pub fn storage_entry_at(&self, db: &dyn Database, key: &[u8]) -> DbResult<StorageEntry> {
     self.mark_storage_warm(key);
     Ok(if let Some(value) = self.cached_entry_at(key) {
       value
     } else if self.fresh_storage() {
-      StorageValue::default()
+      StorageEntry::default()
     } else {
       self.get_and_cache_storage(db, key)?
     })
@@ -257,20 +192,12 @@ impl OverlayAccount {
       .unwrap_or_default()
   }
 
-  fn get_and_cache_storage(&self, db: &StateDbGeneric, key: &[u8]) -> DbResult<StorageValue> {
-    let storage_key = StorageKey::new_storage_key(&self.address.address, key.as_ref())
-      .with_space(self.address.space);
-    let StorageValue { mut owner, value } =
-      db.get::<StorageValue>(storage_key)?.unwrap_or_default();
-    if !value.is_zero() && owner.is_none() && self.should_have_owner(key) {
-      owner = Some(self.address.address)
-    }
-    let storage_value = StorageValue { owner, value };
-    self
-      .storage_read_cache
-      .write()
-      .insert(key.to_vec(), storage_value.clone());
-    Ok(storage_value)
+  fn get_and_cache_storage(&self, db: &dyn Database, key: &[u8]) -> DbResult<StorageEntry> {
+    let entry = db
+      .get_storage_entry(&self.address, key)?
+      .unwrap_or_default();
+    self.storage_read_cache.write().insert(key.to_vec(), entry);
+    Ok(entry)
   }
 
   pub fn transient_set_storage(&mut self, key: Vec<u8>, value: U256) {
@@ -283,13 +210,13 @@ impl OverlayAccount {
 
   pub fn change_storage_value(
     &mut self,
-    db: &StateDbGeneric,
+    db: &dyn Database,
     key: &[u8],
     value: U256,
   ) -> DbResult<()> {
     let mut entry = self.storage_entry_at(db, key)?;
     if !entry.value.is_zero() {
-      entry.value = value;
+      entry = StorageEntry::with_owner(value, entry.owner);
       self.insert_storage_write_cache(key.to_vec(), entry);
     } else {
       warn!(
@@ -302,28 +229,5 @@ impl OverlayAccount {
 
   pub fn is_warm_storage_entry(&self, key: &[u8]) -> bool {
     self.storage_write_cache.read().get(key).is_some()
-  }
-
-  #[cfg(test)]
-  pub fn storage_layout_change(&self) -> Option<&StorageLayout> {
-    self.storage_layout_change.as_ref()
-  }
-
-  #[cfg(test)]
-  pub fn set_storage_layout(&mut self, layout: StorageLayout) {
-    self.storage_layout_change = Some(layout);
-  }
-}
-
-fn decode_storage_key(key: &Vec<u8>) -> Option<Vec<u8>> {
-  if let StorageKeyWithSpace {
-    key: StorageKey::StorageKey { storage_key, .. },
-    ..
-  } = StorageKeyWithSpace::from_key_bytes::<SkipInputCheck>(&key[..])
-  {
-    Some(storage_key.to_vec())
-  } else {
-    // Should be unreachable
-    None
   }
 }

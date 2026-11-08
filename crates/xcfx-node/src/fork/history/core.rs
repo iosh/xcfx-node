@@ -3,16 +3,57 @@
 //! The parent module owns the surrounding fork-base checks. Each read here
 //! resolves and validates the Core-specific position within that boundary.
 
+use std::sync::Arc;
+
 use cfx_rpc_cfx_types::{Block, BlockTransactions, Log, Receipt, Transaction};
-use cfx_types::{H256, Space, U256};
+use cfx_types::{BigEndianHash, H256, Space, U256};
 use primitives::{TransactionStatus, block::BlockHeight};
 
-use super::{ForkReadError, ForkRpc, HistoryBlockId};
+use super::{CoreStateQuery, ForkReadError, ForkRpc, HistoryBlockId, HistoryResult};
 
 // The Core RPC filter accepts at most 128 block hashes.
 const MAX_CORE_LOG_BLOCK_HASHES: usize = 128;
 
 impl ForkRpc {
+  pub(super) async fn read_core_state(
+    &self,
+    epoch_height: BlockHeight,
+    query: CoreStateQuery,
+  ) -> Result<HistoryResult, ForkReadError> {
+    let pivot_hash = if epoch_height == self.base.epoch_height {
+      self.base.pivot_hash
+    } else {
+      self.load_historical_pivot(epoch_height).await?.hash
+    };
+    Ok(match query {
+      CoreStateQuery::Balance(address) => HistoryResult::CoreQuantity(
+        self
+          .rpc
+          .cfx_getBalance(self.core_address(address), pivot_hash)
+          .await?,
+      ),
+      CoreStateQuery::Nonce(address) => HistoryResult::CoreQuantity(
+        self
+          .rpc
+          .cfx_getNextNonce(self.core_address(address), pivot_hash)
+          .await?,
+      ),
+      CoreStateQuery::Code(address) => HistoryResult::CoreCode(Arc::new(
+        self
+          .rpc
+          .cfx_getCode(self.core_address(address), pivot_hash)
+          .await?
+          .into_vec(),
+      )),
+      CoreStateQuery::Storage { address, position } => HistoryResult::CoreStorage(
+        self
+          .rpc
+          .cfx_getStorageAt(self.core_address(address), position.into_uint(), pivot_hash)
+          .await?,
+      ),
+    })
+  }
+
   pub(super) async fn read_core_block(
     &self,
     selector: HistoryBlockId,

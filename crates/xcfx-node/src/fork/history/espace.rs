@@ -78,34 +78,6 @@ impl ForkRpc {
     Ok(FeeHistoryRange::new(oldest_height, blocks))
   }
 
-  pub(super) async fn read_history_epoch(
-    &self,
-    hash: H256,
-    require_pivot: bool,
-  ) -> Result<Option<BlockHeight>, ForkReadError> {
-    let Some(metadata) = self.rpc.cfx_getBlockByHash(hash).await? else {
-      return Ok(None);
-    };
-    if metadata.hash != hash {
-      return Err(ForkReadError::Inconsistent("state block hash"));
-    }
-    let Some(epoch) = metadata.epoch_number else {
-      return Ok(None);
-    };
-    if epoch > self.base.epoch_height.into() {
-      return Ok(None);
-    }
-    let height = epoch.as_u64();
-    let pivot = self.load_historical_pivot(height).await?;
-    if require_pivot && pivot.hash != hash {
-      return Ok(None);
-    }
-    if pivot.hash != hash {
-      self.load_block_at_pivot(height, pivot.hash, hash).await?;
-    }
-    Ok(Some(height))
-  }
-
   pub(super) async fn read_espace_state(
     &self,
     epoch_height: BlockHeight,

@@ -19,7 +19,7 @@ use crate::{
   node::{EspaceBlock, EspaceBlockReceipts, EspaceReceipt, EspaceTransaction},
   rpc::{operation::RpcResult, protocol::RpcError},
   rpc_client::EthereumBlock,
-  runtime::{EspaceStateQueryError, RuntimeSimulationError, RuntimeTransactionError},
+  runtime::{RuntimeSimulationError, RuntimeTransactionError, StateQueryError},
   runtime_transaction::RuntimeTransaction,
   signing::MessageSigningError,
   virtual_execution::{AccessListResult, TransactionEstimate},
@@ -67,11 +67,11 @@ pub(super) fn access_list(result: Result<AccessListResult, RuntimeSimulationErro
   })
 }
 
-pub(super) fn state<T: Serialize>(result: Result<T, EspaceStateQueryError>) -> RpcResult {
-  value(result.map_err(state_error)?)
+pub(super) fn state<T: Serialize>(result: Result<T, impl Into<StateQueryError>>) -> RpcResult {
+  value(result.map_err(|error| state_error(error.into()))?)
 }
 
-pub(super) fn code(result: Result<std::sync::Arc<Vec<u8>>, EspaceStateQueryError>) -> RpcResult {
+pub(super) fn code(result: Result<std::sync::Arc<Vec<u8>>, StateQueryError>) -> RpcResult {
   let code = result.map_err(state_error)?;
   value(Bytes::new(code.as_ref().clone()))
 }

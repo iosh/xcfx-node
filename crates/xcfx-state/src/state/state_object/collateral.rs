@@ -2,14 +2,15 @@ use super::{State, Substate};
 use crate::{
   executive_observer::TracerTrait, internal_contract::storage_point_prop, return_if, try_loaded,
 };
+use cfx_executor::state::{CollateralCheckError, CollateralCheckResult};
 use cfx_parameters::{
   consensus_internal::CIP107_STORAGE_POINT_PROP_INIT, staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
 };
 use cfx_statedb::{global_params::*, Result as DbResult};
 use cfx_types::{address_util::AddressUtil, Address, AddressSpaceUtil, U256};
-use cfx_vm_types::{self as vm, Spec};
+use cfx_vm_types::Spec;
 
-impl State {
+impl State<'_> {
   pub fn collateral_for_storage(&self, address: &Address) -> DbResult<U256> {
     let acc = try_loaded!(self.read_native_account_lock(address));
     Ok(acc.collateral_for_storage())
@@ -22,14 +23,7 @@ impl State {
 
   pub fn available_storage_points_for_collateral(&self, address: &Address) -> DbResult<U256> {
     let acc = try_loaded!(self.read_native_account_lock(address));
-    Ok(
-      acc
-        .sponsor_info()
-        .storage_points
-        .as_ref()
-        .map(|points| points.unused)
-        .unwrap_or_default(),
-    )
+    Ok(acc.sponsor_info().storage_points.unused())
   }
 
   /// Caller should make sure that staking_balance for this account is
@@ -88,65 +82,27 @@ impl State {
   }
 
   fn initialize_cip107(&mut self, address: &Address) -> DbResult<(U256, U256)> {
-    debug!("Check initialize CIP-107");
-
-    let prop: U256 = self.storage_point_prop()?;
+    let prop = self.storage_point_prop()?;
     let mut account = self.write_account_or_new_lock(&address.with_native_space())?;
     return_if!(!account.is_contract());
-    return_if!(account.is_cip_107_initialized());
-
+    match account.storage_points_initialization() {
+      Some(true) => return Ok((U256::zero(), U256::zero())),
+      Some(false) => {}
+      None if !account.cip107_conversion(prop).is_zero() => {
+        let initialized = self.db.storage_points_initialized(address)?;
+        account.resolve_storage_points_flag(initialized);
+        if initialized {
+          return Ok((U256::zero(), U256::zero()));
+        }
+      }
+      None => {}
+    }
+    // If conversion is zero, both possible inherited states converge to
+    // the same initialized record through this actual protocol transition.
     let (from_balance, from_collateral) = account.initialize_cip107(prop);
-    std::mem::drop(account);
-
+    drop(account);
     self.add_converted_storage_point(from_balance, from_collateral);
     Ok((from_balance, from_collateral))
-  }
-}
-
-impl State {
-  // TODO: This function can only be called after VM execution. There are some
-  // test cases breaks this assumption, which will be fixed in a separated PR.
-  #[cfg(test)]
-  pub fn settle_collateral_and_check(
-    &mut self,
-    storage_owner: &Address,
-    storage_limit: &U256,
-    substate: &mut Substate,
-    tracer: &mut dyn TracerTrait,
-    spec: &Spec,
-    dry_run: bool,
-  ) -> DbResult<CollateralCheckResult> {
-    let res = settle_collateral_for_all(self, substate, tracer, spec, dry_run)?;
-    Ok(if res.is_ok() {
-      self.check_storage_limit(storage_owner, storage_limit, dry_run)?
-    } else {
-      res
-    })
-  }
-
-  #[cfg(test)]
-  pub fn settle_collateral_and_assert(
-    &mut self,
-    storage_owner: &Address,
-    substate: &mut Substate,
-    should_success: bool,
-  ) -> DbResult<()> {
-    let res = self.settle_collateral_and_check(
-      storage_owner,
-      &U256::MAX,
-      substate,
-      &mut (),
-      &Spec::new_spec_for_test(),
-      false,
-    )?;
-
-    if should_success {
-      res.unwrap();
-    } else {
-      res.unwrap_err();
-    }
-
-    Ok(())
   }
 }
 
@@ -229,23 +185,4 @@ pub fn initialize_cip107(state: &mut State) -> DbResult<()> {
     storage_point_prop().to_vec(),
     CIP107_STORAGE_POINT_PROP_INIT.into(),
   )
-}
-
-pub type CollateralCheckResult = std::result::Result<(), CollateralCheckError>;
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub enum CollateralCheckError {
-  ExceedStorageLimit { limit: U256, required: U256 },
-  NotEnoughBalance { required: U256, got: U256 },
-}
-
-impl CollateralCheckError {
-  pub fn into_vm_error(self) -> vm::Error {
-    match self {
-      CollateralCheckError::ExceedStorageLimit { .. } => vm::Error::ExceedStorageLimit,
-      CollateralCheckError::NotEnoughBalance { required, got } => {
-        vm::Error::NotEnoughBalanceForStorage { required, got }
-      }
-    }
-  }
 }

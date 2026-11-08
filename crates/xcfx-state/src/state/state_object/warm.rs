@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::State;
 
-impl State {
+impl State<'_> {
   pub fn is_warm_account(&self, address: &AddressWithSpace) -> bool {
     if self
       .tx_access_list

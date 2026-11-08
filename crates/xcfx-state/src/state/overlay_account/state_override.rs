@@ -1,7 +1,9 @@
 use super::{AccountEntry, OverlayAccount};
+use crate::account::Account;
+use crate::database::StorageEntry;
 use cfx_rpc_eth_types::{AccountOverride, AccountStateOverrideMode};
 use cfx_types::{AddressWithSpace, Space, H256, U256};
-use primitives::{Account, StorageValue};
+
 use std::{collections::HashMap, sync::Arc};
 
 impl AccountEntry {
@@ -79,7 +81,7 @@ impl OverlayAccount {
       } else {
         None
       };
-      let storage_value = StorageValue { owner, value };
+      let storage_value = StorageEntry::new(value, owner);
       read_cache.insert(key, storage_value);
     }
   }

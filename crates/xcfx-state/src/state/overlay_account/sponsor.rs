@@ -1,6 +1,7 @@
+use crate::account::SponsorInfo;
+use crate::account::StoragePointsState;
 use cfx_parameters::consensus::ONE_CFX_IN_DRIP;
 use cfx_types::{Address, U256};
-use primitives::SponsorInfo;
 
 use super::OverlayAccount;
 
@@ -31,14 +32,25 @@ impl OverlayAccount {
     self.sponsor_info.sponsor_for_collateral = *sponsor;
     let inc = sponsor_balance.saturating_sub(self.sponsor_info.sponsor_balance_for_collateral);
     self.sponsor_info.sponsor_balance_for_collateral = *sponsor_balance;
-
-    if self.sponsor_info.storage_points.is_some() && !inc.is_zero() {
-      let converted_storage_point = inc * prop / (U256::from(ONE_CFX_IN_DRIP) + prop);
-      self.sponsor_info.sponsor_balance_for_collateral -= converted_storage_point;
-      self.sponsor_info.storage_points.as_mut().unwrap().unused += converted_storage_point;
-      converted_storage_point
-    } else {
-      U256::zero()
+    if inc.is_zero() {
+      return U256::zero();
+    }
+    match &mut self.sponsor_info.storage_points {
+      StoragePointsState::Uninitialized => U256::zero(),
+      StoragePointsState::Initialized(points) => {
+        let converted = inc * prop / (U256::from(ONE_CFX_IN_DRIP) + prop);
+        self.sponsor_info.sponsor_balance_for_collateral -= converted;
+        points.unused += converted;
+        converted
+      }
+      StoragePointsState::Unknown => {
+        let converted = inc * prop / (U256::from(ONE_CFX_IN_DRIP) + prop);
+        assert!(
+          converted.is_zero(),
+          "nonzero sponsorship conversion requires resolved initialization"
+        );
+        U256::zero()
+      }
     }
   }
 

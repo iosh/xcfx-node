@@ -17,7 +17,7 @@ use cfx_types::{Address, AddressSpaceUtil, U256};
 
 // Staking balance
 
-impl State {
+impl State<'_> {
   pub fn staking_balance(&self, address: &Address) -> DbResult<U256> {
     let acc = try_loaded!(self.read_native_account_lock(address));
     Ok(*acc.staking_balance())
@@ -72,7 +72,7 @@ impl State {
     current_block_number: u64,
   ) -> DbResult<()> {
     let mut account = self.write_native_account_lock(&address)?;
-    account.cache_ext_fields(false, true, &self.db)?;
+    account.cache_ext_fields(false, true, &*self.db)?;
     account.remove_expired_vote_stake_info(current_block_number);
     Ok(())
   }
@@ -117,7 +117,7 @@ impl State {
 }
 
 pub fn initialize_or_update_dao_voted_params(state: &mut State, cip105: bool) -> DbResult<()> {
-  let vote_count = get_settled_param_vote_count(state).expect("db error");
+  let vote_count = get_settled_param_vote_count(state)?;
   debug!(
     "initialize_or_update_dao_voted_params: vote_count={:?}",
     vote_count

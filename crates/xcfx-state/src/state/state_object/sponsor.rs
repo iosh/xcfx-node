@@ -1,13 +1,14 @@
+use crate::account::SponsorInfo;
+use cfx_parameters::consensus::ONE_CFX_IN_DRIP;
 use cfx_parameters::internal_contract_addresses::SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS;
 use cfx_statedb::{
-  access_mode,
   global_params::{ConvertedStoragePoints, TotalIssued},
   Result as DbResult,
 };
 use cfx_types::{maybe_address, Address, AddressSpaceUtil, AddressWithSpace, U256};
-use primitives::{SponsorInfo, StorageKey};
 
 use super::{State, Substate};
+use crate::state::overlay_account::AccountEntry;
 use crate::{return_if, try_loaded};
 
 lazy_static! {
@@ -16,7 +17,7 @@ lazy_static! {
     pub static ref COMMISSION_PRIVILEGE_SPECIAL_KEY: Address = Address::zero();
 }
 
-impl State {
+impl State<'_> {
   pub fn sponsor_info(&self, address: &Address) -> DbResult<Option<SponsorInfo>> {
     let acc = try_loaded!(self.read_native_account_lock(address));
     Ok(Some(acc.sponsor_info().clone()))
@@ -102,9 +103,19 @@ impl State {
       U256::zero()
     };
 
-    let converted_storage_points = self
-      .write_native_account_lock(&address)?
-      .set_sponsor_for_collateral(sponsor, sponsor_balance, prop);
+    let mut account = self.write_native_account_lock(address)?;
+    if account.storage_points_initialization().is_none() {
+      let inc =
+        sponsor_balance.saturating_sub(account.sponsor_info().sponsor_balance_for_collateral);
+      let converted = inc * prop / (U256::from(ONE_CFX_IN_DRIP) + prop);
+      if !converted.is_zero() {
+        let initialized = self.db.storage_points_initialized(address)?;
+        account.resolve_storage_points_flag(initialized);
+      }
+    }
+    let converted_storage_points =
+      account.set_sponsor_for_collateral(sponsor, sponsor_balance, prop);
+    drop(account);
 
     *self.global_stat.val::<TotalIssued>() -= converted_storage_points;
     *self.global_stat.val::<ConvertedStoragePoints>() += converted_storage_points;
@@ -221,21 +232,6 @@ impl State {
     storage_range_deletion_for_account(self, address, &vec![], substate)?;
     Ok(())
   }
-
-  #[cfg(test)]
-  pub fn clear_contract_whitelist(
-    &mut self,
-    address: &Address,
-    substate: &mut Substate,
-  ) -> DbResult<()> {
-    storage_range_deletion_for_account(
-      self,
-      &SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS,
-      address.as_ref(),
-      substate,
-    )?;
-    Ok(())
-  }
 }
 
 #[inline]
@@ -264,20 +260,16 @@ fn storage_range_deletion_for_account(
   key_prefix: &[u8],
   substate: &mut Substate,
 ) -> DbResult<()> {
-  let delete_all = key_prefix.is_empty();
-
-  let storage_key_prefix = if delete_all {
-    StorageKey::new_storage_root_key(&address)
-  } else {
-    StorageKey::new_storage_key(&address, key_prefix)
-  }
-  .with_native_space();
-  let db_deletion_log = state
-    .db
-    .delete_all::<access_mode::Read>(storage_key_prefix, None)?
-    .into_iter();
-  state
-    .write_native_account_lock(address)?
-    .delete_storage_range(db_deletion_log, key_prefix, substate)?;
-  Ok(())
+  // Loading also marks the account dirty before its storage view is changed.
+  drop(state.write_native_account_lock(address)?);
+  let address = address.with_native_space();
+  let (db, cache) = (&mut state.db, state.cache.get_mut());
+  let entry = &mut cache
+    .get_mut(&address)
+    .expect("account was loaded for range release")
+    .entry;
+  let AccountEntry::Cached(account, _) = entry else {
+    unreachable!("range release requires an existing account")
+  };
+  account.delete_storage_range(&mut **db, key_prefix, substate)
 }

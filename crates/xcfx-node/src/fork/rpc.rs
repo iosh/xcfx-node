@@ -1,4 +1,7 @@
-//! Conflux RPC reads and state encoding at a fixed fork base.
+//! Conflux RPC reads and complete execution records at a fixed fork base.
+
+use xcfx_state::account::Account;
+use xcfx_state::account::{SponsorInfo, StoragePointsState};
 
 use std::{collections::HashSet, num::NonZeroU64, sync::Arc};
 
@@ -8,23 +11,25 @@ use cfx_addr::Network;
 use cfx_parameters::{
   consensus::DEFERRED_STATE_EPOCH_COUNT,
   internal_contract_addresses::{
-    PARAMS_CONTROL_CONTRACT_ADDRESS, STORAGE_INTEREST_STAKING_CONTRACT_ADDRESS,
-    SYSTEM_STORAGE_ADDRESS,
+    SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS, SYSTEM_STORAGE_ADDRESS,
   },
   staking::DRIPS_PER_STORAGE_COLLATERAL_UNIT,
 };
-use cfx_rpc_cfx_types::{Block, BlockHashOrEpochNumber, EpochNumber, RpcAddress};
+use cfx_rpc_cfx_types::{Block, EpochNumber, RpcAddress, TransactionRequest};
 use cfx_statedb::global_params::*;
-use cfx_types::{Address, AddressUtil, AddressWithSpace, H256, Space, U256};
+use cfx_types::{Address, AddressSpaceUtil, AddressUtil, AddressWithSpace, H256, Space, U256};
 use keccak_hash::{KECCAK_EMPTY, keccak};
 use primitives::{
-  Account, CodeInfo, DepositList, SponsorInfo, StorageKey, StorageKeyWithSpace, StorageValue,
-  VoteStakeList, account::StoragePoints, storage::STORAGE_LAYOUT_REGULAR_V0,
+  DepositList, StorageKey, StorageKeyWithSpace, VoteStakeList, account::StoragePoints,
 };
+use xcfx_state::database::{CodeEntry, StorageEntry};
 
 use crate::{execution::ExecutionCommitment, rpc_client::ConfluxRpcClient};
 
-use super::{ForkBase, ForkEpoch, ForkEpochReceipts, ForkLoadError, ForkReadError, load_fork_base};
+use super::{
+  ForkBase, ForkEpoch, ForkEpochReceipts, ForkLoadError, ForkReadError, StateValue, load_fork_base,
+  storage_points::{InitializationProbe, address_word, calldata},
+};
 
 pub(crate) struct ForkRpc {
   pub(super) base: Arc<ForkBase>,
@@ -50,11 +55,17 @@ impl ForkRpc {
 
   pub(super) async fn balance(&self, address: AddressWithSpace) -> Result<U256, ForkReadError> {
     match address.space {
-      Space::Native => self
-        .rpc
-        .cfx_getBalance(self.core_address(address.address), self.core_block())
-        .await
-        .map_err(ForkReadError::from),
+      Space::Native => {
+        // Core resolves the hash to an epoch before opening its state. Check
+        // around the read because those steps do not pin one remote snapshot.
+        self.validate_base().await?;
+        let value = self
+          .rpc
+          .cfx_getBalance(self.core_address(address.address), self.base.pivot_hash)
+          .await?;
+        self.validate_base().await?;
+        Ok(value)
+      }
       Space::Ethereum => {
         let value = self
           .rpc
@@ -67,52 +78,154 @@ impl ForkRpc {
     }
   }
 
-  /// Validates both sides of compound numeric reads before returning a value.
+  /// Validates both sides of Core state reads before returning a value.
   /// This detects visible pivot changes; it is not an atomic remote snapshot.
   pub(super) async fn state_value(
     &self,
     key: StateKey,
-  ) -> Result<Option<Arc<[u8]>>, ForkReadError> {
-    // Hash-based state methods already require the fixed pivot. Numeric RPCs
-    // need uncached checks around the entire conversion, including its helpers.
-    let numeric_selector = matches!(
-      key,
-      StateKey::Account(AddressWithSpace {
-        space: Space::Native,
-        ..
-      }) | StateKey::StorageLayout(AddressWithSpace {
-        space: Space::Native,
-        ..
-      }) | StateKey::DepositList(_)
-        | StateKey::VoteList(_)
-    );
-    if numeric_selector {
+  ) -> Result<Option<StateValue>, ForkReadError> {
+    // Core state lookup resolves through an epoch. Check around the complete
+    // read, including numeric account helpers and code/storage point reads.
+    let core_read = match key {
+      StateKey::Account(address)
+      | StateKey::Code { address, .. }
+      | StateKey::Storage { address, .. } => address.space == Space::Native,
+      StateKey::SponsorWhitelist { .. } | StateKey::DepositList(_) | StateKey::VoteList(_) => true,
+    };
+    if core_read {
       self.validate_base().await?;
     }
     let value = match key {
       StateKey::Account(address) => self.account(address).await?,
       StateKey::Code { address, hash } => self.code(address, hash).await?,
       StateKey::Storage { address, slot } => self.storage(address, slot).await?,
-      StateKey::StorageLayout(address) => self.storage_layout(address).await?,
+      StateKey::SponsorWhitelist { contract, user } => {
+        self.sponsor_whitelist(contract, user).await?
+      }
       StateKey::DepositList(address) => {
         let entries = self
           .rpc
           .cfx_getDepositList(self.core_address(address), self.epoch())
           .await?;
-        (!entries.is_empty()).then(|| encode(&DepositList(entries)))
+        (!entries.is_empty()).then(|| StateValue::DepositList(Arc::new(DepositList(entries))))
       }
       StateKey::VoteList(address) => {
         let entries = self
           .rpc
           .cfx_getVoteList(self.core_address(address), self.epoch())
           .await?;
-        (!entries.is_empty()).then(|| encode(&VoteStakeList(entries)))
+        (!entries.is_empty()).then(|| StateValue::VoteList(Arc::new(VoteStakeList(entries))))
       }
     };
-    if numeric_selector {
+    if core_read {
       self.validate_base().await?;
     }
+    if let (StateKey::SponsorWhitelist { contract, user }, Some(StateValue::HiddenWhitelistEntry)) =
+      (key, &value)
+    {
+      log::warn!(
+        "Fork epoch {} enables all-address sponsorship for {:?}, hiding the individual entry for {:?}. Treating the hidden entry as unregistered: eligibility after disabling all-address sponsorship may differ; adding it charges new collateral, and deleting it cannot refund its hidden historical collateral.",
+        self.base.epoch_height,
+        contract,
+        user,
+      );
+    }
     Ok(value)
+  }
+
+  /// Resolves only the inherited flag; it never returns replacement account amounts.
+  pub(super) async fn storage_points_initialized(
+    &self,
+    address: Address,
+    cached_account: Option<Arc<Account>>,
+  ) -> Result<bool, ForkReadError> {
+    self.validate_base().await?;
+    let account = match cached_account {
+      Some(account) => Some(account),
+      None => match self.account(address.with_native_space()).await? {
+        Some(StateValue::Account(account)) => Some(account),
+        None => None,
+        Some(_) => unreachable!("an account read must return account data"),
+      },
+    };
+    let initialized = match account {
+      None => false,
+      Some(account) => match account.sponsor_info.storage_points.initialization() {
+        Some(initialized) => initialized,
+        None => {
+          let params = self.rpc.cfx_getParamsFromVote(self.epoch()).await?;
+          let sponsor_balance = self
+            .rpc
+            .cfx_getBalance(
+              self.core_address(SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS),
+              self.base.pivot_hash,
+            )
+            .await?;
+          let probe = InitializationProbe::new(
+            &self.base,
+            &account,
+            params.storage_point_prop,
+            sponsor_balance,
+          )?;
+          let output = self
+            .rpc
+            .cfx_call(probe.request(), self.base.pivot_hash)
+            .await?
+            .into_vec();
+          probe.decode(&output)?
+        }
+      },
+    };
+    self.validate_base().await?;
+    Ok(initialized)
+  }
+
+  async fn sponsor_whitelist(
+    &self,
+    contract: Address,
+    user: Address,
+  ) -> Result<Option<StateValue>, ForkReadError> {
+    let all = self
+      .whitelist_query("isAllWhitelisted(address)", &[address_word(contract)])
+      .await?;
+    let present = if user.is_zero() {
+      all
+    } else if all {
+      return Ok(Some(StateValue::HiddenWhitelistEntry));
+    } else {
+      self
+        .whitelist_query(
+          "isWhitelisted(address,address)",
+          &[address_word(contract), address_word(user)],
+        )
+        .await?
+    };
+    Ok(
+      present.then_some(StateValue::Storage(StorageEntry::with_unknown_owner(
+        U256::one(),
+      ))),
+    )
+  }
+
+  async fn whitelist_query(
+    &self,
+    signature: &str,
+    arguments: &[U256],
+  ) -> Result<bool, ForkReadError> {
+    let request = TransactionRequest {
+      to: Some(self.core_address(SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS)),
+      data: Some(calldata(signature, arguments).into()),
+      ..Default::default()
+    };
+    let output = self
+      .rpc
+      .cfx_call(&request, self.base.pivot_hash)
+      .await?
+      .into_vec();
+    if output.len() != 32 || output[..31].iter().any(|byte| *byte != 0) || output[31] > 1 {
+      return Err(ForkReadError::Inconsistent("sponsor whitelist ABI result"));
+    }
+    Ok(output[31] == 1)
   }
 
   /// Required initial state, read before the service starts and retained by the
@@ -233,15 +346,11 @@ impl ForkRpc {
     EpochNumber::Num(self.base.epoch_height.into())
   }
 
-  fn core_block(&self) -> BlockHashOrEpochNumber {
-    core_hash_selector(self.base.pivot_hash)
-  }
-
   fn espace_block(&self) -> BlockId {
     BlockId::hash_canonical(self.base.pivot_hash.0.into())
   }
 
-  fn core_address(&self, address: Address) -> RpcAddress {
+  pub(super) fn core_address(&self, address: Address) -> RpcAddress {
     let network = match self.base.network.chain_ids.network_id {
       1 => Network::Test,
       1029 => Network::Main,
@@ -295,7 +404,7 @@ impl ForkRpc {
     let block_hashes = self.load_block_hashes(epoch, pivot_hash).await?;
     let receipts = self
       .rpc
-      .cfx_getEpochReceipts(core_hash_selector(pivot_hash), include_espace)
+      .cfx_getEpochReceipts(pivot_hash, include_espace)
       .await?
       .ok_or(ForkReadError::Unavailable("epoch receipts"))?;
     if receipts.len() != block_hashes.len()
@@ -326,7 +435,7 @@ impl ForkRpc {
     Ok(())
   }
 
-  async fn account(&self, address: AddressWithSpace) -> Result<Option<Arc<[u8]>>, ForkReadError> {
+  async fn account(&self, address: AddressWithSpace) -> Result<Option<StateValue>, ForkReadError> {
     let mut account = Account::new_empty(&address);
     if address.space == Space::Ethereum {
       account.balance = self.balance(address).await?;
@@ -344,7 +453,7 @@ impl ForkRpc {
         return Ok(None);
       }
       account.code_hash = keccak(&code);
-      return Ok(Some(encode(&account)));
+      return Ok(Some(StateValue::Account(Arc::new(account))));
     }
 
     let rpc_address = self.core_address(address.address);
@@ -397,11 +506,14 @@ impl ForkRpc {
         .available_storage_points
         .checked_mul(unit)
         .ok_or(ForkReadError::OutOfRange("available storage points"))?;
-      if unused.is_zero() && used_points.is_zero() {
-        return Err(ForkReadError::Unsupported(
-          "Core sponsor storage-points initialization is not exposed by RPC",
-        ));
-      }
+      let storage_points = if unused.is_zero() && used_points.is_zero() {
+        StoragePointsState::Unknown
+      } else {
+        StoragePointsState::Initialized(StoragePoints {
+          unused,
+          used: used_points,
+        })
+      };
       account.sponsor_info = SponsorInfo {
         sponsor_for_gas: sponsor.sponsor_for_gas.hex_address,
         sponsor_for_collateral: sponsor.sponsor_for_collateral.hex_address,
@@ -409,17 +521,14 @@ impl ForkRpc {
         sponsor_balance_for_gas: sponsor.sponsor_balance_for_gas,
         sponsor_balance_for_collateral: sponsor.sponsor_balance_for_collateral,
         // Spendable points use the RPC lower bound; never add global compensation.
-        storage_points: Some(StoragePoints {
-          unused,
-          used: used_points,
-        }),
+        storage_points,
       };
     } else if !used_points.is_zero() {
       return Err(ForkReadError::Inconsistent(
         "storage points on a basic Core account",
       ));
     }
-    Ok(Some(encode(&account)))
+    Ok(Some(StateValue::Account(Arc::new(account))))
   }
 
   async fn code_bytes(&self, address: AddressWithSpace) -> Result<Vec<u8>, ForkReadError> {
@@ -427,7 +536,7 @@ impl ForkRpc {
       Space::Native => Ok(
         self
           .rpc
-          .cfx_getCode(self.core_address(address.address), self.core_block())
+          .cfx_getCode(self.core_address(address.address), self.base.pivot_hash)
           .await?
           .into_vec(),
       ),
@@ -447,7 +556,7 @@ impl ForkRpc {
     &self,
     address: AddressWithSpace,
     hash: H256,
-  ) -> Result<Option<Arc<[u8]>>, ForkReadError> {
+  ) -> Result<Option<StateValue>, ForkReadError> {
     let code = self.code_bytes(address).await?;
     if keccak(&code) != hash {
       return Err(ForkReadError::Inconsistent(
@@ -457,22 +566,19 @@ impl ForkRpc {
     if code.is_empty() {
       return Ok(None);
     }
-    if address.space == Space::Native {
-      return Err(ForkReadError::Unsupported(
-        "Core code owner is not exposed by RPC",
-      ));
-    }
-    Ok(Some(encode(&CodeInfo {
-      code: Arc::new(code),
-      owner: Address::zero(),
-    })))
+    let code = Arc::new(code);
+    let entry = match address.space {
+      Space::Native => CodeEntry::with_unknown_owner(code),
+      Space::Ethereum => CodeEntry::new(code, Address::zero()),
+    };
+    Ok(Some(StateValue::Code(entry)))
   }
 
   async fn storage(
     &self,
     address: AddressWithSpace,
     slot: H256,
-  ) -> Result<Option<Arc<[u8]>>, ForkReadError> {
+  ) -> Result<Option<StateValue>, ForkReadError> {
     let slot_number = U256::from_big_endian(slot.as_bytes());
     let value = match address.space {
       Space::Native => self
@@ -480,7 +586,7 @@ impl ForkRpc {
         .cfx_getStorageAt(
           self.core_address(address.address),
           slot_number,
-          self.core_block(),
+          self.base.pivot_hash,
         )
         .await?
         .unwrap_or_default(),
@@ -498,39 +604,13 @@ impl ForkRpc {
     if value.is_zero() {
       return Ok(None);
     }
-    if address.space == Space::Native && address.address != SYSTEM_STORAGE_ADDRESS {
-      return Err(ForkReadError::Unsupported(
-        "Core storage owner is not exposed by RPC",
-      ));
-    }
-    Ok(Some(encode(&StorageValue {
-      value: U256::from_big_endian(value.as_bytes()),
-      owner: None,
-    })))
-  }
-
-  async fn storage_layout(
-    &self,
-    address: AddressWithSpace,
-  ) -> Result<Option<Arc<[u8]>>, ForkReadError> {
-    let exists = match address.space {
-      // These namespaces hold protocol state independently of account bytecode.
-      Space::Native
-        if address.address == SYSTEM_STORAGE_ADDRESS
-          || address.address == STORAGE_INTEREST_STAKING_CONTRACT_ADDRESS
-          || address.address == PARAMS_CONTROL_CONTRACT_ADDRESS =>
-      {
-        true
-      }
-      Space::Native => self
-        .rpc
-        .cfx_getAdmin(self.core_address(address.address), self.epoch())
-        .await?
-        .is_some(),
-      Space::Ethereum => self.account(address).await?.is_some(),
+    let value = U256::from_big_endian(value.as_bytes());
+    let entry = if address.space == Space::Native && address.address != SYSTEM_STORAGE_ADDRESS {
+      StorageEntry::with_unknown_owner(value)
+    } else {
+      StorageEntry::new(value, None)
     };
-    // This is local adapter metadata, not an imported remote MPT layout or proof.
-    Ok(exists.then(|| STORAGE_LAYOUT_REGULAR_V0.to_bytes().into()))
+    Ok(Some(StateValue::Storage(entry)))
   }
 
   pub(super) async fn load_block_hashes(
@@ -551,7 +631,7 @@ impl ForkRpc {
 }
 
 /// Owned keys for state entries exposed by the remote RPC methods.
-/// Every key reads an optional, encoded Conflux state entry.
+/// Every key selects one corresponding state-value variant.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum StateKey {
   Account(AddressWithSpace),
@@ -563,7 +643,10 @@ pub(super) enum StateKey {
     address: AddressWithSpace,
     slot: H256,
   },
-  StorageLayout(AddressWithSpace),
+  SponsorWhitelist {
+    contract: Address,
+    user: Address,
+  },
   DepositList(Address),
   VoteList(Address),
 }
@@ -574,11 +657,19 @@ impl TryFrom<StorageKeyWithSpace<'_>> for StateKey {
   fn try_from(key: StorageKeyWithSpace<'_>) -> Result<Self, Self::Error> {
     let key = match key.key {
       StorageKey::AccountKey(bytes) => Self::Account(account_address(bytes, key.space)),
-      StorageKey::StorageRootKey(bytes) => Self::StorageLayout(account_address(bytes, key.space)),
       StorageKey::StorageKey {
         address_bytes,
         storage_key,
       } => {
+        if key.space == Space::Native
+          && address_bytes == SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS.as_bytes()
+          && storage_key.len() == 40
+        {
+          return Ok(Self::SponsorWhitelist {
+            contract: Address::from_slice(&storage_key[..20]),
+            user: Address::from_slice(&storage_key[20..]),
+          });
+        }
         if storage_key.len() != 32 {
           return Err(ForkReadError::Unsupported(
             "state key is not exposed by a slot RPC",
@@ -637,17 +728,4 @@ fn points_upper_bound(points: U256) -> Result<U256, ForkReadError> {
     .checked_mul(unit)
     .ok_or(ForkReadError::OutOfRange("global storage points"))?;
   Ok(lower.checked_add(unit - U256::one()).unwrap_or(U256::MAX))
-}
-
-fn encode<T: rlp::Encodable>(value: &T) -> Arc<[u8]> {
-  rlp::encode(value).as_ref().into()
-}
-
-fn core_hash_selector(hash: H256) -> BlockHashOrEpochNumber {
-  // Conflux treats the legacy hash selector as require-pivot. Its optional-object
-  // serializer is not compatible with the server at the pinned revision.
-  BlockHashOrEpochNumber::BlockHashWithOption {
-    hash,
-    require_pivot: None,
-  }
 }

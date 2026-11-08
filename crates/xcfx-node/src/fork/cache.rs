@@ -1,21 +1,18 @@
 //! Remote read cache with FIFO eviction.
 
-use std::{
-  collections::{HashMap, VecDeque},
-  sync::Arc,
-};
+use std::collections::{HashMap, VecDeque};
 
-use cfx_types::{AddressWithSpace, U256};
+use cfx_types::{Address, AddressWithSpace, U256};
 
 use crate::execution::ExecutionCommitment;
 
-use super::rpc::StateKey;
+use super::{StateValue, rpc::StateKey};
 
 /// Retention limits for remote state and execution commitments.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ForkCacheConfig {
   max_entries: usize,
-  /// Encoded value bytes, excluding collection overhead and process RSS.
+  /// Retained payload bytes, excluding keys, collection overhead and process RSS.
   max_data_bytes: usize,
 }
 
@@ -44,12 +41,14 @@ struct CacheEntry<T> {
 enum CacheKey {
   Balance(AddressWithSpace),
   StateValue(StateKey),
+  StoragePointsInitialization(Address),
   Commitment(u64),
 }
 
 pub(super) struct ForkCache {
   balances: HashMap<AddressWithSpace, CacheEntry<U256>>,
-  state_values: HashMap<StateKey, CacheEntry<Option<Arc<[u8]>>>>,
+  state_values: HashMap<StateKey, CacheEntry<Option<StateValue>>>,
+  storage_points_initializations: HashMap<Address, CacheEntry<bool>>,
   commitments: HashMap<u64, CacheEntry<ExecutionCommitment>>,
   order: VecDeque<CacheKey>,
   bytes: usize,
@@ -61,6 +60,7 @@ impl ForkCache {
     Self {
       balances: HashMap::new(),
       state_values: HashMap::new(),
+      storage_points_initializations: HashMap::new(),
       commitments: HashMap::new(),
       order: VecDeque::new(),
       bytes: 0,
@@ -72,8 +72,15 @@ impl ForkCache {
     self.balances.get(address).map(|entry| entry.value)
   }
 
-  pub(super) fn state_value(&self, key: &StateKey) -> Option<Option<Arc<[u8]>>> {
+  pub(super) fn state_value(&self, key: &StateKey) -> Option<Option<StateValue>> {
     self.state_values.get(key).map(|entry| entry.value.clone())
+  }
+
+  pub(super) fn storage_points_initialized(&self, address: &Address) -> Option<bool> {
+    self
+      .storage_points_initializations
+      .get(address)
+      .map(|entry| entry.value)
   }
 
   pub(super) fn commitment(&self, epoch: u64) -> Option<ExecutionCommitment> {
@@ -93,13 +100,27 @@ impl ForkCache {
     self.bytes += bytes;
   }
 
-  pub(super) fn insert_state_value(&mut self, key: StateKey, value: Option<Arc<[u8]>>) {
-    let bytes = value.as_ref().map_or(0, |value| value.len());
+  pub(super) fn insert_state_value(&mut self, key: StateKey, value: Option<StateValue>) {
+    let bytes = value.as_ref().map_or(0, StateValue::data_bytes);
     if self.state_values.contains_key(&key) || !self.make_room(bytes) {
       return;
     }
     self.state_values.insert(key, CacheEntry { value, bytes });
     self.order.push_back(CacheKey::StateValue(key));
+    self.bytes += bytes;
+  }
+
+  pub(super) fn insert_storage_points_initialized(&mut self, address: Address, value: bool) {
+    let bytes = 1;
+    if self.storage_points_initializations.contains_key(&address) || !self.make_room(bytes) {
+      return;
+    }
+    self
+      .storage_points_initializations
+      .insert(address, CacheEntry { value, bytes });
+    self
+      .order
+      .push_back(CacheKey::StoragePointsInitialization(address));
     self.bytes += bytes;
   }
 
@@ -142,6 +163,13 @@ impl ForkCache {
             .expect("state eviction must reference a cached state entry")
             .bytes
         }
+        CacheKey::StoragePointsInitialization(address) => {
+          self
+            .storage_points_initializations
+            .remove(&address)
+            .expect("initialization eviction must reference a cached flag")
+            .bytes
+        }
         CacheKey::Commitment(epoch) => {
           self
             .commitments
@@ -153,5 +181,31 @@ impl ForkCache {
       self.bytes -= removed_bytes;
     }
     true
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use cfx_types::AddressSpaceUtil;
+
+  #[test]
+  fn initialization_flags_share_fifo_eviction_with_other_reads() {
+    let mut cache = ForkCache::new(ForkCacheConfig::new(2, 33));
+    let first = Address::from([0x80; 20]);
+    let second = Address::from([0x81; 20]);
+    let payer = Address::from([0x10; 20]).with_native_space();
+    cache.insert_storage_points_initialized(first, false);
+    cache.insert_balance(payer, U256::one());
+    assert_eq!(cache.storage_points_initialized(&first), Some(false));
+    cache.insert_storage_points_initialized(second, true);
+    assert_eq!(cache.storage_points_initialized(&first), None);
+    assert_eq!(cache.balance(&payer), Some(U256::one()));
+    assert_eq!(cache.storage_points_initialized(&second), Some(true));
+
+    cache.insert_storage_points_initialized(first, false);
+    assert_eq!(cache.balance(&payer), None);
+    assert_eq!(cache.storage_points_initialized(&first), Some(false));
+    assert_eq!(cache.storage_points_initialized(&second), Some(true));
   }
 }

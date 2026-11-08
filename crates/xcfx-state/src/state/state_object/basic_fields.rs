@@ -7,11 +7,10 @@ use cfx_types::{
 };
 use keccak_hash::KECCAK_EMPTY;
 use primitives::extract_7702_payload;
-#[cfg(test)]
-use primitives::StorageLayout;
+
 use std::sync::Arc;
 
-impl State {
+impl State<'_> {
   pub fn exists(&self, address: &AddressWithSpace) -> DbResult<bool> {
     Ok(self.read_account_lock(address)?.is_some())
   }
@@ -120,7 +119,7 @@ impl State {
     Ok(acc.code_size())
   }
 
-  pub fn code_owner(&self, address: &AddressWithSpace) -> DbResult<Address> {
+  pub(crate) fn code_owner(&self, address: &AddressWithSpace) -> DbResult<Option<Address>> {
     address.assert_native();
     let acc = try_loaded!(self.read_account_ext_lock(address, RequireFields::Code));
     Ok(acc.code_owner())
@@ -207,16 +206,6 @@ impl State {
     self
       .write_native_account_lock(&contract_address)?
       .set_admin(admin);
-    Ok(())
-  }
-
-  #[cfg(test)]
-  pub fn set_storage_layout(
-    &mut self,
-    address: &AddressWithSpace,
-    layout: StorageLayout,
-  ) -> DbResult<()> {
-    self.write_account_lock(address)?.set_storage_layout(layout);
     Ok(())
   }
 }

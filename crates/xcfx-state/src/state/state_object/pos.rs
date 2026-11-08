@@ -16,7 +16,7 @@ use cfx_statedb::{
 use cfx_types::{Address, AddressSpaceUtil, BigEndianHash, H256, U256};
 use diem_types::term_state::MAX_TERM_POINTS;
 
-impl State {
+impl State<'_> {
   pub fn inc_distributable_pos_interest(&mut self, current_block_number: u64) -> DbResult<()> {
     assert!(self.checkpoints.get_mut().is_empty());
 
@@ -116,7 +116,7 @@ pub fn update_pos_status(state: &mut State, identifier: H256, number: u64) -> Db
   state
     .write_native_account_lock(&POS_REGISTER_CONTRACT_ADDRESS)?
     .change_storage_value(
-      &state.db,
+      &*state.db,
       &pos_internal_entries::index_entry(&identifier),
       status.into(),
     )?;

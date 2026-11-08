@@ -7,7 +7,7 @@ use std::{
 };
 
 use cfx_rpc_cfx_types::Block;
-use cfx_types::{AddressWithSpace, H256, U256};
+use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, H256, U256};
 use primitives::block::BlockHeight;
 use tokio::{
   runtime::Handle,
@@ -18,7 +18,7 @@ use tokio::{
 use crate::execution::ExecutionCommitment;
 
 use super::{
-  ForkEpochReceipts, ForkReadError, HistoryQuery, HistoryResult,
+  ForkEpochReceipts, ForkReadError, HistoryQuery, HistoryResult, StateValue,
   cache::{ForkCache, ForkCacheConfig},
   client::{ForkClient, ReadRequest, Reply},
   rpc::{ForkRpc, StateKey},
@@ -183,6 +183,43 @@ impl ForkService {
           });
         }
       }
+      ReadRequest::StoragePointsInitialization { address, reply } => {
+        if let Some(value) = self.cache.storage_points_initialized(&address) {
+          let _ = reply.send(Ok(value));
+          return;
+        }
+        let account = match self
+          .cache
+          .state_value(&StateKey::Account(address.with_native_space()))
+        {
+          Some(Some(StateValue::Account(account))) => {
+            if let Some(value) = account.sponsor_info.storage_points.initialization() {
+              let _ = reply.send(Ok(value));
+              return;
+            }
+            Some(account)
+          }
+          Some(None) => {
+            let _ = reply.send(Ok(false));
+            return;
+          }
+          None => None,
+          Some(Some(_)) => unreachable!("an account cache key must contain account data"),
+        };
+        let should_start_rpc = register_waiter(
+          &mut self.pending.storage_points_initializations,
+          &mut self.pending.waiter_count,
+          address,
+          reply,
+        );
+        if should_start_rpc {
+          let rpc = Arc::clone(&self.rpc);
+          self.reads.spawn(async move {
+            let result = rpc.storage_points_initialized(address, account).await;
+            CompletedRead::StoragePointsInitialization { address, result }
+          });
+        }
+      }
       ReadRequest::Pivot { epoch, reply } => {
         let should_start_rpc = register_waiter(
           &mut self.pending.pivots,
@@ -309,6 +346,19 @@ impl ForkService {
           result,
         );
       }
+      CompletedRead::StoragePointsInitialization { address, result } => {
+        if let Ok(value) = &result {
+          self
+            .cache
+            .insert_storage_points_initialized(address, *value);
+        }
+        reply_to_waiters(
+          &mut self.pending.storage_points_initializations,
+          &mut self.pending.waiter_count,
+          &address,
+          result,
+        );
+      }
       CompletedRead::Pivot { epoch, result } => {
         reply_to_waiters(
           &mut self.pending.pivots,
@@ -375,7 +425,11 @@ enum CompletedRead {
   },
   StateValue {
     key: StateKey,
-    result: Result<Option<Arc<[u8]>>, ForkReadError>,
+    result: Result<Option<StateValue>, ForkReadError>,
+  },
+  StoragePointsInitialization {
+    address: Address,
+    result: Result<bool, ForkReadError>,
   },
   Pivot {
     epoch: BlockHeight,
@@ -406,7 +460,8 @@ struct PendingReads {
   waiter_count: usize,
   history: HashMap<HistoryQuery, Vec<Reply<HistoryResult>>>,
   balances: HashMap<AddressWithSpace, Vec<Reply<U256>>>,
-  state_values: HashMap<StateKey, Vec<Reply<Option<Arc<[u8]>>>>>,
+  state_values: HashMap<StateKey, Vec<Reply<Option<StateValue>>>>,
+  storage_points_initializations: HashMap<Address, Vec<Reply<bool>>>,
   pivots: HashMap<BlockHeight, Vec<Reply<Arc<Block>>>>,
   blocks: HashMap<(BlockHeight, H256), Vec<Reply<Arc<Block>>>>,
   block_hashes: HashMap<BlockHeight, Vec<Reply<Arc<[H256]>>>>,
@@ -449,5 +504,131 @@ fn reply_to_waiters<K: Eq + Hash, T: Clone>(
   *waiter_count -= replies.len();
   for reply in replies {
     let _ = reply.send(result.clone());
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::fork::tests::{pivot, rpc};
+  use alloy_transport::mock::Asserter;
+  use cfx_rpc_cfx_types::RpcAddress;
+  use tokio::sync::oneshot;
+  use xcfx_state::account::{Account, StoragePointsState};
+
+  fn service(responses: &Asserter) -> ForkService {
+    let (_, requests) = mpsc::channel(READ_QUEUE_CAPACITY);
+    let (_, stopping) = watch::channel(false);
+    ForkService {
+      rpc: Arc::new(rpc(responses)),
+      requests,
+      stopping,
+      cache: ForkCache::new(ForkCacheConfig::default()),
+      pending: PendingReads::default(),
+      reads: JoinSet::new(),
+    }
+  }
+
+  fn read_flag(
+    service: &mut ForkService,
+    address: Address,
+  ) -> oneshot::Receiver<Result<bool, ForkReadError>> {
+    let (reply, response) = oneshot::channel();
+    service.start_read(ReadRequest::StoragePointsInitialization { address, reply });
+    response
+  }
+
+  fn absent_account(responses: &Asserter, service: &ForkService) {
+    let header = pivot(&service.rpc.base);
+    responses.push_success(&Some(header.clone()));
+    responses.push_success(&Option::<RpcAddress>::None);
+    responses.push_success(&Some(header));
+  }
+
+  async fn complete(service: &mut ForkService) {
+    let completed = service.reads.join_next().await.unwrap().unwrap();
+    service.complete_read(completed);
+  }
+
+  #[tokio::test]
+  async fn initialization_requests_coalesce_and_cache_false() {
+    let responses = Asserter::new();
+    let mut service = service(&responses);
+    let address = Address::from([0x80; 20]);
+    absent_account(&responses, &service);
+    // Register before yielding so the two calls overlap deterministically.
+    let first = read_flag(&mut service, address);
+    let second = read_flag(&mut service, address);
+    assert_eq!(service.reads.len(), 1);
+    complete(&mut service).await;
+    assert!(!first.await.unwrap().unwrap());
+    assert!(!second.await.unwrap().unwrap());
+    assert!(!read_flag(&mut service, address).await.unwrap().unwrap());
+    assert!(service.reads.is_empty());
+    assert_eq!(service.pending.waiter_count, 0);
+    assert!(responses.read_q().is_empty());
+  }
+
+  #[tokio::test]
+  async fn initialization_errors_are_shared_but_not_cached() {
+    let responses = Asserter::new();
+    let mut service = service(&responses);
+    let address = Address::from([0x80; 20]);
+    responses.push_failure_msg("state temporarily unavailable");
+    let first = read_flag(&mut service, address);
+    let second = read_flag(&mut service, address);
+    complete(&mut service).await;
+    assert!(matches!(first.await.unwrap(), Err(ForkReadError::Rpc(_))));
+    assert!(matches!(second.await.unwrap(), Err(ForkReadError::Rpc(_))));
+
+    absent_account(&responses, &service);
+    let retry = read_flag(&mut service, address);
+    complete(&mut service).await;
+    assert!(!retry.await.unwrap().unwrap());
+    assert!(!read_flag(&mut service, address).await.unwrap().unwrap());
+    assert!(service.reads.is_empty());
+    assert!(responses.read_q().is_empty());
+  }
+
+  #[tokio::test]
+  async fn known_cached_accounts_resolve_without_a_probe() {
+    for initialized in [false, true] {
+      let responses = Asserter::new();
+      let mut service = service(&responses);
+      let address = Address::from([0x80; 20]);
+      let mut account = Account::new_empty(&address.with_native_space());
+      account.sponsor_info.storage_points = if initialized {
+        StoragePointsState::Initialized(Default::default())
+      } else {
+        StoragePointsState::Uninitialized
+      };
+      service.cache.insert_state_value(
+        StateKey::Account(address.with_native_space()),
+        Some(StateValue::Account(Arc::new(account))),
+      );
+      assert_eq!(
+        read_flag(&mut service, address).await.unwrap().unwrap(),
+        initialized
+      );
+      assert!(service.reads.is_empty());
+      assert!(responses.read_q().is_empty());
+    }
+  }
+
+  #[tokio::test]
+  async fn stopped_service_rejects_initialization_reads() {
+    let responses = Asserter::new();
+    let (client, mut task) = ForkReadTask::spawn(
+      rpc(&responses),
+      &Handle::current(),
+      ForkCacheConfig::default(),
+    );
+    task.close().await.unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+      client.storage_points_initialized(&Address::from([0x80; 20]))
+    })
+    .await
+    .unwrap();
+    assert!(matches!(result, Err(ForkReadError::Closed)));
   }
 }

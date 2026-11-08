@@ -19,7 +19,6 @@ pub(super) type AccountCheckpointEntry = CheckpointEntry<AccountEntryWithWarm>;
 /// not exist in the checkpoint, it is implied to be the same as in the cache.
 /// This struct efficiently manages state changes and ensures data consistency
 /// across transactions.
-#[cfg_attr(test, derive(Clone))]
 pub(super) struct CheckpointLayer {
   /// Checkpoint for global statistic variables.
   global_stat: GlobalStat,
@@ -44,7 +43,7 @@ impl CheckpointLayerTrait for CheckpointLayer {
   }
 }
 
-impl State {
+impl State<'_> {
   /// Create a recoverable checkpoint of this state. Return the checkpoint
   /// index. The checkpoint records any old value which is alive at the
   /// creation time of the checkpoint and updated after that and before
@@ -129,14 +128,6 @@ impl State {
     // If there is no checkpoint, the above function will not be executed,
     // so we need to mark warm bit here.
     entry_in_cache.warm = true;
-  }
-
-  #[cfg(any(test, feature = "testonly_code"))]
-  pub fn clear(&mut self) {
-    assert!(self.no_checkpoint());
-    self.cache.get_mut().clear();
-    self.committed_cache.clear();
-    self.global_stat = GlobalStat::loaded(&self.db).expect("no db error");
   }
 }
 

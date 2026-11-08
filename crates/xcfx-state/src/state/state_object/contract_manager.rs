@@ -1,9 +1,10 @@
 use super::{OverlayAccount, State};
+use crate::account::Account;
 use cfx_statedb::Result as DbResult;
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, Space, H256, U256};
-use primitives::{Account, StorageLayout};
+use primitives::StorageLayout;
 
-impl State {
+impl State<'_> {
   pub fn new_contract_with_admin(
     &mut self,
     contract: &AddressWithSpace,
@@ -44,41 +45,6 @@ impl State {
     let mut account = Account::new_empty(&address);
     account.code_hash = H256::default();
     *self.write_account_or_new_lock(&address)? = OverlayAccount::from_loaded(&address, account);
-    Ok(())
-  }
-}
-
-impl State {
-  #[cfg(test)]
-  pub fn new_contract_with_code(
-    &mut self,
-    contract: &AddressWithSpace,
-    balance: U256,
-  ) -> DbResult<()> {
-    self.new_contract(contract, balance)?;
-    self.init_code(
-      &contract,
-      vec![0x12, 0x34],
-      Address::zero(),
-      crate::tests::MOCK_TX_HASH,
-    )?;
-    Ok(())
-  }
-
-  #[cfg(test)]
-  pub fn new_contract(&mut self, contract: &AddressWithSpace, balance: U256) -> DbResult<()> {
-    use primitives::storage::STORAGE_LAYOUT_REGULAR_V0;
-
-    let pending_db_clear = self
-      .read_account_lock(contract)?
-      .map_or(false, |acc| acc.pending_db_clear());
-    let account = OverlayAccount::new_contract(
-      &contract,
-      balance,
-      pending_db_clear,
-      Some(STORAGE_LAYOUT_REGULAR_V0),
-    );
-    self.insert_to_cache(account);
     Ok(())
   }
 }

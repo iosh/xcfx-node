@@ -6,6 +6,11 @@
 //! includes both database-stored information and in-execution data of an
 //! account.
 
+use crate::account::SponsorInfo;
+use crate::database::CodeEntry;
+use crate::database::StorageEntry;
+use crate::database::WriteCacheItem;
+
 /// Entry object in cache and checkpoint layers, adding additional markers
 /// like dirty bits to the `OverlayAccount` structure.
 pub mod account_entry;
@@ -47,9 +52,6 @@ mod checkpoints;
 
 mod state_override;
 
-#[cfg(test)]
-mod tests;
-
 pub use account_entry::{AccountEntry, AccountEntryWithWarm};
 pub use ext_fields::RequireFields;
 
@@ -57,14 +59,8 @@ use crate::substate::Substate;
 use cfx_types::{address_util::AddressUtil, Address, AddressWithSpace, Space, H256, U256};
 use keccak_hash::KECCAK_EMPTY;
 use parking_lot::RwLock;
-use primitives::{
-  is_default::IsDefault, storage::WriteCacheItem, CodeInfo, DepositList, SponsorInfo,
-  StorageLayout, StorageValue, VoteStakeList,
-};
+use primitives::{DepositList, StorageLayout, VoteStakeList};
 use std::{collections::HashMap, sync::Arc};
-
-#[cfg(test)]
-use cfx_types::AddressSpaceUtil;
 
 use self::checkpoints::WriteCheckpointLayer;
 
@@ -122,7 +118,7 @@ pub struct OverlayAccount {
   vote_stake_list: Option<VoteStakeList>,
   /// The code of the account.  (`None` indicates not loaded from db if
   /// `code_hash` isn't `KECCAK_EMPTY`.)
-  code: Option<CodeInfo>,
+  code: Option<CodeEntry>,
 
   /* -------------------
   -  In-execution data -
@@ -132,11 +128,11 @@ pub struct OverlayAccount {
 
   /// Read cache of database for the storage entries of this account for
   /// recording unchanged values.
-  storage_read_cache: Arc<RwLock<HashMap<Vec<u8>, StorageValue>>>,
+  storage_read_cache: Arc<RwLock<HashMap<Vec<u8>, StorageEntry>>>,
 
   /// Committed storage after a transaction for the storage entries of this
   /// account for recording unchanged values.
-  storage_committed_cache: Arc<RwLock<HashMap<Vec<u8>, StorageValue>>>,
+  storage_committed_cache: Arc<RwLock<HashMap<Vec<u8>, StorageEntry>>>,
 
   /// Write cache for the storage entries of this account for recording
   /// changed values.
@@ -203,82 +199,5 @@ impl OverlayAccount {
     (self.is_newly_created_contract && !builtin_address)
       || self.pending_db_clear
       || self.storage_overrided
-  }
-}
-
-impl OverlayAccount {
-  #[cfg(test)]
-  pub fn is_newly_created_contract(&self) -> bool {
-    self.is_newly_created_contract
-  }
-
-  #[cfg(test)]
-  pub fn is_basic(&self) -> bool {
-    self.code_hash == KECCAK_EMPTY
-  }
-}
-
-#[cfg(test)]
-impl Clone for OverlayAccount {
-  fn clone(&self) -> Self {
-    Self {
-      address: self.address.clone(),
-      balance: self.balance.clone(),
-      nonce: self.nonce.clone(),
-      code_hash: self.code_hash.clone(),
-      staking_balance: self.staking_balance.clone(),
-      collateral_for_storage: self.collateral_for_storage.clone(),
-      accumulated_interest_return: self.accumulated_interest_return.clone(),
-      admin: self.admin.clone(),
-      sponsor_info: self.sponsor_info.clone(),
-      deposit_list: self.deposit_list.clone(),
-      vote_stake_list: self.vote_stake_list.clone(),
-      code: self.code.clone(),
-      storage_layout_change: self.storage_layout_change.clone(),
-      storage_read_cache: self.storage_read_cache.clone(),
-      storage_committed_cache: self.storage_committed_cache.clone(),
-      storage_write_cache: self.storage_write_cache.clone(),
-      storage_write_checkpoint: self
-        .storage_write_checkpoint
-        .as_ref()
-        .map(|x| RwLock::new(x.read().clone())),
-      transient_storage_cache: self.transient_storage_cache.clone(),
-      transient_storage_checkpoint: self.transient_storage_checkpoint.clone(),
-      is_newly_created_contract: self.is_newly_created_contract.clone(),
-      pending_db_clear: self.pending_db_clear.clone(),
-      storage_overrided: self.storage_overrided.clone(),
-      create_transaction_hash: self.create_transaction_hash.clone(),
-    }
-  }
-}
-
-#[cfg(test)]
-mod tests_another {
-  use super::*;
-  use crate::state::get_state_for_genesis_write;
-  use primitives::is_default::IsDefault;
-  use std::str::FromStr;
-
-  fn test_account_is_default(account: &mut OverlayAccount) {
-    let state = get_state_for_genesis_write();
-
-    assert!(account.as_account().is_default());
-
-    account.cache_ext_fields(true, true, &state.db).unwrap();
-    assert!(account.vote_stake_list().is_default());
-    assert!(account.deposit_list().is_default());
-  }
-
-  #[test]
-  fn new_overlay_account_is_default() {
-    let normal_addr = Address::from_str("1000000000000000000000000000000000000000")
-      .unwrap()
-      .with_native_space();
-    let builtin_addr = Address::from_str("0000000000000000000000000000000000000000")
-      .unwrap()
-      .with_native_space();
-
-    test_account_is_default(&mut OverlayAccount::new_basic(&normal_addr, U256::zero()));
-    test_account_is_default(&mut OverlayAccount::new_basic(&builtin_addr, U256::zero()));
   }
 }
