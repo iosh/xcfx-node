@@ -63,4 +63,8 @@ impl SnapshotMptVersion {
   pub(crate) fn merkle_root(&self) -> MerkleHash {
     self.mpt.merkle_root()
   }
+
+  pub(crate) fn node_merkle(&self, key: &[u8]) -> Option<MerkleHash> {
+    self.mpt.node_merkle(key)
+  }
 }

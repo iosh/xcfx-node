@@ -3,7 +3,7 @@
 use crate::{
   fork::ForkReadError,
   node::{NodeError, RequestError},
-  runtime::{StateQueryError, StateSelectionError},
+  runtime::{BlockPreparationError, FeeQueryError, StateQueryError, StateSelectionError},
 };
 
 use super::protocol::RpcError;
@@ -43,8 +43,28 @@ pub(super) fn state_selection_error(error: StateSelectionError) -> RpcError {
   }
 }
 
+pub(super) fn fee_query_error(error: FeeQueryError) -> RpcError {
+  match error {
+    FeeQueryError::UnknownBlock => RpcError::invalid_params(),
+    FeeQueryError::Fork(error) => fork_error(error),
+    FeeQueryError::Preparation(BlockPreparationError::State(error)) => state_error(error.into()),
+    error @ (FeeQueryError::Preparation(BlockPreparationError::Time(_))
+    | FeeQueryError::Preparation(BlockPreparationError::PositionExhausted(_))
+    | FeeQueryError::SuggestionOverflow) => RpcError {
+      code: -32000,
+      message: error.to_string(),
+      data: None,
+    },
+  }
+}
+
 pub(super) fn fork_error(error: ForkReadError) -> RpcError {
   match error {
+    ForkReadError::PivotAssumption => RpcError {
+      code: -32602,
+      message: "pivot chain assumption failed".into(),
+      data: None,
+    },
     ForkReadError::Closed => RpcError {
       code: -32000,
       message: "Node is closed".into(),

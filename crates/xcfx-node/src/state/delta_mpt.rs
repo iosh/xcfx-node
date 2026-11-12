@@ -138,6 +138,14 @@ impl DeltaMptVersion {
     self.mpt.merkle_root()
   }
 
+  pub(crate) fn node_merkle(&self, key: &[u8]) -> MptValue<MerkleHash> {
+    if self.entries.get(key).is_tombstone() {
+      MptValue::TombStone
+    } else {
+      MptValue::from(self.mpt.node_merkle(key))
+    }
+  }
+
   pub(crate) fn proof(&self, key: &[u8]) -> TrieProof {
     self.mpt.proof(key)
   }

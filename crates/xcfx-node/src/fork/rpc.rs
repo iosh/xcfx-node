@@ -61,7 +61,7 @@ impl ForkRpc {
         self.validate_base().await?;
         let value = self
           .rpc
-          .cfx_getBalance(self.core_address(address.address), self.base.pivot_hash)
+          .cfx_get_balance(self.core_address(address.address), self.base.pivot_hash)
           .await?;
         self.validate_base().await?;
         Ok(value)
@@ -105,14 +105,14 @@ impl ForkRpc {
       StateKey::DepositList(address) => {
         let entries = self
           .rpc
-          .cfx_getDepositList(self.core_address(address), self.epoch())
+          .cfx_get_deposit_list(self.core_address(address), self.epoch())
           .await?;
         (!entries.is_empty()).then(|| StateValue::DepositList(Arc::new(DepositList(entries))))
       }
       StateKey::VoteList(address) => {
         let entries = self
           .rpc
-          .cfx_getVoteList(self.core_address(address), self.epoch())
+          .cfx_get_vote_list(self.core_address(address), self.epoch())
           .await?;
         (!entries.is_empty()).then(|| StateValue::VoteList(Arc::new(VoteStakeList(entries))))
       }
@@ -153,10 +153,10 @@ impl ForkRpc {
       Some(account) => match account.sponsor_info.storage_points.initialization() {
         Some(initialized) => initialized,
         None => {
-          let params = self.rpc.cfx_getParamsFromVote(self.epoch()).await?;
+          let params = self.rpc.cfx_get_params_from_vote(self.epoch()).await?;
           let sponsor_balance = self
             .rpc
-            .cfx_getBalance(
+            .cfx_get_balance(
               self.core_address(SPONSOR_WHITELIST_CONTROL_CONTRACT_ADDRESS),
               self.base.pivot_hash,
             )
@@ -234,13 +234,16 @@ impl ForkRpc {
     &self,
   ) -> Result<[U256; TOTAL_GLOBAL_PARAMS], ForkReadError> {
     self.validate_base().await?;
-    let interest = self.rpc.cfx_getInterestRate(self.epoch()).await?;
-    let accumulated = self.rpc.cfx_getAccumulateInterestRate(self.epoch()).await?;
-    let supply = self.rpc.cfx_getSupplyInfo(self.epoch()).await?;
-    let pos = self.rpc.cfx_getPoSEconomics(self.epoch()).await?;
-    let vote = self.rpc.cfx_getParamsFromVote(self.epoch()).await?;
-    let burnt = self.rpc.cfx_getFeeBurnt(self.epoch()).await?;
-    let collateral = self.rpc.cfx_getCollateralInfo(self.epoch()).await?;
+    let interest = self.rpc.cfx_get_interest_rate(self.epoch()).await?;
+    let accumulated = self
+      .rpc
+      .cfx_get_accumulate_interest_rate(self.epoch())
+      .await?;
+    let supply = self.rpc.cfx_get_supply_info(self.epoch()).await?;
+    let pos = self.rpc.cfx_get_pos_economics(self.epoch()).await?;
+    let vote = self.rpc.cfx_get_params_from_vote(self.epoch()).await?;
+    let burnt = self.rpc.cfx_get_fee_burnt(self.epoch()).await?;
+    let collateral = self.rpc.cfx_get_collateral_info(self.epoch()).await?;
     if collateral.total_storage_tokens != supply.total_collateral {
       return Err(ForkReadError::Inconsistent("global storage collateral"));
     }
@@ -363,7 +366,7 @@ impl ForkRpc {
   async fn load_pivot(&self, epoch: u64) -> Result<Block, ForkReadError> {
     self
       .rpc
-      .cfx_getBlockByEpochNumber(EpochNumber::Num(epoch.into()))
+      .cfx_get_block_by_epoch_number(EpochNumber::Num(epoch.into()))
       .await?
       .ok_or(ForkReadError::Unavailable("pivot header"))
   }
@@ -387,7 +390,7 @@ impl ForkRpc {
   ) -> Result<Block, ForkReadError> {
     let block = self
       .rpc
-      .cfx_getBlockByHashWithPivotAssumption(hash, pivot_hash, epoch.into())
+      .cfx_get_block_by_hash_with_pivot_assumption(hash, pivot_hash, epoch.into())
       .await?;
     if block.hash != hash || block.epoch_number != Some(epoch.into()) {
       return Err(ForkReadError::Inconsistent("block execution identity"));
@@ -404,7 +407,7 @@ impl ForkRpc {
     let block_hashes = self.load_block_hashes(epoch, pivot_hash).await?;
     let receipts = self
       .rpc
-      .cfx_getEpochReceipts(pivot_hash, include_espace)
+      .cfx_get_epoch_receipts(pivot_hash, include_espace)
       .await?
       .ok_or(ForkReadError::Unavailable("epoch receipts"))?;
     if receipts.len() != block_hashes.len()
@@ -459,12 +462,12 @@ impl ForkRpc {
     let rpc_address = self.core_address(address.address);
     let admin = self
       .rpc
-      .cfx_getAdmin(rpc_address.clone(), self.epoch())
+      .cfx_get_admin(rpc_address.clone(), self.epoch())
       .await?;
     let Some(admin) = admin else { return Ok(None) };
     let remote = self
       .rpc
-      .cfx_getAccount(rpc_address.clone(), self.epoch())
+      .cfx_get_account(rpc_address.clone(), self.epoch())
       .await?;
     if remote.address.hex_address != address.address
       || remote.admin.hex_address != admin.hex_address
@@ -475,7 +478,7 @@ impl ForkRpc {
     }
     let collateral = self
       .rpc
-      .cfx_getCollateralForStorage(rpc_address.clone(), self.epoch())
+      .cfx_get_collateral_for_storage(rpc_address.clone(), self.epoch())
       .await?;
     let used_points = remote
       .collateral_for_storage
@@ -496,7 +499,7 @@ impl ForkRpc {
     {
       let sponsor = self
         .rpc
-        .cfx_getSponsorInfo(rpc_address, self.epoch())
+        .cfx_get_sponsor_info(rpc_address, self.epoch())
         .await?;
       let unit = *DRIPS_PER_STORAGE_COLLATERAL_UNIT;
       if sponsor.used_storage_points != used_points / unit {
@@ -536,7 +539,7 @@ impl ForkRpc {
       Space::Native => Ok(
         self
           .rpc
-          .cfx_getCode(self.core_address(address.address), self.base.pivot_hash)
+          .cfx_get_code(self.core_address(address.address), self.base.pivot_hash)
           .await?
           .into_vec(),
       ),
@@ -583,7 +586,7 @@ impl ForkRpc {
     let value = match address.space {
       Space::Native => self
         .rpc
-        .cfx_getStorageAt(
+        .cfx_get_storage_at(
           self.core_address(address.address),
           slot_number,
           self.base.pivot_hash,
@@ -620,7 +623,7 @@ impl ForkRpc {
   ) -> Result<Vec<H256>, ForkReadError> {
     let hashes = self
       .rpc
-      .cfx_getBlocksByEpoch(EpochNumber::Num(epoch.into()))
+      .cfx_get_blocks_by_epoch(EpochNumber::Num(epoch.into()))
       .await?;
     let mut unique = HashSet::with_capacity(hashes.len());
     if hashes.last() != Some(&pivot) || hashes.iter().any(|hash| !unique.insert(*hash)) {

@@ -70,8 +70,6 @@ pub(crate) enum VirtualExecutionError {
 
 pub(crate) struct TransactionEstimate {
   pub(crate) gas_limit: U256,
-  /// The protocol-metered usage for explicit gas, otherwise the estimated gas limit.
-  pub(crate) gas_used: U256,
   pub(crate) storage_limit: u64,
 }
 

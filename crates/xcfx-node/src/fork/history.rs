@@ -1,10 +1,13 @@
 //! Typed history reads constrained to the fork's fixed remote prefix.
 //!
 //! This module owns prefix checks, request dispatch, and shared result wrapping.
-//! The `core` and `espace` modules resolve positions and validate responses.
+//! Space-specific modules resolve positions, read fields, and validate responses.
 
 mod core;
+mod debug;
 mod espace;
+mod fees;
+mod state;
 
 use std::{num::NonZeroU64, sync::Arc};
 
@@ -17,6 +20,7 @@ use primitives::{BlockNumber, block::BlockHeight};
 
 use crate::{
   fee_history::{FeeHistoryRange, RewardPercentiles},
+  native_state,
   rpc_client::EthereumBlock,
 };
 
@@ -37,6 +41,21 @@ pub(super) enum CoreStateQuery {
   Nonce(Address),
   Code(Address),
   Storage { address: Address, position: H256 },
+  Admin(Address),
+  SponsorInfo(Address),
+  StakingBalance(Address),
+  DepositList(Address),
+  VoteList(Address),
+  StorageCollateral(Address),
+  Account(Address),
+  InterestRate,
+  AccumulateInterestRate,
+  PosEconomics,
+  SupplyInfo,
+  CollateralInfo,
+  FeeBurnt,
+  VoteParams,
+  CheckBalance(native_state::BalanceCheckRequest),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -49,6 +68,25 @@ pub(super) enum EspaceStateQuery {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HistoryQuery {
+  CoreBlockWithPivot {
+    hash: H256,
+    pivot: H256,
+    epoch_height: BlockHeight,
+  },
+  CoreDebugEpoch {
+    epoch_height: BlockHeight,
+  },
+  CoreDebugBlock {
+    hash: H256,
+  },
+  CoreFeeHistory {
+    block_count: NonZeroU64,
+    newest_height: BlockHeight,
+    reward_percentiles: RewardPercentiles,
+  },
+  CoreSkippedBlockHashes {
+    epoch_height: BlockHeight,
+  },
   CoreState {
     epoch_height: BlockHeight,
     query: CoreStateQuery,
@@ -95,6 +133,20 @@ pub(super) enum HistoryQuery {
 /// Results shared by callers waiting for the same history request.
 #[derive(Clone)]
 pub(super) enum HistoryResult {
+  CoreBlockWithPivot(Arc<Block>),
+  CoreDebugTransactions(Option<Arc<[cfx_rpc_eth_types::WrapTransaction]>>),
+  CoreFeeHistory(Arc<FeeHistoryRange>),
+  CoreAdmin(Option<Address>),
+  CoreSponsorInfo(Arc<native_state::SponsorInfo>),
+  CoreDepositList(Arc<Vec<primitives::DepositInfo>>),
+  CoreVoteList(Arc<Vec<primitives::VoteStakeInfo>>),
+  CoreAccount(Arc<native_state::AccountInfo>),
+  CorePosEconomics(Arc<native_state::PosEconomics>),
+  CoreSupplyInfo(Arc<native_state::TokenSupplyInfo>),
+  CoreCollateralInfo(Arc<native_state::StorageCollateralInfo>),
+  CoreVoteParams(Arc<native_state::VoteParams>),
+  CoreBalanceCheck(native_state::BalanceCheckResult),
+  CoreSkippedBlockHashes(Arc<[H256]>),
   CoreQuantity(U256),
   CoreCode(Arc<Vec<u8>>),
   CoreStorage(Option<H256>),
@@ -119,7 +171,25 @@ impl ForkRpc {
     // Numeric requests outside the prefix do not depend on remote availability.
     // Hash requests need a remote lookup before their position can be checked.
     match query {
-      HistoryQuery::EspaceFeeHistory { newest_height, .. }
+      HistoryQuery::CoreBlockWithPivot { epoch_height, .. }
+        if epoch_height > self.base.epoch_height =>
+      {
+        return Err(ForkReadError::Unavailable("block outside the fixed prefix"));
+      }
+      HistoryQuery::CoreDebugEpoch { epoch_height } if epoch_height > self.base.epoch_height => {
+        return Err(ForkReadError::Unavailable(
+          "debug epoch outside the fixed prefix",
+        ));
+      }
+      HistoryQuery::CoreSkippedBlockHashes { epoch_height }
+        if epoch_height > self.base.epoch_height =>
+      {
+        return Err(ForkReadError::Unavailable(
+          "skipped blocks outside the fixed prefix",
+        ));
+      }
+      HistoryQuery::CoreFeeHistory { newest_height, .. }
+      | HistoryQuery::EspaceFeeHistory { newest_height, .. }
         if newest_height > self.base.epoch_height =>
       {
         return Err(ForkReadError::Unavailable(
@@ -186,7 +256,7 @@ impl ForkRpc {
     hash: H256,
     require_pivot: bool,
   ) -> Result<Option<BlockHeight>, ForkReadError> {
-    let Some(metadata) = self.rpc.cfx_getBlockByHash(hash).await? else {
+    let Some(metadata) = self.rpc.cfx_get_block_by_hash(hash).await? else {
       return Ok(None);
     };
     if metadata.hash != hash {
@@ -211,6 +281,33 @@ impl ForkRpc {
 
   async fn read_history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
     Ok(match query {
+      HistoryQuery::CoreBlockWithPivot {
+        hash,
+        pivot,
+        epoch_height,
+      } => HistoryResult::CoreBlockWithPivot(Arc::new(
+        self
+          .read_core_block_with_pivot(hash, pivot, epoch_height)
+          .await?,
+      )),
+      HistoryQuery::CoreDebugEpoch { epoch_height } => HistoryResult::CoreDebugTransactions(Some(
+        self.read_core_debug_epoch(epoch_height).await?.into(),
+      )),
+      HistoryQuery::CoreDebugBlock { hash } => {
+        HistoryResult::CoreDebugTransactions(self.read_core_debug_block(hash).await?.map(Arc::from))
+      }
+      HistoryQuery::CoreFeeHistory {
+        block_count,
+        newest_height,
+        reward_percentiles,
+      } => HistoryResult::CoreFeeHistory(Arc::new(
+        self
+          .read_core_fee_history(block_count, newest_height, &reward_percentiles)
+          .await?,
+      )),
+      HistoryQuery::CoreSkippedBlockHashes { epoch_height } => {
+        HistoryResult::CoreSkippedBlockHashes(self.read_core_skipped_blocks(epoch_height).await?)
+      }
       HistoryQuery::CoreState {
         epoch_height,
         query,

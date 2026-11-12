@@ -8,6 +8,7 @@ mod fork;
 mod genesis;
 mod logs;
 mod mpt;
+mod native_state;
 mod node;
 mod pos;
 mod production_environment;

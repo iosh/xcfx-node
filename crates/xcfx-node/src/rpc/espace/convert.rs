@@ -272,7 +272,7 @@ fn local_transaction(view: &EspaceTransactionView) -> RpcTransaction {
   }
 }
 
-fn runtime_transaction(
+pub(in crate::rpc) fn runtime_transaction(
   transaction: &RuntimeTransaction,
   block_info: (Option<H256>, Option<U64>, Option<U256>),
   exec_info: (Option<U64>, Option<cfx_types::Address>),

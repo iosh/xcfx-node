@@ -20,6 +20,14 @@ pub(crate) enum StateReadError {
 }
 
 impl StateVersion {
+  /// Returns all three physical storage roots; an incomplete Fork has no such commitment.
+  pub(crate) fn native_storage_root(&self, address: Address) -> Option<primitives::StorageRoot> {
+    match self {
+      Self::Mpt(version) => Some(version.storage_root(address.with_native_space())),
+      Self::Fork(_) => None,
+    }
+  }
+
   /// Reads a committed balance without constructing an execution State.
   ///
   /// # Errors

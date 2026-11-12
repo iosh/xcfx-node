@@ -1,6 +1,6 @@
 mod response;
 
-pub(crate) use response::{EthereumBlock, EthereumFeeHistoryResponse};
+pub(crate) use response::{CoreFeeHistoryResponse, EthereumBlock, EthereumFeeHistoryResponse};
 
 use std::time::Duration;
 
@@ -66,9 +66,75 @@ pub(crate) struct ConfluxRpcClient {
   espace: RootProvider,
 }
 
-// Keep protocol method names at the RPC boundary.
-#[allow(non_snake_case)]
 impl ConfluxRpcClient {
+  pub(crate) async fn debug_get_transactions_by_block(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Vec<cfx_rpc_eth_types::WrapTransaction>> {
+    let transactions: Vec<response::CoreDebugTransactionResponse> = self
+      .core
+      .request("debug_getTransactionsByBlock", (hash,))
+      .await?;
+
+    Ok(
+      transactions
+        .into_iter()
+        .map(|transaction| transaction.0)
+        .collect(),
+    )
+  }
+
+  pub(crate) async fn cfx_fee_history(
+    &self,
+    block_count: U64,
+    newest_epoch: EpochNumber,
+    reward_percentiles: &[f64],
+  ) -> TransportResult<CoreFeeHistoryResponse> {
+    self
+      .core
+      .request(
+        "cfx_feeHistory",
+        (block_count, newest_epoch, reward_percentiles),
+      )
+      .await
+  }
+
+  pub(crate) async fn cfx_get_staking_balance(
+    &self,
+    address: RpcAddress,
+    epoch: EpochNumber,
+  ) -> TransportResult<U256> {
+    self
+      .core
+      .request("cfx_getStakingBalance", (address, epoch))
+      .await
+  }
+
+  pub(crate) async fn cfx_check_balance_against_transaction(
+    &self,
+    account: RpcAddress,
+    contract: RpcAddress,
+    gas_limit: U256,
+    gas_price: U256,
+    storage_limit: U256,
+    epoch: EpochNumber,
+  ) -> TransportResult<cfx_rpc_cfx_types::CheckBalanceAgainstTransactionResponse> {
+    self
+      .core
+      .request(
+        "cfx_checkBalanceAgainstTransaction",
+        (
+          account,
+          contract,
+          gas_limit,
+          gas_price,
+          storage_limit,
+          epoch,
+        ),
+      )
+      .await
+  }
+
   /// Uses caller-configured transports, including their timeout and retry policy.
   pub(crate) fn new(core: RpcClient, espace: RpcClient) -> Self {
     Self {
@@ -110,14 +176,24 @@ impl ConfluxRpcClient {
     Ok(Self::new(rpc(core), rpc(espace)))
   }
 
-  pub(crate) async fn cfx_getBlocksByEpoch(
+  pub(crate) async fn cfx_get_blocks_by_epoch(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<Vec<H256>> {
     self.core.request("cfx_getBlocksByEpoch", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getBlockByHashWithPivotAssumption(
+  pub(crate) async fn cfx_get_skipped_blocks_by_epoch(
+    &self,
+    epoch: EpochNumber,
+  ) -> TransportResult<Vec<H256>> {
+    self
+      .core
+      .request("cfx_getSkippedBlocksByEpoch", (epoch,))
+      .await
+  }
+
+  pub(crate) async fn cfx_get_block_by_hash_with_pivot_assumption(
     &self,
     hash: H256,
     pivot: H256,
@@ -132,7 +208,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getEpochReceipts(
+  pub(crate) async fn cfx_get_epoch_receipts(
     &self,
     pivot_hash: H256,
     include_espace: bool,
@@ -151,12 +227,12 @@ impl ConfluxRpcClient {
   }
 
   /// Returns the block with transaction hashes.
-  pub(crate) async fn cfx_getBlockByHash(&self, hash: H256) -> TransportResult<Option<Block>> {
+  pub(crate) async fn cfx_get_block_by_hash(&self, hash: H256) -> TransportResult<Option<Block>> {
     self.core.request("cfx_getBlockByHash", (hash, false)).await
   }
 
   /// Returns the block with transaction hashes.
-  pub(crate) async fn cfx_getBlockByBlockNumber(
+  pub(crate) async fn cfx_get_block_by_block_number(
     &self,
     number: U64,
   ) -> TransportResult<Option<Block>> {
@@ -166,14 +242,14 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getTransactionByHash(
+  pub(crate) async fn cfx_get_transaction_by_hash(
     &self,
     hash: H256,
   ) -> TransportResult<Option<Transaction>> {
     self.core.request("cfx_getTransactionByHash", (hash,)).await
   }
 
-  pub(crate) async fn cfx_getTransactionReceipt(
+  pub(crate) async fn cfx_get_transaction_receipt(
     &self,
     hash: H256,
   ) -> TransportResult<Option<Receipt>> {
@@ -183,7 +259,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getLogs(&self, block_hashes: Vec<H256>) -> TransportResult<Vec<Log>> {
+  pub(crate) async fn cfx_get_logs(&self, block_hashes: Vec<H256>) -> TransportResult<Vec<Log>> {
     #[derive(Clone, Debug, Serialize)]
     #[serde(rename_all = "camelCase")]
     struct BlockHashFilter {
@@ -196,7 +272,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getBlockByNumber(
+  pub(crate) async fn eth_get_block_by_number(
     &self,
     number: U64,
     full_transactions: bool,
@@ -208,7 +284,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getBalance(
+  pub(crate) async fn eth_get_balance(
     &self,
     address: Address,
     block: cfx_rpc_eth_types::BlockId,
@@ -220,7 +296,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_feeHistory(
+  pub(crate) async fn eth_fee_history(
     &self,
     block_count: U64,
     newest_block: cfx_rpc_eth_types::BlockId,
@@ -236,7 +312,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getTransactionCount(
+  pub(crate) async fn eth_get_transaction_count(
     &self,
     address: Address,
     block: cfx_rpc_eth_types::BlockId,
@@ -248,7 +324,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getCode(
+  pub(crate) async fn eth_get_code(
     &self,
     address: Address,
     block: cfx_rpc_eth_types::BlockId,
@@ -260,7 +336,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getStorageAt(
+  pub(crate) async fn eth_get_storage_at(
     &self,
     address: Address,
     position: U256,
@@ -273,7 +349,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getBlockReceipts(
+  pub(crate) async fn eth_get_block_receipts(
     &self,
     block: cfx_rpc_eth_types::BlockId,
   ) -> TransportResult<Option<Vec<cfx_rpc_eth_types::Receipt>>> {
@@ -285,7 +361,7 @@ impl ConfluxRpcClient {
     Ok(receipts.map(|receipts| receipts.into_iter().map(|receipt| receipt.0).collect()))
   }
 
-  pub(crate) async fn eth_getBlockByHash(
+  pub(crate) async fn eth_get_block_by_hash(
     &self,
     hash: H256,
     full_transactions: bool,
@@ -297,7 +373,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getTransactionByBlockHashAndIndex(
+  pub(crate) async fn eth_get_transaction_by_block_hash_and_index(
     &self,
     hash: H256,
     index: U256,
@@ -309,7 +385,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getTransactionByHash(
+  pub(crate) async fn eth_get_transaction_by_hash(
     &self,
     hash: H256,
   ) -> TransportResult<Option<cfx_rpc_eth_types::Transaction>> {
@@ -320,7 +396,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn eth_getTransactionReceipt(
+  pub(crate) async fn eth_get_transaction_receipt(
     &self,
     hash: H256,
   ) -> TransportResult<Option<cfx_rpc_eth_types::Receipt>> {
@@ -333,7 +409,7 @@ impl ConfluxRpcClient {
     Ok(receipt.map(|response| response.0))
   }
 
-  pub(crate) async fn eth_getLogs(
+  pub(crate) async fn eth_get_logs(
     &self,
     block_hash: H256,
   ) -> TransportResult<Vec<cfx_rpc_eth_types::Log>> {
@@ -350,7 +426,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getStatus(&self) -> TransportResult<Status> {
+  pub(crate) async fn cfx_get_status(&self) -> TransportResult<Status> {
     self.core.request_noparams("cfx_getStatus").await
   }
 
@@ -367,7 +443,7 @@ impl ConfluxRpcClient {
   }
 
   /// Returns the epoch's pivot block with transaction hashes.
-  pub(crate) async fn cfx_getBlockByEpochNumber(
+  pub(crate) async fn cfx_get_block_by_epoch_number(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<Option<Block>> {
@@ -377,7 +453,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getBalance(
+  pub(crate) async fn cfx_get_balance(
     &self,
     address: RpcAddress,
     pivot_hash: H256,
@@ -388,7 +464,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getAdmin(
+  pub(crate) async fn cfx_get_admin(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -396,7 +472,7 @@ impl ConfluxRpcClient {
     self.core.request("cfx_getAdmin", (address, epoch)).await
   }
 
-  pub(crate) async fn cfx_getNextNonce(
+  pub(crate) async fn cfx_get_next_nonce(
     &self,
     address: RpcAddress,
     pivot_hash: H256,
@@ -410,7 +486,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getAccount(
+  pub(crate) async fn cfx_get_account(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -418,7 +494,7 @@ impl ConfluxRpcClient {
     self.core.request("cfx_getAccount", (address, epoch)).await
   }
 
-  pub(crate) async fn cfx_getSponsorInfo(
+  pub(crate) async fn cfx_get_sponsor_info(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -429,7 +505,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getCollateralForStorage(
+  pub(crate) async fn cfx_get_collateral_for_storage(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -440,7 +516,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getCode(
+  pub(crate) async fn cfx_get_code(
     &self,
     address: RpcAddress,
     pivot_hash: H256,
@@ -451,7 +527,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getStorageAt(
+  pub(crate) async fn cfx_get_storage_at(
     &self,
     address: RpcAddress,
     slot: U256,
@@ -466,7 +542,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getDepositList(
+  pub(crate) async fn cfx_get_deposit_list(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -477,7 +553,7 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getVoteList(
+  pub(crate) async fn cfx_get_vote_list(
     &self,
     address: RpcAddress,
     epoch: EpochNumber,
@@ -485,11 +561,11 @@ impl ConfluxRpcClient {
     self.core.request("cfx_getVoteList", (address, epoch)).await
   }
 
-  pub(crate) async fn cfx_getInterestRate(&self, epoch: EpochNumber) -> TransportResult<U256> {
+  pub(crate) async fn cfx_get_interest_rate(&self, epoch: EpochNumber) -> TransportResult<U256> {
     self.core.request("cfx_getInterestRate", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getAccumulateInterestRate(
+  pub(crate) async fn cfx_get_accumulate_interest_rate(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<U256> {
@@ -499,39 +575,42 @@ impl ConfluxRpcClient {
       .await
   }
 
-  pub(crate) async fn cfx_getSupplyInfo(
+  pub(crate) async fn cfx_get_supply_info(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<TokenSupplyInfo> {
     self.core.request("cfx_getSupplyInfo", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getPoSEconomics(
+  pub(crate) async fn cfx_get_pos_economics(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<PoSEconomics> {
     self.core.request("cfx_getPoSEconomics", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getParamsFromVote(
+  pub(crate) async fn cfx_get_params_from_vote(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<VoteParamsInfo> {
     self.core.request("cfx_getParamsFromVote", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getFeeBurnt(&self, epoch: EpochNumber) -> TransportResult<U256> {
+  pub(crate) async fn cfx_get_fee_burnt(&self, epoch: EpochNumber) -> TransportResult<U256> {
     self.core.request("cfx_getFeeBurnt", (epoch,)).await
   }
 
-  pub(crate) async fn cfx_getCollateralInfo(
+  pub(crate) async fn cfx_get_collateral_info(
     &self,
     epoch: EpochNumber,
   ) -> TransportResult<StorageCollateralInfo> {
     self.core.request("cfx_getCollateralInfo", (epoch,)).await
   }
 
-  pub(crate) async fn pos_getBlockByHash(&self, hash: H256) -> TransportResult<Option<PosBlock>> {
+  pub(crate) async fn pos_get_block_by_hash(
+    &self,
+    hash: H256,
+  ) -> TransportResult<Option<PosBlock>> {
     self.core.request("pos_getBlockByHash", (hash,)).await
   }
 }

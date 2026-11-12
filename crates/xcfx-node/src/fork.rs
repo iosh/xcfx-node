@@ -104,6 +104,9 @@ pub(crate) enum ForkReadError {
   #[error("inconsistent fork response: {0}")]
   Inconsistent(&'static str),
 
+  #[error("pivot chain assumption failed")]
+  PivotAssumption,
+
   #[error("fork value exceeds the supported range: {0}")]
   OutOfRange(&'static str),
 
@@ -174,7 +177,7 @@ pub(crate) async fn load_fork_base(
   epoch: ForkEpoch,
   era_epoch_count: Option<NonZeroU64>,
 ) -> Result<ForkBase, ForkLoadError> {
-  let status = rpc.cfx_getStatus().await?;
+  let status = rpc.cfx_get_status().await?;
   // Conflux exposes its u32 chain IDs as U64 RPC quantities.
   let chain_ids = ChainIds {
     chain_id: u32::try_from(status.chain_id.as_u64())
@@ -301,7 +304,7 @@ async fn load_pos_metadata(
   reference: PosBlockId,
 ) -> Result<(u64, PivotBlockDecision), ForkLoadError> {
   let pos = rpc
-    .pos_getBlockByHash(reference)
+    .pos_get_block_by_hash(reference)
     .await?
     .ok_or_else(|| ForkLoadError::Unavailable(format!("PoS block for reference {reference:?}")))?;
   let pivot_decision = pos
@@ -322,7 +325,7 @@ async fn load_pivot(
   epoch_height: BlockHeight,
 ) -> Result<CoreBlock, ForkLoadError> {
   rpc
-    .cfx_getBlockByEpochNumber(EpochNumber::Num(epoch_height.into()))
+    .cfx_get_block_by_epoch_number(EpochNumber::Num(epoch_height.into()))
     .await?
     .ok_or_else(|| ForkLoadError::Unavailable(format!("Core pivot at epoch {epoch_height}")))
 }

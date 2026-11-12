@@ -43,10 +43,13 @@ pub(crate) use epoch_positions::{EpochPosition, EpochPositionSource, EpochPositi
 pub(crate) use fees::FeeQueryError;
 pub(crate) use mining::{AutoMining, BlockPreparationError, RuntimeBlockProductionError};
 pub(crate) use pool::{
-  AccountPoolTransactions, PoolContent, PoolQueryScope, PoolTransactionCounts,
-  PoolTransactionStatus, QueuedReason,
+  AccountPoolTransactions, CorePoolStatus, PoolAccountInfo, PoolContent, PoolQueryScope,
+  PoolTransactionCounts, PoolTransactionInfo, PoolTransactionStatus, QueuedReason,
 };
 pub(crate) use query::{
+  ChainStatus, CoreBlockSelectionError, CoreBlockSelector, CoreBlockSource,
+  CoreBlockWithPivotSource, CoreDebugTransactionsSource, CoreEpochQueryError,
+  CoreEpochReceiptsSource, CoreReceiptSource, CoreStorageRootError, CoreTransactionSource,
   EpochSelector, EspaceBlockSelector, EspaceBlockSource, EspaceReceiptSource,
   EspaceTransactionSource, LocalEspaceTransactionSource, StateQueryError, StateSelectionError,
   StateSelector,

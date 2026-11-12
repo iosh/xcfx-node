@@ -3,9 +3,9 @@
 use std::{ops::ControlFlow, sync::Arc};
 
 use cfx_addr::Network;
-use cfx_rpc_cfx_types::{Header as CoreHeader, RpcAddress};
-use cfx_types::{H256, Space, U256};
-use primitives::{BlockHeader, filter::LogFilterParams};
+use cfx_rpc_cfx_types::Header as CoreHeader;
+use cfx_types::{Space, U256};
+use primitives::filter::LogFilterParams;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -363,46 +363,10 @@ fn core_header(view: &EpochView, network: Network) -> CoreHeader {
     .artifacts()
     .expect("a mined block has local artifacts")
     .pivot_runtime_block();
-  let header = block.header();
-  CoreHeader {
-    hash: block.hash(),
-    parent_hash: *header.parent_hash(),
-    height: header.height().into(),
-    miner: RpcAddress::try_from_h160(*header.author(), network)
-      .expect("a local miner has an encodable Core address"),
-    deferred_state_root: *header.deferred_state_root(),
-    deferred_receipts_root: *header.deferred_receipts_root(),
-    deferred_logs_bloom_hash: *header.deferred_logs_bloom_hash(),
-    blame: header.blame().into(),
-    transactions_root: *header.transactions_root(),
-    epoch_number: Some(view.epoch_height().into()),
-    block_number: Some(view.pivot_block_number().into()),
-    gas_limit: *header.gas_limit(),
-    base_fee_per_gas: header.base_price().map(|price| price[Space::Native]),
-    timestamp: header.timestamp().into(),
-    difficulty: *header.difficulty(),
-    pow_quality: header.pow_hash.map(|hash| pow_quality(header, hash)),
-    referee_hashes: header.referee_hashes().clone(),
-    adaptive: header.adaptive(),
-    nonce: header.nonce(),
-    custom: header.custom_items().into_iter().map(Into::into).collect(),
-    pos_reference: *header.pos_reference(),
-  }
-}
-
-fn pow_quality(header: &BlockHeader, hash: H256) -> U256 {
-  // Conflux measures distance from the nonce's high 127 bits, modulo 2^256.
-  let lower = ((header.nonce() >> 128) << 128) & (U256::MAX >> 1);
-  let distance = U256::from_big_endian(hash.as_bytes())
-    .overflowing_sub(lower)
-    .0;
-  if distance == U256::MAX {
-    return U256::one();
-  }
-  let boundary = distance + U256::one();
-  if boundary == U256::one() {
-    return U256::MAX;
-  }
-  // floor(2^256 / boundary), without representing 2^256 in U256.
-  U256::MAX / boundary + U256::from(u8::from(U256::MAX % boundary == boundary - U256::one()))
+  super::core::convert::header(
+    block,
+    Some(view.epoch_height()),
+    Some(view.pivot_block_number()),
+    network,
+  )
 }

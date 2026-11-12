@@ -1,5 +1,9 @@
 //! Pool queries and block candidates evaluated under one Runtime state version.
 
+mod core;
+
+pub(crate) use core::{CorePoolStatus, PoolAccountInfo, PoolTransactionInfo};
+
 use cfx_executor::transaction_validation::PackingCheckResult;
 use xcfx_state::State;
 
@@ -40,6 +44,7 @@ pub(crate) enum QueuedReason {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PoolQueryScope {
+  All,
   Space(Space),
   Account(AddressWithSpace),
 }
@@ -279,6 +284,7 @@ impl NodeRuntime {
   ) -> StateResult<()> {
     let pool = &self.runtime_state.transaction_pool;
     let mut transactions: Box<dyn Iterator<Item = &PoolTransaction> + '_> = match scope {
+      PoolQueryScope::All => Box::new(pool.transactions()),
       PoolQueryScope::Space(space) => Box::new(
         pool
           .transactions()

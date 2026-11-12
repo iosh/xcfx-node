@@ -123,6 +123,11 @@ impl TransactionPool {
     self.by_key.len()
   }
 
+  pub(crate) fn clear(&mut self) {
+    self.by_key.clear();
+    self.key_by_hash.clear();
+  }
+
   pub(crate) fn get_by_hash(&self, hash: H256) -> Option<&PoolTransaction> {
     self
       .key_by_hash

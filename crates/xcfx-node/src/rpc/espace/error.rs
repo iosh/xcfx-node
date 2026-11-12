@@ -42,6 +42,7 @@ fn invalid_transaction(error: TransactionError) -> RpcError {
 
 pub(super) fn transaction_error(error: RuntimeTransactionError) -> RpcError {
   match error {
+    RuntimeTransactionError::Fork(error) => fork_error(error),
     RuntimeTransactionError::Simulation(error) => virtual_execution_error(error),
     RuntimeTransactionError::Transaction(error) => invalid_transaction(error),
     RuntimeTransactionError::State(_) => processing_error("Transaction state access failed"),

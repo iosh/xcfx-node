@@ -311,6 +311,7 @@ fn simulation_fees(
         gas_price: request
           .max_fee_per_gas
           .or(request.max_priority_fee_per_gas)
+          .or(request.gas_price)
           .unwrap_or(U256::one()),
         priority_fee: request.max_priority_fee_per_gas.unwrap_or_default(),
       }

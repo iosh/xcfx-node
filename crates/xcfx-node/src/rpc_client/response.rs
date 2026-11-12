@@ -1,6 +1,6 @@
-//! Receives eSpace history while preserving Conflux field widths.
+//! Receives protocol history while preserving Conflux field widths.
 
-use cfx_rpc_eth_types::{Bytes, Header, Log, Receipt, Transaction};
+use cfx_rpc_eth_types::{Bytes, Header, Log, Receipt, Transaction, WrapTransaction};
 use cfx_types::{Bloom, H64, H160, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EthereumFeeHistoryResponse {
   pub(crate) oldest_block: U64,
+  pub(crate) base_fee_per_gas: Vec<U256>,
+  pub(crate) gas_used_ratio: Vec<f64>,
+  pub(crate) reward: Vec<Vec<U256>>,
+}
+
+/// Core uses epoch positions and has no upstream deserializer for this response.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CoreFeeHistoryResponse {
+  pub(crate) oldest_epoch: U64,
   pub(crate) base_fee_per_gas: Vec<U256>,
   pub(crate) gas_used_ratio: Vec<f64>,
   pub(crate) reward: Vec<Vec<U256>>,
@@ -93,6 +103,19 @@ enum BlockTransactions {
 pub(super) struct EthereumReceiptResponse(
   #[serde(deserialize_with = "ReceiptFields::deserialize")] pub(super) Receipt,
 );
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub(super) struct CoreDebugTransactionResponse(
+  #[serde(deserialize_with = "WrapTransactionFields::deserialize")] pub(super) WrapTransaction,
+);
+
+#[derive(Deserialize)]
+#[serde(remote = "WrapTransaction", rename_all = "camelCase")]
+enum WrapTransactionFields {
+  NativeTransaction(cfx_rpc_cfx_types::Transaction),
+  EthTransaction(Transaction),
+}
 
 // Upstream Header and Receipt serialize but do not implement Deserialize.
 #[derive(Deserialize)]

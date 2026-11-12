@@ -346,7 +346,7 @@ impl NodeRuntime {
       return Ok((block.epoch_height(), block.hash()));
     }
     if let Some(client) = self.reset_state.initial_view.fork_client() {
-      if let Some(block) = client.core_block(HistoryBlockId::Number(number))? {
+      if let Some(block) = client.core_block(HistoryBlockId::Number(number), false)? {
         let epoch = block
           .epoch_number
           .ok_or(ForkReadError::Unavailable("numbered block epoch"))?;

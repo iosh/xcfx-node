@@ -19,7 +19,31 @@ pub(crate) enum RuntimeSimulationError {
 }
 
 impl NodeRuntime {
-  fn espace_simulation(
+  pub(crate) fn core_call(
+    &self,
+    request: TransactionRequest,
+    selector: StateSelector,
+  ) -> Result<Vec<u8>, RuntimeSimulationError> {
+    Ok(
+      self
+        .simulation(request, selector, VirtualExecutionOverrides::default())?
+        .call()?,
+    )
+  }
+
+  pub(crate) fn core_estimate(
+    &self,
+    request: TransactionRequest,
+    selector: StateSelector,
+  ) -> Result<TransactionEstimate, RuntimeSimulationError> {
+    Ok(
+      self
+        .simulation(request, selector, VirtualExecutionOverrides::default())?
+        .estimate()?,
+    )
+  }
+
+  fn simulation(
     &self,
     request: TransactionRequest,
     selector: StateSelector,
@@ -41,11 +65,7 @@ impl NodeRuntime {
     selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<Vec<u8>, RuntimeSimulationError> {
-    Ok(
-      self
-        .espace_simulation(request, selector, overrides)?
-        .call()?,
-    )
+    Ok(self.simulation(request, selector, overrides)?.call()?)
   }
 
   pub(crate) fn espace_estimate_gas(
@@ -54,11 +74,7 @@ impl NodeRuntime {
     selector: StateSelector,
     overrides: VirtualExecutionOverrides,
   ) -> Result<TransactionEstimate, RuntimeSimulationError> {
-    Ok(
-      self
-        .espace_simulation(request, selector, overrides)?
-        .estimate()?,
-    )
+    Ok(self.simulation(request, selector, overrides)?.estimate()?)
   }
 
   pub(crate) fn espace_create_access_list(
@@ -69,7 +85,7 @@ impl NodeRuntime {
   ) -> Result<AccessListResult, RuntimeSimulationError> {
     Ok(
       self
-        .espace_simulation(request, selector, overrides)?
+        .simulation(request, selector, overrides)?
         .create_access_list()?,
     )
   }

@@ -157,6 +157,19 @@ impl Mpt {
   }
 
   pub(crate) fn get(&self, key: &[u8]) -> MptValue<&[u8]> {
+    self
+      .node_at(key)
+      .map_or(MptValue::None, |node| node.protocol_node.value_as_slice())
+  }
+
+  /// Hashes an exact trie node's value and children, excluding its compressed path.
+  pub(crate) fn node_merkle(&self, key: &[u8]) -> Option<MerkleHash> {
+    self
+      .node_at(key)
+      .map(|node| node.protocol_node.get_merkle_hash_wo_compressed_path())
+  }
+
+  fn node_at(&self, key: &[u8]) -> Option<&StoredNode> {
     let mut node_id = self.root;
     let mut key_remaining = key;
 
@@ -168,9 +181,9 @@ impl Mpt {
         &node.protocol_node.compressed_path_ref(),
         node,
       ) {
-        WalkStop::Arrived => return node.protocol_node.value_as_slice(),
+        WalkStop::Arrived => return Some(node),
         WalkStop::PathDiverted { .. } | WalkStop::ChildNotFound { .. } => {
-          return MptValue::None;
+          return None;
         }
         WalkStop::Descent {
           key_remaining: remaining,

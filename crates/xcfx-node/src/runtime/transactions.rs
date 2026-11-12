@@ -5,6 +5,7 @@ use primitives::{Transaction, transaction::TransactionError};
 use thiserror::Error;
 
 use crate::{
+  fork::ForkReadError,
   runtime_transaction::RuntimeTransaction,
   transaction_ingress::{TransactionValidationContext, decode_and_validate_raw_transaction},
   transaction_request::{
@@ -18,6 +19,8 @@ use super::NodeRuntime;
 
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeTransactionError {
+  #[error(transparent)]
+  Fork(#[from] ForkReadError),
   #[error(transparent)]
   Simulation(#[from] VirtualExecutionError),
   #[error(transparent)]
@@ -53,14 +56,22 @@ impl NodeRuntime {
     &self,
     request: &TransactionRequest,
     transaction_type: TransactionType,
-  ) -> TransactionFees {
+  ) -> Result<TransactionFees, ForkReadError> {
+    let suggested_price = || match request.space() {
+      Space::Native => self.core_gas_price(),
+      Space::Ethereum => Ok(self.espace_gas_price()),
+    };
+
     if !transaction_type.has_dynamic_fee() {
-      return TransactionFees {
-        gas_price: request
-          .gas_price
-          .unwrap_or_else(|| self.suggested_gas_price(request.space())),
-        priority_fee: U256::zero(),
+      let gas_price = match request.gas_price {
+        Some(price) => price,
+        None => suggested_price()?,
       };
+
+      return Ok(TransactionFees {
+        gas_price,
+        priority_fee: U256::zero(),
+      });
     }
     let priority_fee = request
       .max_priority_fee_per_gas
@@ -68,17 +79,22 @@ impl NodeRuntime {
         Space::Native => U256::zero(),
         Space::Ethereum => U256::from(1_000_000_000u64),
       });
-    let gas_price = request.max_fee_per_gas.unwrap_or_else(|| {
-      let price = self.suggested_gas_price(request.space());
-      match request.space() {
-        Space::Native => price.max(priority_fee),
-        Space::Ethereum => price,
+    let gas_price = match request.max_fee_per_gas {
+      Some(price) => price,
+      None => {
+        let price = suggested_price()?;
+
+        match request.space() {
+          Space::Native => price.max(priority_fee),
+          Space::Ethereum => price,
+        }
       }
-    });
-    TransactionFees {
+    };
+
+    Ok(TransactionFees {
       gas_price,
       priority_fee,
-    }
+    })
   }
 
   fn prepare_node_transaction(
@@ -87,7 +103,7 @@ impl NodeRuntime {
     request: TransactionRequest,
   ) -> Result<Transaction, RuntimeTransactionError> {
     let transaction_type = submission_type(&request);
-    let fees = self.submission_fees(&request, transaction_type);
+    let fees = self.submission_fees(&request, transaction_type)?;
     let view = self.runtime_state.history.optimistic_head();
     let nonce = match request.nonce {
       Some(nonce) => nonce,
@@ -182,9 +198,7 @@ impl NodeRuntime {
     raw: &[u8],
     space: Space,
   ) -> Result<H256, RuntimeTransactionError> {
-    let transaction = self.with_current_transaction_validation(|validation| {
-      decode_and_validate_raw_transaction(raw, validation)
-    })?;
+    let transaction = self.decode_raw_transaction(raw)?;
     if transaction.space() != space {
       return Err(RuntimeTransactionError::RawSpaceMismatch {
         expected: space,
@@ -192,6 +206,24 @@ impl NodeRuntime {
       });
     }
     self.admit_transaction(transaction)
+  }
+
+  /// Core's raw RPC accepts both protocol Spaces, as the upstream shared pool does.
+  pub(crate) fn submit_core_raw_transaction(
+    &mut self,
+    raw: &[u8],
+  ) -> Result<H256, RuntimeTransactionError> {
+    let transaction = self.decode_raw_transaction(raw)?;
+    self.admit_transaction(transaction)
+  }
+
+  fn decode_raw_transaction(
+    &self,
+    raw: &[u8],
+  ) -> Result<RuntimeTransaction, RuntimeTransactionError> {
+    Ok(self.with_current_transaction_validation(|validation| {
+      decode_and_validate_raw_transaction(raw, validation)
+    })?)
   }
 
   fn with_current_transaction_validation<T>(

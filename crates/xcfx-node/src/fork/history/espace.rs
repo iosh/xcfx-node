@@ -35,7 +35,7 @@ impl ForkRpc {
 
     let response = self
       .rpc
-      .eth_feeHistory(
+      .eth_fee_history(
         block_count.get().into(),
         BlockId::Hash {
           hash: pivot_hash,
@@ -90,18 +90,18 @@ impl ForkRpc {
     };
     Ok(match query {
       EspaceStateQuery::Balance(address) => {
-        HistoryResult::EspaceQuantity(self.rpc.eth_getBalance(address, block).await?)
+        HistoryResult::EspaceQuantity(self.rpc.eth_get_balance(address, block).await?)
       }
       EspaceStateQuery::Nonce(address) => {
-        HistoryResult::EspaceQuantity(self.rpc.eth_getTransactionCount(address, block).await?)
+        HistoryResult::EspaceQuantity(self.rpc.eth_get_transaction_count(address, block).await?)
       }
       EspaceStateQuery::Code(address) => {
-        HistoryResult::EspaceCode(Arc::new(self.rpc.eth_getCode(address, block).await?.0))
+        HistoryResult::EspaceCode(Arc::new(self.rpc.eth_get_code(address, block).await?.0))
       }
       EspaceStateQuery::Storage { address, position } => HistoryResult::EspaceStorage(
         self
           .rpc
-          .eth_getStorageAt(address, position.into_uint(), block)
+          .eth_get_storage_at(address, position.into_uint(), block)
           .await?,
       ),
     })
@@ -116,7 +116,7 @@ impl ForkRpc {
     };
     let receipts = self
       .rpc
-      .eth_getBlockReceipts(BlockId::Hash {
+      .eth_get_block_receipts(BlockId::Hash {
         hash: block.header.hash,
         require_canonical: Some(true),
       })
@@ -149,10 +149,15 @@ impl ForkRpc {
       HistoryBlockId::Epoch(height) | HistoryBlockId::Number(height) => {
         self
           .rpc
-          .eth_getBlockByNumber(height.into(), full_transactions)
+          .eth_get_block_by_number(height.into(), full_transactions)
           .await?
       }
-      HistoryBlockId::Hash(hash) => self.rpc.eth_getBlockByHash(hash, full_transactions).await?,
+      HistoryBlockId::Hash(hash) => {
+        self
+          .rpc
+          .eth_get_block_by_hash(hash, full_transactions)
+          .await?
+      }
     };
     let Some(block) = block else {
       return match selector {
@@ -212,7 +217,7 @@ impl ForkRpc {
     let index = U256::from(index);
     let transaction = self
       .rpc
-      .eth_getTransactionByBlockHashAndIndex(block.header.hash, index)
+      .eth_get_transaction_by_block_hash_and_index(block.header.hash, index)
       .await?
       .ok_or(ForkReadError::Unavailable("eSpace block transaction"))?;
     if transaction.hash != hash
@@ -231,7 +236,7 @@ impl ForkRpc {
     &self,
     hash: H256,
   ) -> Result<Option<EthereumTransaction>, ForkReadError> {
-    let Some(transaction) = self.rpc.eth_getTransactionByHash(hash).await? else {
+    let Some(transaction) = self.rpc.eth_get_transaction_by_hash(hash).await? else {
       return Ok(None);
     };
     if transaction.hash != hash {
@@ -272,7 +277,7 @@ impl ForkRpc {
     &self,
     hash: H256,
   ) -> Result<Option<EthereumReceipt>, ForkReadError> {
-    let Some(receipt) = self.rpc.eth_getTransactionReceipt(hash).await? else {
+    let Some(receipt) = self.rpc.eth_get_transaction_receipt(hash).await? else {
       return Ok(None);
     };
     if receipt.transaction_hash != hash {
@@ -300,7 +305,7 @@ impl ForkRpc {
     epoch_height: BlockHeight,
   ) -> Result<Vec<EthereumLog>, ForkReadError> {
     let pivot = self.load_historical_pivot(epoch_height).await?;
-    let logs = self.rpc.eth_getLogs(pivot.hash).await?;
+    let logs = self.rpc.eth_get_logs(pivot.hash).await?;
     if logs.iter().any(|log| {
       log.block_number.as_u64() != epoch_height || log.block_hash != pivot.hash || log.removed
     }) {

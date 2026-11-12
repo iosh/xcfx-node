@@ -1,5 +1,11 @@
 //! Owns the Runtime and executes complete messages without interleaving.
 
+mod core;
+pub(crate) use core::{
+  CoreBlock, CoreBlockQueryError, CoreDebugTransactions, CoreEpochReceipts, CoreEpochReceiptsError,
+  CoreOperationError, CoreReceipt, CoreStateQueryError, CoreTransaction,
+};
+
 use std::{
   panic::{AssertUnwindSafe, catch_unwind},
   sync::Arc,
@@ -30,11 +36,11 @@ use crate::{
   production_environment::BlockTimestamp,
   rpc_client::EthereumBlock,
   runtime::{
-    AccountPoolTransactions, ChainChange, CheckpointId, EpochSelector, EspaceBlockSelector,
-    EspaceBlockSource, EspaceReceiptSource, EspaceTransactionSource, FeeQueryError,
-    LocalEspaceTransactionSource, PoolContent, PoolQueryScope, PoolTransactionCounts, ReorgError,
-    RuntimeCommitOutcome, RuntimeSimulationError, RuntimeTransactionError, StateQueryError,
-    StateSelector,
+    AccountPoolTransactions, ChainChange, CheckpointId, CoreEpochQueryError, EpochSelector,
+    EspaceBlockSelector, EspaceBlockSource, EspaceReceiptSource, EspaceTransactionSource,
+    FeeQueryError, LocalEspaceTransactionSource, PoolContent, PoolQueryScope,
+    PoolTransactionCounts, ReorgError, RuntimeCommitOutcome, RuntimeSimulationError,
+    RuntimeTransactionError, StateQueryError, StateSelector,
   },
   runtime_transaction::RuntimeTransaction,
   signing::MessageSigningError,
@@ -471,14 +477,6 @@ fn capture_espace_transaction(
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum CoreStateQueryError {
-  #[error("{0}")]
-  Network(UnexpectedRpcAddressNetwork),
-  #[error(transparent)]
-  Query(#[from] StateQueryError),
-}
-
-#[derive(Debug, Error)]
 pub(crate) enum NativeNonceError {
   #[error("{0}")]
   Network(UnexpectedRpcAddressNetwork),
@@ -648,8 +646,8 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().espace_chain_id()
   }
 
-  pub(crate) fn suggested_gas_price(self, space: Space) -> U256 {
-    self.worker.node.runtime().suggested_gas_price(space)
+  pub(crate) fn espace_gas_price(self) -> U256 {
+    self.worker.node.runtime().espace_gas_price()
   }
 
   pub(crate) fn espace_fee_history(
@@ -669,6 +667,10 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().espace_max_priority_fee_per_gas()
   }
 
+  pub(crate) fn best_block_hash(self) -> H256 {
+    self.worker.node.runtime().best_block_hash()
+  }
+
   pub(crate) fn epoch_height(self, epoch: EpochSelector) -> u64 {
     self.worker.node.runtime().epoch_height(epoch)
   }
@@ -677,67 +679,22 @@ impl NodeCall<'_, '_> {
     self.worker.node.runtime().core_epoch_number(epoch)
   }
 
-  pub(crate) fn core_balance_at(
+  pub(crate) fn core_blocks_by_epoch(
     self,
-    address: RpcAddress,
-    selector: StateSelector,
-  ) -> Result<U256, CoreStateQueryError> {
-    let address = self
-      .native_address(address)
-      .map_err(CoreStateQueryError::Network)?;
-    Ok(
-      self
-        .worker
-        .node
-        .runtime()
-        .core_balance_at(address, selector)?,
-    )
+    epoch: EpochSelector,
+  ) -> Result<Arc<[H256]>, CoreEpochQueryError> {
+    self.worker.node.runtime().core_blocks_by_epoch(epoch)
   }
 
-  pub(crate) fn core_nonce_at(
+  pub(crate) fn core_skipped_blocks_by_epoch(
     self,
-    address: RpcAddress,
-    selector: StateSelector,
-  ) -> Result<U256, CoreStateQueryError> {
-    let address = self
-      .native_address(address)
-      .map_err(CoreStateQueryError::Network)?;
-    Ok(
-      self
-        .worker
-        .node
-        .runtime()
-        .core_nonce_at(address, selector)?,
-    )
-  }
-
-  pub(crate) fn core_code_at(
-    self,
-    address: RpcAddress,
-    selector: StateSelector,
-  ) -> Result<Arc<Vec<u8>>, CoreStateQueryError> {
-    let address = self
-      .native_address(address)
-      .map_err(CoreStateQueryError::Network)?;
-    Ok(self.worker.node.runtime().core_code_at(address, selector)?)
-  }
-
-  pub(crate) fn core_storage_at(
-    self,
-    address: RpcAddress,
-    position: H256,
-    selector: StateSelector,
-  ) -> Result<Option<H256>, CoreStateQueryError> {
-    let address = self
-      .native_address(address)
-      .map_err(CoreStateQueryError::Network)?;
-    Ok(
-      self
-        .worker
-        .node
-        .runtime()
-        .core_storage_at(address, position, selector)?,
-    )
+    epoch: EpochSelector,
+  ) -> Result<Arc<[H256]>, CoreEpochQueryError> {
+    self
+      .worker
+      .node
+      .runtime()
+      .core_skipped_blocks_by_epoch(epoch)
   }
 
   pub(crate) fn espace_balance_at(
@@ -929,16 +886,7 @@ impl NodeCall<'_, '_> {
       .node
       .runtime_mut()
       .submit_raw_transaction(raw, space)?;
-    let transaction = self
-      .worker
-      .node
-      .runtime()
-      .pool_transaction_by_hash(hash)
-      .expect("successful admission retains the accepted transaction")
-      .clone();
-    *self.auto_mine = true;
-    self.worker.transaction_inserted(self.id, transaction);
-    Ok(hash)
+    Ok(self.transaction_admitted(hash))
   }
 
   pub(crate) fn submit_transaction_request(
@@ -950,6 +898,10 @@ impl NodeCall<'_, '_> {
       .node
       .runtime_mut()
       .submit_transaction_request(request)?;
+    Ok(self.transaction_admitted(hash))
+  }
+
+  fn transaction_admitted(self, hash: H256) -> H256 {
     let transaction = self
       .worker
       .node
@@ -959,7 +911,7 @@ impl NodeCall<'_, '_> {
       .clone();
     *self.auto_mine = true;
     self.worker.transaction_inserted(self.id, transaction);
-    Ok(hash)
+    hash
   }
 
   pub(crate) fn sign_transaction_request(

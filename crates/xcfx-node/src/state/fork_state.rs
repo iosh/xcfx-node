@@ -96,6 +96,25 @@ pub(crate) struct ForkStateVersion {
 }
 
 impl ForkStateVersion {
+  pub(super) fn base_client(&self) -> &ForkClient {
+    &self.client
+  }
+
+  pub(super) fn query_value(
+    &self,
+    key: StorageKeyWithSpace<'_>,
+  ) -> Result<Option<StateValue>, ForkReadError> {
+    match self.changes.get(key) {
+      LocalLookup::Value(value) => Ok(Some(value.clone())),
+      LocalLookup::Absent => Ok(None),
+      LocalLookup::Inherit => self.client.state_value(key),
+    }
+  }
+
+  pub(super) fn inherits_native_account(&self, address: Address) -> bool {
+    matches!(self.local_native_account(address), LocalLookup::Inherit)
+  }
+
   pub(crate) fn new(client: ForkClient, globals: [U256; TOTAL_GLOBAL_PARAMS]) -> Self {
     let mut changes = LocalChanges::default();
     for (key, index) in [

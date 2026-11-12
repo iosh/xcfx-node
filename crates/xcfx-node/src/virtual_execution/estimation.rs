@@ -88,11 +88,6 @@ impl SimulationContext<'_> {
     let gas_limit = estimated_gas_limit(&selected, transaction, self.spec.align_evm);
     let required_storage = storage_override.unwrap_or_else(|| storage_limit(&selected));
     let protocol_gas_used = selected.executed.gas_used;
-    let reported_gas_used = if self.options.has_gas() {
-      protocol_gas_used
-    } else {
-      gas_limit
-    };
     let fee = if self.options.has_gas() {
       U512::from(selected.executed.fee)
     } else {
@@ -145,7 +140,6 @@ impl SimulationContext<'_> {
     Ok(EstimatedOutcome::Finished(EstimatedExecution {
       estimate: TransactionEstimate {
         gas_limit,
-        gas_used: reported_gas_used,
         storage_limit: required_storage,
       },
       output: selected.executed.output,

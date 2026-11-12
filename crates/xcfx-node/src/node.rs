@@ -14,8 +14,9 @@ pub(crate) use mining::{MineRequest, MineTiming, MiningCause, MiningError, Minin
 pub(crate) use request::{BatchResult, CallId, Cancellation, MessageId, NodeTask, RequestError};
 pub(crate) use service::{NodeEvents, NodeHandle, NodeRequest, NodeService};
 pub(crate) use worker::{
-  CoreStateQueryError, EspaceBlock, EspaceBlockReceipts, EspaceReceipt, EspaceTransaction,
-  NativeNonceError, NodeCall,
+  CoreBlock, CoreBlockQueryError, CoreDebugTransactions, CoreEpochReceipts, CoreEpochReceiptsError,
+  CoreOperationError, CoreReceipt, CoreStateQueryError, CoreTransaction, EspaceBlock,
+  EspaceBlockReceipts, EspaceReceipt, EspaceTransaction, NativeNonceError, NodeCall,
 };
 
 use std::{

@@ -3,55 +3,33 @@
 //! The parent module owns the surrounding fork-base checks. Each read here
 //! resolves and validates the Core-specific position within that boundary.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
-use cfx_rpc_cfx_types::{Block, BlockTransactions, Log, Receipt, Transaction};
-use cfx_types::{BigEndianHash, H256, Space, U256};
+use cfx_rpc_cfx_types::{Block, BlockTransactions, EpochNumber, Log, Receipt, Transaction};
+use cfx_types::{H256, Space, U256};
 use primitives::{TransactionStatus, block::BlockHeight};
 
-use super::{CoreStateQuery, ForkReadError, ForkRpc, HistoryBlockId, HistoryResult};
+use super::{ForkReadError, ForkRpc, HistoryBlockId};
 
 // The Core RPC filter accepts at most 128 block hashes.
 const MAX_CORE_LOG_BLOCK_HASHES: usize = 128;
 
 impl ForkRpc {
-  pub(super) async fn read_core_state(
+  pub(super) async fn read_core_skipped_blocks(
     &self,
     epoch_height: BlockHeight,
-    query: CoreStateQuery,
-  ) -> Result<HistoryResult, ForkReadError> {
-    let pivot_hash = if epoch_height == self.base.epoch_height {
-      self.base.pivot_hash
-    } else {
-      self.load_historical_pivot(epoch_height).await?.hash
-    };
-    Ok(match query {
-      CoreStateQuery::Balance(address) => HistoryResult::CoreQuantity(
-        self
-          .rpc
-          .cfx_getBalance(self.core_address(address), pivot_hash)
-          .await?,
-      ),
-      CoreStateQuery::Nonce(address) => HistoryResult::CoreQuantity(
-        self
-          .rpc
-          .cfx_getNextNonce(self.core_address(address), pivot_hash)
-          .await?,
-      ),
-      CoreStateQuery::Code(address) => HistoryResult::CoreCode(Arc::new(
-        self
-          .rpc
-          .cfx_getCode(self.core_address(address), pivot_hash)
-          .await?
-          .into_vec(),
-      )),
-      CoreStateQuery::Storage { address, position } => HistoryResult::CoreStorage(
-        self
-          .rpc
-          .cfx_getStorageAt(self.core_address(address), position.into_uint(), pivot_hash)
-          .await?,
-      ),
-    })
+  ) -> Result<Arc<[H256]>, ForkReadError> {
+    let pivot = self.load_historical_pivot(epoch_height).await?;
+    let ordered = self.load_block_hashes(epoch_height, pivot.hash).await?;
+    let skipped = self
+      .rpc
+      .cfx_get_skipped_blocks_by_epoch(EpochNumber::Num(epoch_height.into()))
+      .await?;
+    let mut known: HashSet<_> = ordered.into_iter().collect();
+    if skipped.iter().any(|hash| !known.insert(*hash)) {
+      return Err(ForkReadError::Inconsistent("skipped epoch block set"));
+    }
+    Ok(skipped.into())
   }
 
   pub(super) async fn read_core_block(
@@ -59,30 +37,39 @@ impl ForkRpc {
     selector: HistoryBlockId,
     full_transactions: bool,
   ) -> Result<Option<Block>, ForkReadError> {
-    let Some(mut block) = self.core_history_block(selector).await? else {
+    let Some(block) = self.core_history_block(selector).await? else {
       return Ok(None);
     };
-    // Pivot-assumption reads return full transactions. Validate that response
-    // before projecting it to hashes for callers that only need block metadata.
-    let BlockTransactions::Full(transactions) = &block.transactions else {
-      return Err(ForkReadError::Unavailable("full block transactions"));
-    };
-    if !full_transactions {
-      block.transactions = BlockTransactions::Hashes(
-        transactions
-          .iter()
-          .map(|transaction| transaction.hash)
-          .collect(),
-      );
+    Ok(Some(project_block_transactions(block, full_transactions)?))
+  }
+
+  pub(super) async fn read_core_block_with_pivot(
+    &self,
+    hash: H256,
+    pivot: H256,
+    epoch_height: BlockHeight,
+  ) -> Result<Block, ForkReadError> {
+    if self.load_historical_pivot(epoch_height).await?.hash != pivot {
+      return Err(ForkReadError::PivotAssumption);
     }
-    Ok(Some(block))
+    let Some(metadata) = self.rpc.cfx_get_block_by_hash(hash).await? else {
+      return Err(ForkReadError::PivotAssumption);
+    };
+    if metadata.hash != hash {
+      return Err(ForkReadError::Inconsistent("historical block hash"));
+    }
+    if metadata.epoch_number != Some(epoch_height.into()) {
+      return Err(ForkReadError::PivotAssumption);
+    }
+    let block = self.load_block_at_pivot(epoch_height, pivot, hash).await?;
+    project_block_transactions(block, true)
   }
 
   pub(super) async fn read_core_transaction(
     &self,
     hash: H256,
   ) -> Result<Option<Transaction>, ForkReadError> {
-    let Some(transaction) = self.rpc.cfx_getTransactionByHash(hash).await? else {
+    let Some(transaction) = self.rpc.cfx_get_transaction_by_hash(hash).await? else {
       return Ok(None);
     };
     if transaction.hash != hash {
@@ -103,7 +90,7 @@ impl ForkRpc {
       };
     let metadata = self
       .rpc
-      .cfx_getBlockByHash(block_hash)
+      .cfx_get_block_by_hash(block_hash)
       .await?
       .ok_or(ForkReadError::Unavailable("transaction block"))?;
     if metadata.hash != block_hash {
@@ -136,7 +123,7 @@ impl ForkRpc {
     &self,
     hash: H256,
   ) -> Result<Option<Receipt>, ForkReadError> {
-    let Some(receipt) = self.rpc.cfx_getTransactionReceipt(hash).await? else {
+    let Some(receipt) = self.rpc.cfx_get_transaction_receipt(hash).await? else {
       return Ok(None);
     };
     if receipt.transaction_hash != hash {
@@ -191,7 +178,7 @@ impl ForkRpc {
     let mut logs = Vec::new();
     for chunk in hashes.chunks(MAX_CORE_LOG_BLOCK_HASHES) {
       let mut previous: Option<(usize, U256)> = None;
-      for log in self.rpc.cfx_getLogs(chunk.to_vec()).await? {
+      for log in self.rpc.cfx_get_logs(chunk.to_vec()).await? {
         if log.epoch_number != Some(epoch_height.into()) {
           return Err(ForkReadError::Inconsistent("Core log position"));
         }
@@ -235,7 +222,11 @@ impl ForkRpc {
         Ok(Some(block))
       }
       HistoryBlockId::Number(number) => {
-        let Some(metadata) = self.rpc.cfx_getBlockByBlockNumber(number.into()).await? else {
+        let Some(metadata) = self
+          .rpc
+          .cfx_get_block_by_block_number(number.into())
+          .await?
+        else {
           return Ok(None);
         };
         if metadata.block_number != Some(number.into()) {
@@ -256,7 +247,7 @@ impl ForkRpc {
         Ok(block)
       }
       HistoryBlockId::Hash(hash) => {
-        let Some(metadata) = self.rpc.cfx_getBlockByHash(hash).await? else {
+        let Some(metadata) = self.rpc.cfx_get_block_by_hash(hash).await? else {
           return Ok(None);
         };
         if metadata.hash != hash {
@@ -296,4 +287,21 @@ impl ForkRpc {
     }
     Ok(Some(block))
   }
+}
+
+fn project_block_transactions(mut block: Block, full: bool) -> Result<Block, ForkReadError> {
+  // Pivot-assumption reads return full transactions. Validate the response
+  // before projecting it to hashes for metadata-only callers.
+  let BlockTransactions::Full(transactions) = &block.transactions else {
+    return Err(ForkReadError::Unavailable("full block transactions"));
+  };
+  if !full {
+    block.transactions = BlockTransactions::Hashes(
+      transactions
+        .iter()
+        .map(|transaction| transaction.hash)
+        .collect(),
+    );
+  }
+  Ok(block)
 }

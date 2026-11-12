@@ -8,16 +8,13 @@ use serde_json::{Value, json};
 use crate::{
   fee_history::{FeeHistory, RewardPercentiles},
   rpc::{
+    error::fee_query_error as query_error,
     operation::{Operation, RpcResult},
-    protocol::RpcError,
   },
-  runtime::{BlockPreparationError, FeeQueryError},
+  runtime::FeeQueryError,
 };
 
-use super::{
-  block_selector,
-  error::{fork_error, invalid_params, state_error},
-};
+use super::{block_selector, error::invalid_params};
 
 pub(super) fn history(
   block_count: U64,
@@ -66,19 +63,4 @@ fn history_value(history: FeeHistory) -> Value {
     response.base_fee_per_gas.push(next_base_fee);
   }
   json!(response)
-}
-
-fn query_error(error: FeeQueryError) -> RpcError {
-  match error {
-    FeeQueryError::UnknownBlock => RpcError::invalid_params(),
-    FeeQueryError::Fork(error) => fork_error(error),
-    FeeQueryError::Preparation(BlockPreparationError::State(error)) => state_error(error.into()),
-    error @ (FeeQueryError::Preparation(BlockPreparationError::Time(_))
-    | FeeQueryError::Preparation(BlockPreparationError::PositionExhausted(_))
-    | FeeQueryError::SuggestionOverflow) => RpcError {
-      code: -32000,
-      message: error.to_string(),
-      data: None,
-    },
-  }
 }

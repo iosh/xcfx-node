@@ -133,6 +133,19 @@ impl<'a> TransactionReceiptRef<'a> {
     &self.receipts.receipts[self.index]
   }
 
+  pub(crate) fn gas_used(&self) -> U256 {
+    let prior = if self.index == 0 {
+      U256::zero()
+    } else {
+      self.receipts.receipts[self.index - 1].accumulated_gas_used
+    };
+    self
+      .receipt()
+      .accumulated_gas_used
+      .checked_sub(prior)
+      .expect("receipt cumulative gas must not decrease within a block")
+  }
+
   pub(crate) fn execution_error_message(&self) -> Option<&'a str> {
     let error = &self.receipts.tx_execution_error_messages[self.index];
     (!error.is_empty()).then_some(error.as_str())
@@ -480,6 +493,35 @@ impl MinedBlockView {
     self.runtime_block().transactions()
   }
 
+  /// Native gas consumed in this block; Genesis has zero and skipped blocks have none.
+  pub(crate) fn core_gas_used(&self) -> Option<U256> {
+    let block = self.epoch_block();
+    block.block_receipts()?;
+    Some(
+      block
+        .transaction_receipts()
+        .filter(|receipt| receipt.transaction().space() == Space::Native)
+        .fold(U256::zero(), |total, receipt| total + receipt.gas_used()),
+    )
+  }
+
+  pub(crate) fn transaction_at(&self, index: usize) -> Option<MinedTransactionView> {
+    self.transactions().get(index)?;
+    Some(MinedTransactionView {
+      block: self.clone(),
+      transaction_index: index,
+    })
+  }
+
+  /// Every block receipt refers to the execution commitment of its containing epoch.
+  pub(crate) fn epoch_state_root(&self) -> Option<H256> {
+    self.epoch_view.local_artifacts().commitment().state_root
+  }
+
+  pub(crate) fn epoch_base_price(&self) -> Option<cfx_types::SpaceMap<U256>> {
+    self.epoch_view.execution_parent().base_price
+  }
+
   fn core_transaction_indices(&self) -> &[usize] {
     &self.epoch_block().core_transaction_indices
   }
@@ -608,6 +650,10 @@ impl TransactionReceiptView {
 
   pub(crate) fn execution_error_message(&self) -> Option<&str> {
     self.receipt_ref().execution_error_message()
+  }
+
+  pub(crate) fn gas_used(&self) -> U256 {
+    self.receipt_ref().gas_used()
   }
 
   fn receipt_ref(&self) -> TransactionReceiptRef<'_> {

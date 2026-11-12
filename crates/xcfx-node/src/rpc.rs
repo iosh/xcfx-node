@@ -14,3 +14,8 @@ mod subscription;
 
 pub(crate) use connection::{Connection, ConnectionHandle, RequestHandle};
 pub(crate) use service::RpcService;
+
+fn client_version() -> String {
+  let info = crate::build_info();
+  format!("xcfx-node/v{}/{}", info.version, info.target)
+}

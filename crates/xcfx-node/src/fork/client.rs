@@ -2,7 +2,9 @@
 
 use std::{num::NonZeroU64, sync::Arc};
 
-use cfx_rpc_cfx_types::{Block, Log as CoreLog};
+use cfx_rpc_cfx_types::{
+  Block, Log as CoreLog, Receipt as CoreReceipt, Transaction as CoreTransaction,
+};
 use cfx_rpc_eth_types::{
   Log as EthereumLog, Receipt as EthereumReceipt, Transaction as EthereumTransaction,
 };
@@ -13,6 +15,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
   execution::ExecutionCommitment,
   fee_history::{FeeHistoryRange, RewardPercentiles},
+  native_state,
   rpc_client::EthereumBlock,
 };
 
@@ -35,6 +38,280 @@ pub(crate) struct ForkClient {
 }
 
 impl ForkClient {
+  pub(crate) fn core_admin_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<Option<Address>, ForkReadError> {
+    let HistoryResult::CoreAdmin(admin) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Admin(address),
+    })?
+    else {
+      unreachable!("an admin query returns its declared result type");
+    };
+
+    Ok(admin)
+  }
+
+  pub(crate) fn core_sponsor_info_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::SponsorInfo, ForkReadError> {
+    let HistoryResult::CoreSponsorInfo(sponsor) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::SponsorInfo(address),
+    })?
+    else {
+      unreachable!("a sponsor-info query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(sponsor))
+  }
+
+  pub(crate) fn core_staking_balance_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(balance) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::StakingBalance(address),
+    })?
+    else {
+      unreachable!("a staking-balance query returns its declared result type");
+    };
+
+    Ok(balance)
+  }
+
+  pub(crate) fn core_deposit_list_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<Vec<primitives::DepositInfo>, ForkReadError> {
+    let HistoryResult::CoreDepositList(deposits) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::DepositList(address),
+    })?
+    else {
+      unreachable!("a deposit-list query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(deposits))
+  }
+
+  pub(crate) fn core_vote_list_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<Vec<primitives::VoteStakeInfo>, ForkReadError> {
+    let HistoryResult::CoreVoteList(votes) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::VoteList(address),
+    })?
+    else {
+      unreachable!("a vote-list query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(votes))
+  }
+
+  pub(crate) fn core_collateral_for_storage_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(collateral) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::StorageCollateral(address),
+    })?
+    else {
+      unreachable!("a collateral-for-storage query returns its declared result type");
+    };
+
+    Ok(collateral)
+  }
+
+  pub(crate) fn core_account_at(
+    &self,
+    address: Address,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::AccountInfo, ForkReadError> {
+    let HistoryResult::CoreAccount(account) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::Account(address),
+    })?
+    else {
+      unreachable!("an account query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(account))
+  }
+
+  pub(crate) fn core_interest_rate_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(rate) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::InterestRate,
+    })?
+    else {
+      unreachable!("an interest-rate query returns its declared result type");
+    };
+
+    Ok(rate)
+  }
+
+  pub(crate) fn core_accumulated_interest_rate_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(rate) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::AccumulateInterestRate,
+    })?
+    else {
+      unreachable!("an accumulated-interest-rate query returns its declared result type");
+    };
+
+    Ok(rate)
+  }
+
+  pub(crate) fn core_pos_economics_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::PosEconomics, ForkReadError> {
+    let HistoryResult::CorePosEconomics(economics) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::PosEconomics,
+    })?
+    else {
+      unreachable!("a pos-economics query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(economics))
+  }
+
+  pub(crate) fn core_supply_info_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::TokenSupplyInfo, ForkReadError> {
+    let HistoryResult::CoreSupplyInfo(supply) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::SupplyInfo,
+    })?
+    else {
+      unreachable!("a supply-info query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(supply))
+  }
+
+  pub(crate) fn core_collateral_info_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::StorageCollateralInfo, ForkReadError> {
+    let HistoryResult::CoreCollateralInfo(collateral) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::CollateralInfo,
+    })?
+    else {
+      unreachable!("a collateral-info query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(collateral))
+  }
+
+  pub(crate) fn core_fee_burnt_at(&self, epoch_height: BlockHeight) -> Result<U256, ForkReadError> {
+    let HistoryResult::CoreQuantity(fees) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::FeeBurnt,
+    })?
+    else {
+      unreachable!("a fee-burnt query returns its declared result type");
+    };
+
+    Ok(fees)
+  }
+
+  pub(crate) fn core_vote_params_at(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::VoteParams, ForkReadError> {
+    let HistoryResult::CoreVoteParams(params) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::VoteParams,
+    })?
+    else {
+      unreachable!("a vote-params query returns its declared result type");
+    };
+
+    Ok(Arc::unwrap_or_clone(params))
+  }
+
+  pub(crate) fn core_check_balance_at(
+    &self,
+    request: native_state::BalanceCheckRequest,
+    epoch_height: BlockHeight,
+  ) -> Result<native_state::BalanceCheckResult, ForkReadError> {
+    let HistoryResult::CoreBalanceCheck(check) = self.history(HistoryQuery::CoreState {
+      epoch_height,
+      query: CoreStateQuery::CheckBalance(request),
+    })?
+    else {
+      unreachable!("a check-balance query returns its declared result type");
+    };
+
+    Ok(check)
+  }
+
+  pub(crate) fn core_debug_epoch(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<[cfx_rpc_eth_types::WrapTransaction]>, ForkReadError> {
+    let HistoryResult::CoreDebugTransactions(transactions) =
+      self.history(HistoryQuery::CoreDebugEpoch { epoch_height })?
+    else {
+      unreachable!("a Core debug request returns tagged transactions");
+    };
+
+    Ok(transactions.expect("a successful debug epoch read returns its transaction list"))
+  }
+
+  pub(crate) fn core_debug_block(
+    &self,
+    hash: H256,
+  ) -> Result<Option<Arc<[cfx_rpc_eth_types::WrapTransaction]>>, ForkReadError> {
+    let HistoryResult::CoreDebugTransactions(transactions) =
+      self.history(HistoryQuery::CoreDebugBlock { hash })?
+    else {
+      unreachable!("a Core debug request returns tagged transactions");
+    };
+
+    Ok(transactions)
+  }
+
+  pub(crate) fn core_fee_history(
+    &self,
+    block_count: NonZeroU64,
+    newest_height: BlockHeight,
+    reward_percentiles: &RewardPercentiles,
+  ) -> Result<Arc<FeeHistoryRange>, ForkReadError> {
+    let HistoryResult::CoreFeeHistory(history) = self.history(HistoryQuery::CoreFeeHistory {
+      block_count,
+      newest_height,
+      reward_percentiles: reward_percentiles.clone(),
+    })?
+    else {
+      unreachable!("a Core fee history request returns a Core fee history range");
+    };
+
+    Ok(history)
+  }
+
   pub(super) fn new(
     base: Arc<ForkBase>,
     requests: mpsc::Sender<ReadRequest>,
@@ -100,6 +377,18 @@ impl ForkClient {
     self.receive(response)
   }
 
+  pub(crate) fn skipped_block_hashes(
+    &self,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<[H256]>, ForkReadError> {
+    let HistoryResult::CoreSkippedBlockHashes(hashes) =
+      self.history(HistoryQuery::CoreSkippedBlockHashes { epoch_height })?
+    else {
+      unreachable!("a skipped-block request must return skipped block hashes");
+    };
+    Ok(hashes)
+  }
+
   pub(crate) fn receipts(
     &self,
     epoch: BlockHeight,
@@ -127,8 +416,8 @@ impl ForkClient {
   ///
   /// # Errors
   ///
-  /// Returns an error if required remote data is unavailable or inconsistent,
-  /// or if the read service cannot complete the request.
+  /// Returns an error if a requested pivot assumption fails, required remote data
+  /// is unavailable or inconsistent, or the read service cannot complete the request.
   fn history(&self, query: HistoryQuery) -> Result<HistoryResult, ForkReadError> {
     let (reply, response) = oneshot::channel();
     self.send(ReadRequest::History { query, reply })?;
@@ -138,16 +427,63 @@ impl ForkClient {
   pub(crate) fn core_block(
     &self,
     selector: HistoryBlockId,
+    full_transactions: bool,
   ) -> Result<Option<Arc<Block>>, ForkReadError> {
     let HistoryResult::CoreBlock(block) = self.history(HistoryQuery::Block {
       space: Space::Native,
       selector,
-      full_transactions: false,
+      full_transactions,
     })?
     else {
       unreachable!("a Core block request must return a Core block");
     };
     Ok(block)
+  }
+
+  pub(crate) fn core_block_with_pivot(
+    &self,
+    hash: H256,
+    pivot: H256,
+    epoch_height: BlockHeight,
+  ) -> Result<Arc<Block>, ForkReadError> {
+    let HistoryResult::CoreBlockWithPivot(block) =
+      self.history(HistoryQuery::CoreBlockWithPivot {
+        hash,
+        pivot,
+        epoch_height,
+      })?
+    else {
+      unreachable!("a pivot-assumption query returns a complete Core block");
+    };
+    Ok(block)
+  }
+
+  pub(crate) fn core_transaction_by_hash(
+    &self,
+    hash: H256,
+  ) -> Result<Option<Arc<CoreTransaction>>, ForkReadError> {
+    let HistoryResult::CoreTransaction(transaction) = self.history(HistoryQuery::Transaction {
+      space: Space::Native,
+      hash,
+    })?
+    else {
+      unreachable!("a Core transaction request returns a Core transaction")
+    };
+    Ok(transaction)
+  }
+
+  pub(crate) fn core_receipt_by_hash(
+    &self,
+    hash: H256,
+  ) -> Result<Option<Arc<CoreReceipt>>, ForkReadError> {
+    let HistoryResult::CoreReceipt(receipt) = self.history(HistoryQuery::Receipt {
+      space: Space::Native,
+      hash,
+    })?
+    else {
+      unreachable!("a Core receipt request returns a Core receipt")
+    };
+    Ok(receipt)
   }
 
   pub(crate) fn core_logs(

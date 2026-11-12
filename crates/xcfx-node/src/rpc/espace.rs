@@ -287,10 +287,7 @@ impl EspaceRequest {
         );
       }
       Self::GasPrice => {
-        return Operation::on_node(
-          |node| node.suggested_gas_price(Space::Ethereum),
-          |price| Ok(json!(price)),
-        );
+        return Operation::on_node(|node| node.espace_gas_price(), |price| Ok(json!(price)));
       }
       Self::Logs(filter) => return logs::get_logs(Space::Ethereum, filter.into_input()),
       Self::NewFilter(filter) => return filter.into_new_filter(),
@@ -565,11 +562,7 @@ impl EspaceRequest {
       Self::Syncing | Self::Mining => json!(false),
       Self::Listening => json!(true),
       Self::PeerCount | Self::Hashrate => json!("0x0"),
-      Self::ClientVersion => json!(format!(
-        "xcfx-node/v{}/{}",
-        crate::build_info().version,
-        crate::build_info().target
-      )),
+      Self::ClientVersion => json!(super::client_version()),
       Self::ProtocolVersion => json!("0x41"),
       Self::Coinbase => json!("0x0000000000000000000000000000000000000000"),
       Self::Modules => {

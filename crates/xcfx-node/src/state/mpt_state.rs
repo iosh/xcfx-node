@@ -8,9 +8,10 @@ use std::{
 use cfx_internal_common::{StateRootAuxInfo, StateRootWithAuxInfo};
 use cfx_statedb::StateStorage;
 use cfx_storage_types::{MptKeyValue, Result as StorageResult};
+use cfx_types::AddressWithSpace;
 use primitives::{
   DeltaMptKeyPadding, EpochId, MERKLE_NULL_NODE, MptValue, NULL_EPOCH, SkipInputCheck, StateRoot,
-  StorageKey, StorageKeyWithSpace,
+  StorageKey, StorageKeyWithSpace, StorageRoot,
 };
 use xcfx_state::database::MptDatabase;
 
@@ -292,6 +293,23 @@ impl MptStateVersion {
         delta_mpt_key_padding: self.current_key_padding.clone(),
         state_root_hash,
       },
+    }
+  }
+
+  /// Preserves each physical layer, including tombstones that shadow older storage.
+  pub(crate) fn storage_root(&self, address: AddressWithSpace) -> StorageRoot {
+    let key = StorageKey::new_storage_root_key(&address.address).with_space(address.space);
+    let current_key = key.to_delta_mpt_key_bytes(&self.current_key_padding);
+
+    let intermediate = self.intermediate.as_ref().map_or(MptValue::None, |layer| {
+      let key = key.to_delta_mpt_key_bytes(&layer.key_padding);
+      layer.mpt.node_merkle(&key)
+    });
+
+    StorageRoot {
+      delta: self.current.node_merkle(&current_key),
+      intermediate,
+      snapshot: self.snapshot.node_merkle(&key.to_key_bytes()),
     }
   }
 }

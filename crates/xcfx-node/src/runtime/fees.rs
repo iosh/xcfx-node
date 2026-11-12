@@ -1,5 +1,7 @@
 //! Fee queries over one active history, with separate next-block preparation.
 
+mod core;
+
 use std::{num::NonZeroU64, sync::Arc};
 
 use cfx_parameters::block::espace_block_gas_limit_of_enabled_block;
@@ -49,7 +51,7 @@ impl NodeRuntime {
     };
     let newest_height = self.fee_history_end(newest_block)?;
     let range = self.read_fee_history_range(block_count, newest_height, reward_percentiles)?;
-    let next_base_fee = self.fee_history_next_base_fee(range.newest_height())?;
+    let next_base_fee = self.fee_history_next_base_fee(range.newest_height(), Space::Ethereum)?;
     Ok(FeeHistory::new(range, next_base_fee))
   }
 
@@ -94,7 +96,7 @@ impl NodeRuntime {
     block_count: NonZeroU64,
     newest_height: u64,
     reward_percentiles: &RewardPercentiles,
-  ) -> Result<FeeHistoryRange, FeeQueryError> {
+  ) -> Result<FeeHistoryRange, ForkReadError> {
     let mut oldest_height = newest_height.saturating_sub(block_count.get() - 1);
     let mut local_start_height = oldest_height;
     let mut blocks = Vec::new();
@@ -129,7 +131,11 @@ impl NodeRuntime {
     Ok(FeeHistoryRange::new(oldest_height, blocks))
   }
 
-  fn fee_history_next_base_fee(&self, newest_height: u64) -> Result<U256, FeeQueryError> {
+  fn fee_history_next_base_fee(
+    &self,
+    newest_height: u64,
+    space: Space,
+  ) -> Result<U256, FeeQueryError> {
     let next_height = newest_height
       .checked_add(1)
       .ok_or(BlockPreparationError::PositionExhausted("epoch height"))?;
@@ -138,31 +144,43 @@ impl NodeRuntime {
         view
           .execution_parent()
           .base_price
-          .map_or(U256::zero(), |prices| prices[Space::Ethereum]),
+          .map_or(U256::zero(), |prices| prices[space]),
       );
     }
     if let Some(client) = self.reset_state.initial_view.fork_client()
       && next_height <= client.base().epoch_height
     {
-      let block = client
-        .espace_block(HistoryBlockId::Epoch(next_height), false)?
-        .expect("a fixed-prefix numeric block read must return a block or fail");
-      return Ok(block.header.base_fee_per_gas.unwrap_or_default());
+      return Ok(match space {
+        Space::Native => client
+          .core_block(HistoryBlockId::Epoch(next_height), false)?
+          .expect("a fixed-prefix numeric block read must return a block or fail")
+          .base_fee_per_gas
+          .unwrap_or_default(),
+        Space::Ethereum => client
+          .espace_block(HistoryBlockId::Epoch(next_height), false)?
+          .expect("a fixed-prefix numeric block read must return a block or fail")
+          .header
+          .base_fee_per_gas
+          .unwrap_or_default(),
+      });
     }
     assert_eq!(
       newest_height,
       self.runtime_state.history.optimistic_height(),
       "only the current head may lack a fee history successor",
     );
-    Ok(self.next_block_base_price()?[Space::Ethereum])
+    Ok(self.next_block_base_price()?[space])
   }
 }
 
 fn block_fees(block: &EspaceBlockView, percentiles: &RewardPercentiles) -> FeeHistoryBlock {
-  let percentiles = percentiles.as_slice();
   let header = block.pivot_header();
   let Some(base_fee) = header.space_base_price(Space::Ethereum) else {
-    return FeeHistoryBlock::new(U256::zero(), 0.0, vec![U256::zero(); percentiles.len()]);
+    return FeeHistoryBlock::new(
+      U256::zero(),
+      0.0,
+      vec![U256::zero(); percentiles.as_slice().len()],
+    );
   };
   let gas_limit = espace_block_gas_limit_of_enabled_block(*header.gas_limit());
   let mut declared_gas = U512::zero();
@@ -171,7 +189,7 @@ fn block_fees(block: &EspaceBlockView, percentiles: &RewardPercentiles) -> FeeHi
     let transaction = view.transaction();
     let transaction = transaction.transaction();
     declared_gas += U512::from(*transaction.gas());
-    if !percentiles.is_empty() {
+    if !percentiles.as_slice().is_empty() {
       prices.push(if *transaction.gas_price() < base_fee {
         U256::zero()
       } else {
@@ -179,6 +197,17 @@ fn block_fees(block: &EspaceBlockView, percentiles: &RewardPercentiles) -> FeeHi
       });
     }
   }
+
+  fee_history_block(base_fee, gas_limit, declared_gas, prices, percentiles)
+}
+
+fn fee_history_block(
+  base_fee: U256,
+  gas_limit: U256,
+  declared_gas: U512,
+  mut prices: Vec<U256>,
+  percentiles: &RewardPercentiles,
+) -> FeeHistoryBlock {
   let gas_used_ratio = if gas_limit.is_zero() {
     0.0
   } else {
@@ -186,6 +215,7 @@ fn block_fees(block: &EspaceBlockView, percentiles: &RewardPercentiles) -> FeeHi
   };
   prices.sort_unstable();
   let rewards = percentiles
+    .as_slice()
     .iter()
     .map(|percentile| {
       if prices.is_empty() {

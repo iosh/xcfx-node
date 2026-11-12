@@ -3,6 +3,11 @@
 mod core;
 mod espace;
 
+pub(crate) use core::{
+  CoreBlockSelectionError, CoreBlockSelector, CoreBlockSource, CoreBlockWithPivotSource,
+  CoreDebugTransactionsSource, CoreEpochQueryError, CoreEpochReceiptsSource, CoreReceiptSource,
+  CoreStorageRootError, CoreTransactionSource,
+};
 pub(crate) use espace::{
   EspaceBlockSelector, EspaceBlockSource, EspaceTransactionSource, LocalEspaceTransactionSource,
 };
@@ -19,12 +24,51 @@ use crate::{
     EpochHistoryView, EpochView, EspaceTransactionView, MinedBlockView, MinedTransactionView,
     TransactionReceiptView,
   },
-  chain_spec::ChainSpec,
+  chain_spec::{ChainIds, ChainSpec},
   fork::{ForkBase, ForkClient, ForkReadError},
   state::{StateReadError, state_version::StateVersion},
 };
 
 use super::{EpochPositions, NodeRuntime};
+
+/// Chain identity, positions and pool count captured during one Runtime operation.
+pub(crate) struct ChainStatus {
+  head: Arc<EpochView>,
+  chain_ids: ChainIds,
+  positions: EpochPositions,
+  latest_state: BlockHeight,
+  pending_transactions: usize,
+}
+
+impl ChainStatus {
+  pub(crate) fn best_hash(&self) -> H256 {
+    self.head.state().epoch_id
+  }
+
+  pub(crate) fn epoch_height(&self) -> BlockHeight {
+    self.head.epoch_height()
+  }
+
+  pub(crate) fn block_count(&self) -> BlockNumber {
+    self.head.next_epoch_start_block_number()
+  }
+
+  pub(crate) fn chain_ids(&self) -> &ChainIds {
+    &self.chain_ids
+  }
+
+  pub(crate) fn positions(&self) -> EpochPositions {
+    self.positions
+  }
+
+  pub(crate) fn latest_state(&self) -> BlockHeight {
+    self.latest_state
+  }
+
+  pub(crate) fn pending_transactions(&self) -> usize {
+    self.pending_transactions
+  }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EpochSelector {
@@ -94,20 +138,34 @@ pub(crate) enum EspaceReceiptSource<'a> {
 }
 
 impl NodeRuntime {
+  pub(crate) fn chain_status(&self) -> ChainStatus {
+    let head = Arc::clone(self.runtime_state.history.optimistic_head());
+    let params = self.chain_spec.machine().params();
+    let chain_ids = ChainIds {
+      chain_id: params.chain_id(head.epoch_height(), Space::Native),
+      espace_chain_id: params.chain_id(head.epoch_height(), Space::Ethereum),
+      network_id: self.network_id(),
+    };
+    ChainStatus {
+      head,
+      chain_ids,
+      positions: self.epoch_positions(),
+      latest_state: self.runtime_state.history.latest_state_height(),
+      pending_transactions: self.runtime_state.transaction_pool.len(),
+    }
+  }
+
   /// The eSpace header price is also used when preparing node transactions.
-  /// Native preparation retains its default floor until its fee oracle is available.
-  pub(crate) fn suggested_gas_price(&self, space: Space) -> U256 {
+  pub(crate) fn espace_gas_price(&self) -> U256 {
     let prices = self
       .runtime_state
       .history
       .optimistic_head()
       .execution_parent()
       .base_price;
-    let default = U256::from(GAS_PRICE_DEFAULT_VALUE);
-    match (space, prices) {
-      (Space::Ethereum, Some(prices)) => prices[Space::Ethereum],
-      (_, prices) => prices.map_or(default, |prices| prices[space].max(default)),
-    }
+    prices.map_or(U256::from(GAS_PRICE_DEFAULT_VALUE), |prices| {
+      prices[Space::Ethereum]
+    })
   }
 
   pub(crate) fn network_id(&self) -> u64 {
@@ -123,6 +181,16 @@ impl NodeRuntime {
       .read()
       .get_chain_id(self.runtime_state.history.optimistic_height())
       .in_evm_space()
+  }
+
+  /// Returns the pivot hash at the current mined tip, including a fixed fork base.
+  pub(crate) fn best_block_hash(&self) -> H256 {
+    self
+      .runtime_state
+      .history
+      .optimistic_head()
+      .state()
+      .epoch_id
   }
 
   pub(crate) fn optimistic_head(&self) -> Arc<EpochView> {
@@ -285,6 +353,10 @@ impl NodeRuntime {
 
   fn state_source(&self, selector: StateSelector) -> Result<StateSource<'_>, StateSelectionError> {
     let epoch = self.state_epoch_selector(selector)?;
+    Ok(self.state_epoch_source(epoch)?)
+  }
+
+  fn state_epoch_source(&self, epoch: EpochSelector) -> Result<StateSource<'_>, StateUnavailable> {
     let height = self.epoch_height(epoch);
     if let Some(client) = self.reset_state.initial_view.fork_client()
       && height < client.base().epoch_height

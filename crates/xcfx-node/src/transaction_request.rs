@@ -5,6 +5,28 @@ pub(crate) mod build;
 use cfx_types::{Address, AddressSpaceUtil, AddressWithSpace, Space, U256};
 use primitives::{AccessList, Action, AuthorizationList};
 
+/// A normalized Native request and its sender/destination address network.
+/// The RPC adapter rejects inconsistent networks before constructing it.
+pub(crate) struct NativeTransactionRequest {
+  request: TransactionRequest,
+  network: Option<cfx_addr::Network>,
+}
+
+impl NativeTransactionRequest {
+  pub(crate) fn new(request: TransactionRequest, network: Option<cfx_addr::Network>) -> Self {
+    assert_eq!(
+      request.space(),
+      Space::Native,
+      "a Native request must carry Native transaction fields"
+    );
+    Self { request, network }
+  }
+
+  pub(crate) fn into_parts(self) -> (TransactionRequest, Option<cfx_addr::Network>) {
+    (self.request, self.network)
+  }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum NativeTransactionType {
   Legacy,
